@@ -10,6 +10,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/scratch"
+	"github.com/pedromvgomes/gt/internal/setauth"
 	"github.com/pedromvgomes/gt/internal/ui"
 	"github.com/pedromvgomes/gt/internal/worktree"
 	"github.com/spf13/cobra"
@@ -75,6 +76,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newCloneCommand(opts))
 	root.AddCommand(newWorktreeCommand(opts))
 	root.AddCommand(newScratchCommand(opts))
+	root.AddCommand(newSetAuthCommand(opts))
 	return root
 }
 
@@ -100,6 +102,11 @@ func newCloneCommand(opts *options) *cobra.Command {
 			return clone.Run(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, cloneOpts)
 		},
 	}
+	cmd.Flags().BoolVar(&cloneOpts.ForceSSH, "ssh", false, "force HTTPS repository URLs to SSH")
+	cmd.Flags().BoolVar(&cloneOpts.NoSSH, "no-ssh", false, "keep HTTPS repository URLs without prompting")
+	cmd.Flags().BoolVar(&cloneOpts.NoSetupAuth, "no-setup-auth", false, "skip post-clone direnv authentication setup")
+	cmd.Flags().StringVar(&cloneOpts.User, "user", "", "GitHub user for post-clone direnv authentication setup")
+	cmd.MarkFlagsMutuallyExclusive("ssh", "no-ssh")
 	return cmd
 }
 
@@ -238,5 +245,24 @@ func newScratchCommand(opts *options) *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&scratchOpts.Reset, "reset", "r", false, "reset scratch to a different branch")
 	cmd.Flags().BoolVarP(&scratchOpts.Delete, "delete", "d", false, "remove the scratch worktree and scratch branch")
+	return cmd
+}
+
+func newSetAuthCommand(opts *options) *cobra.Command {
+	var authOpts setauth.Options
+	cmd := &cobra.Command{
+		Use:   "set-auth [--user <name>]",
+		Short: "Scope gh authentication to this gt-managed repository with direnv",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			authOpts.CWD = cwd
+			return setauth.Run(context.Background(), setauth.ExecRunner{}, opts.ui, authOpts)
+		},
+	}
+	cmd.Flags().StringVar(&authOpts.User, "user", "", "GitHub user to bind GH_TOKEN to")
 	return cmd
 }

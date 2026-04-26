@@ -67,7 +67,7 @@ func TestRunMinimalClonePath(t *testing.T) {
 	err := clone.Run(context.Background(), runner, printer, config.Config{
 		WorktreeTypes: []string{"feature", "fix", "chore"},
 		SSH:           config.SSH{HostAliases: map[string]string{}},
-	}, clone.Options{RepoURL: "git@github.com:pedromvgomes/gt.git"})
+	}, clone.Options{RepoURL: "git@github.com:pedromvgomes/gt.git", NoSetupAuth: true})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -105,7 +105,8 @@ func TestRunRejectsExistingFolder(t *testing.T) {
 	}
 	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
 	err := clone.Run(context.Background(), &fakeGitRunner{}, printer, config.Default(), clone.Options{
-		RepoURL: "git@github.com:pedromvgomes/gt.git",
+		RepoURL:     "git@github.com:pedromvgomes/gt.git",
+		NoSetupAuth: true,
 	})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error")
@@ -125,8 +126,9 @@ func TestRunFallsBackToMainWhenRemoteShowFails(t *testing.T) {
 	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
 
 	err := clone.Run(context.Background(), runner, printer, config.Default(), clone.Options{
-		RepoURL: "git@github.com:pedromvgomes/gt.git",
-		Folder:  "repo",
+		RepoURL:     "git@github.com:pedromvgomes/gt.git",
+		Folder:      "repo",
+		NoSetupAuth: true,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -137,6 +139,102 @@ func TestRunFallsBackToMainWhenRemoteShowFails(t *testing.T) {
 	if !reflect.DeepEqual(last, want) {
 		t.Fatalf("last call = %#v, want %#v", last, want)
 	}
+}
+
+func TestHTTPToSSHUsesHostAlias(t *testing.T) {
+	got, converted, err := clone.HTTPToSSH("https://github.com/pedromvgomes/gt", map[string]string{"github.com": "github-personal"})
+	if err != nil {
+		t.Fatalf("HTTPToSSH() error = %v", err)
+	}
+	if !converted {
+		t.Fatal("HTTPToSSH() converted = false, want true")
+	}
+	if want := "git@github-personal:pedromvgomes/gt.git"; got != want {
+		t.Fatalf("HTTPToSSH() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRepoURLHonorsPromptNo(t *testing.T) {
+	printer := &ui.UI{In: strings.NewReader("n\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
+		RepoURL: "https://github.com/pedromvgomes/gt.git",
+	})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if want := "https://github.com/pedromvgomes/gt.git"; got != want {
+		t.Fatalf("ResolveRepoURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRunInvokesSetAuthWhenEnabled(t *testing.T) {
+	t.Chdir(t.TempDir())
+	runner := &fakeGitRunner{
+		responses: map[string]git.Result{
+			"--git-dir=.bare remote show origin": {
+				Stdout: "  HEAD branch: main\n",
+			},
+		},
+	}
+	authRunner := &fakeCommandRunner{
+		paths: map[string]bool{"direnv": true},
+		responses: map[string]setauthResult{
+			"gh api user --jq .login": {stdout: "pedromvgomes\n"},
+		},
+		env: map[string]string{"SHELL": "zsh"},
+	}
+	printer := &ui.UI{In: strings.NewReader("\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+
+	err := clone.Run(context.Background(), runner, printer, config.Default(), clone.Options{
+		RepoURL:    "git@github.com:pedromvgomes/gt.git",
+		AuthRunner: authRunner,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join("gt", ".envrc")); err != nil {
+		t.Fatalf("expected .envrc to exist: %v", err)
+	}
+	if !authRunner.hasCall("direnv allow " + filepath.Join(mustGetwd(t), "gt")) {
+		t.Fatalf("set-auth calls = %#v, missing direnv allow", authRunner.calls)
+	}
+}
+
+func TestResolveRepoURLForceSSHSkipsPrompt(t *testing.T) {
+	printer := &ui.UI{In: strings.NewReader("n\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
+		RepoURL:  "https://github.com/pedromvgomes/gt.git",
+		ForceSSH: true,
+	})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if want := "git@github.com:pedromvgomes/gt.git"; got != want {
+		t.Fatalf("ResolveRepoURL() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRepoURLNoSSHKeepsHTTPS(t *testing.T) {
+	printer := &ui.UI{In: strings.NewReader(""), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: false}
+	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
+		RepoURL: "https://github.com/pedromvgomes/gt.git",
+		NoSSH:   true,
+	})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if want := "https://github.com/pedromvgomes/gt.git"; got != want {
+		t.Fatalf("ResolveRepoURL() = %q, want %q", got, want)
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
 }
 
 type fakeGitRunner struct {
