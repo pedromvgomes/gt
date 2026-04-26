@@ -52,6 +52,7 @@ type UI struct {
 	Color       bool
 	Quiet       bool
 	Interactive bool
+	reader      *bufio.Reader
 }
 
 func New(in io.Reader, out, err io.Writer, noColor, quiet bool) *UI {
@@ -104,7 +105,10 @@ func (u *UI) Prompt(question, def string, required bool, advice string) (string,
 		_, _ = fmt.Fprintf(u.Out, "%s [%s]: ", question, def)
 	}
 
-	line, err := bufio.NewReader(u.In).ReadString('\n')
+	if u.reader == nil {
+		u.reader = bufio.NewReader(u.In)
+	}
+	line, err := u.reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("read prompt response: %w", err)
 	}

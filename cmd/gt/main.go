@@ -10,6 +10,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/ui"
+	"github.com/pedromvgomes/gt/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -71,6 +72,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVarP(&opts.quiet, "quiet", "q", false, "suppress info and success output")
 	root.PersistentFlags().BoolVar(&opts.noColor, "no-color", false, "disable ANSI color output")
 	root.AddCommand(newCloneCommand(opts))
+	root.AddCommand(newWorktreeCommand(opts))
 	return root
 }
 
@@ -96,5 +98,123 @@ func newCloneCommand(opts *options) *cobra.Command {
 			return clone.Run(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, cloneOpts)
 		},
 	}
+	return cmd
+}
+
+func newWorktreeCommand(opts *options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "wt",
+		Aliases: []string{"worktree"},
+		Short:   "Manage gt worktrees",
+	}
+	cmd.AddCommand(newWorktreeAddCommand(opts))
+	cmd.AddCommand(newWorktreeRemoveCommand(opts))
+	cmd.AddCommand(newWorktreeListCommand(opts))
+	cmd.AddCommand(newWorktreeNukeCommand(opts))
+	cmd.AddCommand(newWorktreePruneBranchesCommand(opts))
+	return cmd
+}
+
+func newWorktreeAddCommand(opts *options) *cobra.Command {
+	var addOpts worktree.AddOptions
+	cmd := &cobra.Command{
+		Use:   "add <type/name>",
+		Short: "Create a worktree for a typed branch",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return ui.Errorf(ui.ExitUser, "expected exactly one <type/name> argument")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			addOpts.Spec = args[0]
+			addOpts.CWD = cwd
+			return worktree.Add(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, addOpts)
+		},
+	}
+	cmd.Flags().StringVar(&addOpts.From, "from", "", "create the branch from this source branch")
+	return cmd
+}
+
+func newWorktreeRemoveCommand(opts *options) *cobra.Command {
+	var rmOpts worktree.RemoveOptions
+	cmd := &cobra.Command{
+		Use:     "rm [--branch] <name>",
+		Aliases: []string{"remove", "delete"},
+		Short:   "Remove a worktree by name",
+		Args: func(_ *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return ui.Errorf(ui.ExitUser, "expected exactly one <name> argument")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			rmOpts.Name = args[0]
+			rmOpts.CWD = cwd
+			return worktree.Remove(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, rmOpts)
+		},
+	}
+	cmd.Flags().BoolVarP(&rmOpts.DeleteBranch, "branch", "b", false, "also delete the local branch")
+	return cmd
+}
+
+func newWorktreeListCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List gt worktrees",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			return worktree.List(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, cwd)
+		},
+	}
+}
+
+func newWorktreeNukeCommand(opts *options) *cobra.Command {
+	var nukeOpts worktree.NukeOptions
+	cmd := &cobra.Command{
+		Use:   "nuke [--branches]",
+		Short: "Remove all typed worktrees",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			nukeOpts.CWD = cwd
+			return worktree.Nuke(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, nukeOpts)
+		},
+	}
+	cmd.Flags().BoolVarP(&nukeOpts.DeleteBranches, "branches", "b", false, "also delete corresponding local branches")
+	return cmd
+}
+
+func newWorktreePruneBranchesCommand(opts *options) *cobra.Command {
+	var pruneOpts worktree.PruneBranchesOptions
+	cmd := &cobra.Command{
+		Use:   "prune-branches [--dry-run]",
+		Short: "Delete local branches without active worktrees",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			pruneOpts.CWD = cwd
+			return worktree.PruneBranches(context.Background(), git.ExecRunner{}, opts.ui, pruneOpts)
+		},
+	}
+	cmd.Flags().BoolVarP(&pruneOpts.DryRun, "dry-run", "n", false, "show what would be deleted without deleting")
 	return cmd
 }
