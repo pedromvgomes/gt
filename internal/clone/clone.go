@@ -1,0 +1,138 @@
+package clone
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/pedromvgomes/gt/internal/config"
+	"github.com/pedromvgomes/gt/internal/git"
+	"github.com/pedromvgomes/gt/internal/ui"
+)
+
+type Options struct {
+	RepoURL string
+	Folder  string
+}
+
+func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, opts Options) error {
+	if strings.TrimSpace(opts.RepoURL) == "" {
+		return ui.Errorf(ui.ExitUser, "repository URL is required")
+	}
+	folder := opts.Folder
+	if folder == "" {
+		derived, err := DeriveFolder(opts.RepoURL)
+		if err != nil {
+			return err
+		}
+		folder = derived
+		printer.Info("Using folder name: %s", folder)
+	}
+	if err := ValidateFolder(folder); err != nil {
+		return err
+	}
+	if _, err := os.Stat(folder); err == nil {
+		return ui.Errorf(ui.ExitUser, "folder %q already exists", folder)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat folder %s: %w", folder, err)
+	}
+
+	barePath := filepath.Join(folder, ".bare")
+	printer.Info("Cloning %s into %s...", opts.RepoURL, barePath)
+	if _, err := runner.Run(ctx, "", "clone", "--bare", opts.RepoURL, barePath); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(folder, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+		return fmt.Errorf("write .git pointer: %w", err)
+	}
+
+	commands := [][]string{
+		{"--git-dir=.bare", "config", "core.bare", "false"},
+		{"--git-dir=.bare", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"},
+		{"--git-dir=.bare", "fetch", "origin"},
+	}
+	for _, args := range commands {
+		if _, err := runner.Run(ctx, folder, args...); err != nil {
+			return err
+		}
+	}
+
+	defaultBranch := "main"
+	if result, err := runner.Run(ctx, folder, "--git-dir=.bare", "remote", "show", "origin"); err == nil {
+		if parsed := git.ParseDefaultBranch(result.Stdout); parsed != "" {
+			defaultBranch = parsed
+		}
+	} else {
+		printer.Warn("Could not detect default branch, using 'main'")
+	}
+	printer.Info("Default branch: %s", defaultBranch)
+
+	if result, err := runner.Run(ctx, folder, "--git-dir=.bare", "rev-parse", "refs/heads/"+defaultBranch); err == nil {
+		commit := strings.TrimSpace(result.Stdout)
+		if commit != "" {
+			if _, err := runner.Run(ctx, folder, "--git-dir=.bare", "update-ref", "--no-deref", "HEAD", commit); err != nil {
+				return err
+			}
+		}
+	}
+
+	printer.Info("Creating %s worktree...", defaultBranch)
+	if _, err := runner.Run(ctx, folder, "--git-dir=.bare", "worktree", "add", defaultBranch, defaultBranch); err != nil {
+		return err
+	}
+
+	for _, typ := range cfg.WorktreeTypes {
+		if err := os.MkdirAll(filepath.Join(folder, typ), 0o755); err != nil {
+			return fmt.Errorf("create %s worktree directory: %w", typ, err)
+		}
+	}
+
+	printer.Success("Repository cloned successfully")
+	_, _ = fmt.Fprintf(printer.Out, "\nStructure:\n  %s/\n  |-- .bare/\n  |-- .git\n  |-- %s/\n", folder, defaultBranch)
+	for _, typ := range cfg.WorktreeTypes {
+		_, _ = fmt.Fprintf(printer.Out, "  |-- %s/\n", typ)
+	}
+	_, _ = fmt.Fprintf(printer.Out, "\nNext steps:\n  cd %s/%s\n", folder, defaultBranch)
+	return nil
+}
+
+func DeriveFolder(raw string) (string, error) {
+	raw = strings.TrimSpace(strings.TrimSuffix(raw, "/"))
+	if raw == "" {
+		return "", ui.Errorf(ui.ExitUser, "repository URL is required")
+	}
+	trimmed := strings.TrimSuffix(raw, ".git")
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Host != "" {
+		name := strings.Trim(filepath.Base(parsed.Path), "/")
+		if name != "" && name != "." {
+			return name, nil
+		}
+	}
+	name := filepath.Base(trimmed)
+	if idx := strings.LastIndex(name, ":"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == "/" {
+		return "", ui.Errorf(ui.ExitUser, "could not derive folder name from %q", raw)
+	}
+	return name, nil
+}
+
+func ValidateFolder(folder string) error {
+	if strings.TrimSpace(folder) == "" {
+		return ui.Errorf(ui.ExitUser, "folder cannot be empty")
+	}
+	if filepath.IsAbs(folder) {
+		return ui.Errorf(ui.ExitUser, "folder must be relative")
+	}
+	clean := filepath.Clean(folder)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return ui.Errorf(ui.ExitUser, "folder must stay within the current directory")
+	}
+	return nil
+}
