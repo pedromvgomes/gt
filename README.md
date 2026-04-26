@@ -36,6 +36,26 @@ Clone a repository into a bare repo plus worktree layout:
 - default branch worktree at `<folder>/<default-branch>/`
 - worktree type directories from config (`feature`, `fix`, `chore` by default)
 
+### `gt wt add <type/name> [--from <branch>]`
+
+Create a typed worktree and branch, for example `gt wt add feature/new-thing --from main`.
+
+### `gt wt rm [--branch] <name>`
+
+Remove a worktree by its short name. With `--branch`/`-b`, also delete the matching local branch.
+
+### `gt wt list`
+
+List typed worktrees and the scratch worktree, including the latest commit summary for each.
+
+### `gt wt nuke [--branches]`
+
+Remove all typed worktrees. With `--branches`/`-b`, force-delete the corresponding local branches.
+
+### `gt wt prune-branches [--dry-run]`
+
+Delete local branches that do not have an active worktree, while preserving `main`, `master`, the default branch, and `scratch`.
+
 ## Configuration
 
 `gt` bootstraps YAML config on first command run at `$XDG_CONFIG_HOME/gt/config.yaml`, or `~/.config/gt/config.yaml` when `XDG_CONFIG_HOME` is unset.
