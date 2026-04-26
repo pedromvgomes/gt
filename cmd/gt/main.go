@@ -9,6 +9,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/clone"
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
+	"github.com/pedromvgomes/gt/internal/scratch"
 	"github.com/pedromvgomes/gt/internal/ui"
 	"github.com/pedromvgomes/gt/internal/worktree"
 	"github.com/spf13/cobra"
@@ -73,6 +74,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.noColor, "no-color", false, "disable ANSI color output")
 	root.AddCommand(newCloneCommand(opts))
 	root.AddCommand(newWorktreeCommand(opts))
+	root.AddCommand(newScratchCommand(opts))
 	return root
 }
 
@@ -216,5 +218,25 @@ func newWorktreePruneBranchesCommand(opts *options) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&pruneOpts.DryRun, "dry-run", "n", false, "show what would be deleted without deleting")
+	return cmd
+}
+
+func newScratchCommand(opts *options) *cobra.Command {
+	var scratchOpts scratch.Options
+	cmd := &cobra.Command{
+		Use:   "scratch [--reset|--delete]",
+		Short: "Create or manage the scratch worktree",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			scratchOpts.CWD = cwd
+			return scratch.Run(context.Background(), git.ExecRunner{}, opts.ui, scratchOpts)
+		},
+	}
+	cmd.Flags().BoolVarP(&scratchOpts.Reset, "reset", "r", false, "reset scratch to a different branch")
+	cmd.Flags().BoolVarP(&scratchOpts.Delete, "delete", "d", false, "remove the scratch worktree and scratch branch")
 	return cmd
 }
