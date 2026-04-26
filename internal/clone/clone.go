@@ -10,21 +10,34 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
+	"github.com/pedromvgomes/gt/internal/setauth"
 	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 type Options struct {
-	RepoURL string
-	Folder  string
+	RepoURL     string
+	Folder      string
+	ForceSSH    bool
+	NoSSH       bool
+	NoSetupAuth bool
+	User        string
+	AuthRunner  setauth.Runner
 }
 
 func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, opts Options) error {
 	if strings.TrimSpace(opts.RepoURL) == "" {
 		return ui.Errorf(ui.ExitUser, "repository URL is required")
 	}
+	if opts.ForceSSH && opts.NoSSH {
+		return ui.Errorf(ui.ExitUser, "--ssh and --no-ssh are mutually exclusive")
+	}
+	repoURL, err := ResolveRepoURL(printer, cfg, opts)
+	if err != nil {
+		return err
+	}
 	folder := opts.Folder
 	if folder == "" {
-		derived, err := DeriveFolder(opts.RepoURL)
+		derived, err := DeriveFolder(repoURL)
 		if err != nil {
 			return err
 		}
@@ -41,8 +54,8 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 	}
 
 	barePath := filepath.Join(folder, ".bare")
-	printer.Info("Cloning %s into %s...", opts.RepoURL, barePath)
-	if _, err := runner.Run(ctx, "", "clone", "--bare", opts.RepoURL, barePath); err != nil {
+	printer.Info("Cloning %s into %s...", repoURL, barePath)
+	if _, err := runner.Run(ctx, "", "clone", "--bare", repoURL, barePath); err != nil {
 		return err
 	}
 
@@ -97,7 +110,81 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		_, _ = fmt.Fprintf(printer.Out, "  |-- %s/\n", typ)
 	}
 	_, _ = fmt.Fprintf(printer.Out, "\nNext steps:\n  cd %s/%s\n", folder, defaultBranch)
+	if !opts.NoSetupAuth {
+		authRunner := opts.AuthRunner
+		if authRunner == nil {
+			authRunner = setauth.ExecRunner{}
+		}
+		if err := setauth.Run(ctx, authRunner, printer, setauth.Options{
+			CWD:  folder,
+			User: opts.User,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, error) {
+	if opts.NoSSH {
+		return opts.RepoURL, nil
+	}
+	sshURL, converted, err := HTTPToSSH(opts.RepoURL, cfg.SSH.HostAliases)
+	if err != nil {
+		return "", err
+	}
+	if !converted {
+		return opts.RepoURL, nil
+	}
+	if opts.ForceSSH {
+		return sshURL, nil
+	}
+	printer.Warn("HTTPS repository URL detected; equivalent SSH URL: %s", sshURL)
+	answer, err := printer.Prompt("Use SSH instead? [Y/n]", "Y", false, "")
+	if err != nil {
+		return "", err
+	}
+	if isYes(answer) {
+		return sshURL, nil
+	}
+	return opts.RepoURL, nil
+}
+
+func HTTPToSSH(raw string, aliases map[string]string) (string, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return raw, false, nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false, ui.Errorf(ui.ExitUser, "parse repository URL: %v", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return raw, false, nil
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", false, ui.Errorf(ui.ExitUser, "repository URL host is required")
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false, ui.Errorf(ui.ExitUser, "HTTPS repository URL must look like https://<host>/<owner>/<repo>")
+	}
+	repo := strings.TrimSuffix(parts[1], ".git")
+	if repo == "" {
+		return "", false, ui.Errorf(ui.ExitUser, "repository URL repo name is required")
+	}
+	alias := host
+	if aliases != nil && aliases[host] != "" {
+		alias = aliases[host]
+	}
+	return fmt.Sprintf("git@%s:%s/%s.git", alias, parts[0], repo), true, nil
+}
+
+func isYes(answer string) bool {
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "" || answer == "y" || answer == "yes"
 }
 
 func DeriveFolder(raw string) (string, error) {
