@@ -22,8 +22,6 @@ jobs:
         run: go vet ./...
       - name: Lint
         uses: golangci/golangci-lint-action@25e2cdc5eb1d7a04fdc45ff538f1a00e960ae128 # v8.0.0
-        with:
-          args: run
       - name: Test
         run: go test ./tests/... -coverpkg=./internal/... -coverprofile=coverage.out
       - name: Upload coverage
