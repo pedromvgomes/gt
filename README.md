@@ -23,7 +23,7 @@ gt clone git@github.com:pedromvgomes/foo.git
 cd foo
 ```
 
-Worktree management, scratch worktrees, direnv authentication, and the release installer are being added in follow-up PRs.
+Direnv authentication and the release installer are being added in follow-up PRs.
 
 ## Commands
 
@@ -55,6 +55,10 @@ Remove all typed worktrees. With `--branches`/`-b`, force-delete the correspondi
 ### `gt wt prune-branches [--dry-run]`
 
 Delete local branches that do not have an active worktree, while preserving `main`, `master`, the default branch, and `scratch`.
+
+### `gt scratch [--reset|--delete]`
+
+Create or manage the top-level scratch worktree. `gt scratch` creates it when missing or prints its current commit when it already exists, `--reset` checks it out from a new source branch, and `--delete` removes it plus the local `scratch` branch.
 
 ## Configuration
 
