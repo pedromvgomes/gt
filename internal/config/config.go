@@ -1,0 +1,172 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+type Config struct {
+	WorktreeTypes []string `yaml:"worktree_types"`
+	SSH           SSH      `yaml:"ssh"`
+}
+
+type SSH struct {
+	HostAliases map[string]string `yaml:"host_aliases"`
+}
+
+func Default() Config {
+	return Config{
+		WorktreeTypes: []string{"feature", "fix", "chore"},
+		SSH: SSH{
+			HostAliases: map[string]string{},
+		},
+	}
+}
+
+func Load(cwd string) (Config, error) {
+	path, err := GlobalPath()
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ensureGlobal(path); err != nil {
+		return Config{}, err
+	}
+
+	cfg, err := read(path)
+	if err != nil {
+		return Config{}, err
+	}
+
+	if root, ok := findManagedRoot(cwd); ok {
+		repoPath := filepath.Join(root, ".gt.yaml")
+		if _, err := os.Stat(repoPath); err == nil {
+			repoCfg, err := read(repoPath)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg = Merge(cfg, repoCfg)
+		} else if !os.IsNotExist(err) {
+			return Config{}, fmt.Errorf("stat per-repo config: %w", err)
+		}
+	}
+
+	if err := Validate(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func GlobalPath() (string, error) {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "gt", "config.yaml"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "gt", "config.yaml"), nil
+}
+
+func Merge(base, override Config) Config {
+	if len(override.WorktreeTypes) > 0 {
+		base.WorktreeTypes = override.WorktreeTypes
+	}
+	if override.SSH.HostAliases != nil {
+		base.SSH.HostAliases = override.SSH.HostAliases
+	}
+	if base.SSH.HostAliases == nil {
+		base.SSH.HostAliases = map[string]string{}
+	}
+	return base
+}
+
+func Validate(cfg Config) error {
+	if len(cfg.WorktreeTypes) == 0 {
+		return fmt.Errorf("worktree_types cannot be empty")
+	}
+	reserved := map[string]bool{"scratch": true, "main": true, "master": true}
+	seen := map[string]bool{}
+	for _, typ := range cfg.WorktreeTypes {
+		if typ == "" {
+			return fmt.Errorf("worktree_types cannot contain empty values")
+		}
+		if reserved[typ] {
+			return fmt.Errorf("worktree type %q is reserved", typ)
+		}
+		if seen[typ] {
+			return fmt.Errorf("worktree type %q is duplicated", typ)
+		}
+		seen[typ] = true
+	}
+	return nil
+}
+
+func ensureGlobal(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat global config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		return fmt.Errorf("write default config: %w", err)
+	}
+	return nil
+}
+
+func read(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config %s: %w", path, err)
+	}
+	cfg := Default()
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if cfg.SSH.HostAliases == nil {
+		cfg.SSH.HostAliases = map[string]string{}
+	}
+	return cfg, nil
+}
+
+func findManagedRoot(cwd string) (string, bool) {
+	dir, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", false
+	}
+	for {
+		if stat, err := os.Stat(filepath.Join(dir, ".bare")); err == nil && stat.IsDir() {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+const seed = `# gt config - generated automatically; safe to edit.
+
+# Worktree types accepted by 'gt wt add <type/name>'. Add types here
+# (e.g. release, hotfix, chore) without recompiling. The 'scratch'
+# worktree is special-cased and not part of this list.
+worktree_types:
+  - feature
+  - fix
+  - chore
+
+# Optional SSH host aliases. When 'gt clone' converts an HTTPS URL to
+# SSH, the URL's hostname is looked up here; if mapped, the alias is
+# used instead. Useful when you have a per-account SSH alias in
+# ~/.ssh/config (e.g. github-personal vs github-work).
+ssh:
+  host_aliases: {}
+  # Example:
+  #   github.com: github-personal
+`
