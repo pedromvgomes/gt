@@ -103,9 +103,9 @@ func TestDetectFromCWDBare(t *testing.T) {
 func TestDetectFromCWDPlain(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeGitRunner{responses: map[string]git.Result{
-		"rev-parse --show-toplevel":                      {Stdout: root + "\n"},
-		"symbolic-ref --short refs/remotes/origin/HEAD":  {Stdout: "origin/main\n"},
-		"config --get remote.origin.url":                 {Stdout: "https://github.com/pedromvgomes/gt.git\n"},
+		"rev-parse --show-toplevel":                     {Stdout: root + "\n"},
+		"symbolic-ref --short refs/remotes/origin/HEAD": {Stdout: "origin/main\n"},
+		"config --get remote.origin.url":                {Stdout: "https://github.com/pedromvgomes/gt.git\n"},
 	}}
 	c, err := setup.DetectFromCWD(context.Background(), runner, root)
 	if err != nil {

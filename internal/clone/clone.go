@@ -24,10 +24,10 @@ type Options struct {
 	User        string
 	AuthRunner  setauth.Runner
 
-	SetupNames []string
-	NoSetup    bool
-	YesSetup   bool
-	ShowSetup  bool
+	SetupNames  []string
+	NoSetup     bool
+	YesSetup    bool
+	ShowSetup   bool
 	DryRunSetup bool
 }
 

@@ -47,11 +47,11 @@ func main() {
 func newRootCommand() *cobra.Command {
 	opts := &options{}
 	root := &cobra.Command{
-		Use:           "gt",
-		Short:         "Small Go CLI for bare-repo + worktree git workflows",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
+		Use:               "gt",
+		Short:             "Small Go CLI for bare-repo + worktree git workflows",
+		SilenceUsage:      true,
+		SilenceErrors:     true,
+		Version:           fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
 		PersistentPreRunE: prepareOpts(opts, true),
 	}
 
@@ -69,12 +69,12 @@ func newRootCommand() *cobra.Command {
 
 func newSetupCommand(opts *options) *cobra.Command {
 	var (
-		names    string
-		noSetup  bool
-		yes      bool
-		from     string
-		show     bool
-		dryRun   bool
+		names   string
+		noSetup bool
+		yes     bool
+		from    string
+		show    bool
+		dryRun  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "setup",
