@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/config"
@@ -161,13 +163,18 @@ func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, er
 	if opts.NoSSH {
 		return opts.RepoURL, nil
 	}
-	sshURL, converted, err := HTTPToSSH(opts.RepoURL, cfg.SSH.HostAliases)
+	parsed, isHTTPS, err := parseHTTPSRepo(opts.RepoURL)
 	if err != nil {
 		return "", err
 	}
-	if !converted {
+	if !isHTTPS {
 		return opts.RepoURL, nil
 	}
+	alias, err := ResolveAlias(printer, cfg.SSH, parsed.host, opts.User)
+	if err != nil {
+		return "", err
+	}
+	sshURL := fmt.Sprintf("git@%s:%s/%s.git", alias, parsed.owner, parsed.repo)
 	if opts.ForceSSH {
 		return sshURL, nil
 	}
@@ -182,36 +189,126 @@ func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, er
 	return opts.RepoURL, nil
 }
 
+// HTTPToSSH converts an HTTPS repo URL into its SSH equivalent using a fixed
+// host->alias map. Kept for callers that don't need the user-aliases layer or
+// interactive prompting; ResolveRepoURL goes through ResolveAlias instead.
 func HTTPToSSH(raw string, aliases map[string]string) (string, bool, error) {
+	parsed, isHTTPS, err := parseHTTPSRepo(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if !isHTTPS {
+		return raw, false, nil
+	}
+	alias := parsed.host
+	if aliases != nil && aliases[parsed.host] != "" {
+		alias = aliases[parsed.host]
+	}
+	return fmt.Sprintf("git@%s:%s/%s.git", alias, parsed.owner, parsed.repo), true, nil
+}
+
+type repoParts struct {
+	host  string
+	owner string
+	repo  string
+}
+
+func parseHTTPSRepo(raw string) (repoParts, bool, error) {
 	trimmed := strings.TrimSpace(raw)
 	lower := strings.ToLower(trimmed)
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		return raw, false, nil
+		return repoParts{}, false, nil
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", false, ui.Errorf(ui.ExitUser, "parse repository URL: %v", err)
+		return repoParts{}, false, ui.Errorf(ui.ExitUser, "parse repository URL: %v", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return raw, false, nil
+		return repoParts{}, false, nil
 	}
 	host := parsed.Hostname()
 	if host == "" {
-		return "", false, ui.Errorf(ui.ExitUser, "repository URL host is required")
+		return repoParts{}, false, ui.Errorf(ui.ExitUser, "repository URL host is required")
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", false, ui.Errorf(ui.ExitUser, "HTTPS repository URL must look like https://<host>/<owner>/<repo>")
+		return repoParts{}, false, ui.Errorf(ui.ExitUser, "HTTPS repository URL must look like https://<host>/<owner>/<repo>")
 	}
 	repo := strings.TrimSuffix(parts[1], ".git")
 	if repo == "" {
-		return "", false, ui.Errorf(ui.ExitUser, "repository URL repo name is required")
+		return repoParts{}, false, ui.Errorf(ui.ExitUser, "repository URL repo name is required")
 	}
-	alias := host
-	if aliases != nil && aliases[host] != "" {
-		alias = aliases[host]
+	return repoParts{host: host, owner: parts[0], repo: repo}, true, nil
+}
+
+// ResolveAlias picks the SSH alias for host given the SSH config and an
+// optional --user flag. Resolution order:
+//
+//  1. user != "" and ssh.user_aliases[user][host] is set -> use it.
+//  2. user != "" but no entry -> warn and fall back to host_aliases[host].
+//  3. user == "" and exactly one user has an entry for host -> use silently.
+//  4. user == "" and multiple users have entries -> interactive prompt.
+//  5. Otherwise -> host_aliases[host], or host itself if unmapped.
+func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", ui.Errorf(ui.ExitUser, "host is required")
 	}
-	return fmt.Sprintf("git@%s:%s/%s.git", alias, parts[0], repo), true, nil
+	user = strings.TrimSpace(user)
+	if user != "" {
+		if hosts, ok := ssh.UserAliases[user]; ok {
+			if alias := strings.TrimSpace(hosts[host]); alias != "" {
+				return alias, nil
+			}
+		}
+		printer.Warn("user %q has no SSH alias configured for host %q; falling back to host_aliases", user, host)
+		return hostAliasOrHost(ssh.HostAliases, host), nil
+	}
+
+	var users []string
+	for u, hosts := range ssh.UserAliases {
+		if alias := strings.TrimSpace(hosts[host]); alias != "" {
+			users = append(users, u)
+		}
+	}
+	sort.Strings(users)
+
+	switch len(users) {
+	case 0:
+		return hostAliasOrHost(ssh.HostAliases, host), nil
+	case 1:
+		return ssh.UserAliases[users[0]][host], nil
+	default:
+		return promptForUserAlias(printer, ssh.UserAliases, host, users)
+	}
+}
+
+func hostAliasOrHost(aliases map[string]string, host string) string {
+	if alias := strings.TrimSpace(aliases[host]); alias != "" {
+		return alias
+	}
+	return host
+}
+
+func promptForUserAlias(printer *ui.UI, userAliases map[string]map[string]string, host string, users []string) (string, error) {
+	_, _ = fmt.Fprintf(printer.Out, "Multiple SSH aliases configured for host %s:\n", host)
+	for i, u := range users {
+		_, _ = fmt.Fprintf(printer.Out, "  [%d] %s -> %s\n", i+1, u, userAliases[u][host])
+	}
+	answer, err := printer.Prompt(
+		fmt.Sprintf("Pick a user [1-%d]", len(users)),
+		"1",
+		false,
+		"set --user to skip this prompt",
+	)
+	if err != nil {
+		return "", err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(answer))
+	if err != nil || n < 1 || n > len(users) {
+		return "", ui.Errorf(ui.ExitUser, "invalid choice %q", answer)
+	}
+	return userAliases[users[n-1]][host], nil
 }
 
 func isYes(answer string) bool {

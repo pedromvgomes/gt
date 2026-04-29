@@ -157,6 +157,70 @@ func TestValidateSetupAcceptsValid(t *testing.T) {
 	}
 }
 
+func TestLoadParsesUserAliases(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "gt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "gt", "config.yaml"), []byte(`worktree_types: [feature]
+ssh:
+  host_aliases:
+    github.com: github-personal
+  user_aliases:
+    pedromvgomes:
+      github.com: github-personal
+    pedro-work:
+      github.com: github-work
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.SSH.UserAliases["pedromvgomes"]["github.com"]; got != "github-personal" {
+		t.Fatalf("UserAliases[pedromvgomes][github.com] = %q", got)
+	}
+	if got := cfg.SSH.UserAliases["pedro-work"]["github.com"]; got != "github-work" {
+		t.Fatalf("UserAliases[pedro-work][github.com] = %q", got)
+	}
+}
+
+func TestMergePrefersOverrideUserAliases(t *testing.T) {
+	base := config.Default()
+	base.SSH.UserAliases = map[string]map[string]string{
+		"alice": {"github.com": "github-alice"},
+	}
+	override := config.Config{SSH: config.SSH{UserAliases: map[string]map[string]string{
+		"bob": {"github.com": "github-bob"},
+	}}}
+	got := config.Merge(base, override)
+	if _, ok := got.SSH.UserAliases["alice"]; ok {
+		t.Fatal("override did not replace user_aliases")
+	}
+	if got.SSH.UserAliases["bob"]["github.com"] != "github-bob" {
+		t.Fatalf("UserAliases[bob][github.com] = %q", got.SSH.UserAliases["bob"]["github.com"])
+	}
+}
+
+func TestValidateSSHRejectsEmptyEntries(t *testing.T) {
+	cases := map[string]config.SSH{
+		"empty-host-alias":   {HostAliases: map[string]string{"github.com": ""}},
+		"empty-user":         {UserAliases: map[string]map[string]string{"": {"github.com": "x"}}},
+		"empty-user-host":    {UserAliases: map[string]map[string]string{"u": {"": "x"}}},
+		"empty-user-alias":   {UserAliases: map[string]map[string]string{"u": {"github.com": ""}}},
+		"user-with-no-hosts": {UserAliases: map[string]map[string]string{"u": {}}},
+	}
+	for name, ssh := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := config.ValidateSSH(ssh); err == nil {
+				t.Fatalf("ValidateSSH(%#v) succeeded, want error", ssh)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsRepoSetupTemplates(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
