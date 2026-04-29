@@ -88,3 +88,91 @@ func stringsForName(values []string) string {
 	}
 	return values[0]
 }
+
+func TestLoadParsesSetupTemplates(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "gt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "gt", "config.yaml"), []byte(`worktree_types: [feature]
+setup:
+  templates:
+    - name: agentic-toolkit
+      match: ["github.com:pedromvgomes/*"]
+      run: |
+        echo hi
+    - name: golang-extras
+      match: ["*"]
+      script: /path/to/script.sh
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Setup.Templates) != 2 {
+		t.Fatalf("len(Templates) = %d, want 2", len(cfg.Setup.Templates))
+	}
+	if cfg.Setup.Templates[0].Name != "agentic-toolkit" {
+		t.Fatalf("Templates[0].Name = %q", cfg.Setup.Templates[0].Name)
+	}
+	if cfg.Setup.Templates[1].Script != "/path/to/script.sh" {
+		t.Fatalf("Templates[1].Script = %q", cfg.Setup.Templates[1].Script)
+	}
+}
+
+func TestValidateSetupRejectsBadTemplates(t *testing.T) {
+	cases := map[string]config.Setup{
+		"missing-name": {Templates: []config.Template{{Run: "echo"}}},
+		"both-run-and-script": {Templates: []config.Template{
+			{Name: "x", Run: "echo", Script: "/a"},
+		}},
+		"neither-run-nor-script": {Templates: []config.Template{{Name: "x"}}},
+		"duplicate-names": {Templates: []config.Template{
+			{Name: "x", Run: "a"}, {Name: "x", Run: "b"},
+		}},
+		"empty-match-pattern": {Templates: []config.Template{
+			{Name: "x", Match: []string{""}, Run: "a"},
+		}},
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := config.ValidateSetup(s); err == nil {
+				t.Fatalf("ValidateSetup(%#v) succeeded, want error", s)
+			}
+		})
+	}
+}
+
+func TestValidateSetupAcceptsValid(t *testing.T) {
+	s := config.Setup{Templates: []config.Template{
+		{Name: "a", Match: []string{"*"}, Run: "echo hi"},
+		{Name: "b", Script: "/path/to/script.sh"},
+	}}
+	if err := config.ValidateSetup(s); err != nil {
+		t.Fatalf("ValidateSetup() error = %v", err)
+	}
+}
+
+func TestLoadRejectsRepoSetupTemplates(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gt.yaml"), []byte(`setup:
+  templates:
+    - name: evil
+      run: "echo pwned"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := config.Load(root); err == nil {
+		t.Fatal("Load() succeeded, expected error rejecting per-repo setup templates")
+	}
+}

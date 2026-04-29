@@ -167,6 +167,56 @@ func TestResolveRepoURLHonorsPromptNo(t *testing.T) {
 	}
 }
 
+func TestRunInvokesSetupTemplates(t *testing.T) {
+	t.Chdir(t.TempDir())
+	runner := &fakeGitRunner{
+		responses: map[string]git.Result{
+			"--git-dir=.bare remote show origin": {Stdout: "  HEAD branch: main\n"},
+		},
+	}
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	cfg := config.Default()
+	cfg.Setup = config.Setup{Templates: []config.Template{
+		{Name: "marker", Match: []string{"*"}, Run: `touch "$GT_WORKDIR/setup-ran.txt"`},
+	}}
+
+	err := clone.Run(context.Background(), runner, printer, cfg, clone.Options{
+		RepoURL:     "git@github.com:pedromvgomes/gt.git",
+		NoSetupAuth: true,
+		YesSetup:    true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join("gt", "main", "setup-ran.txt")); err != nil {
+		t.Fatalf("expected setup template to run: %v", err)
+	}
+}
+
+func TestRunSkipsSetupWhenNoSetup(t *testing.T) {
+	t.Chdir(t.TempDir())
+	runner := &fakeGitRunner{responses: map[string]git.Result{
+		"--git-dir=.bare remote show origin": {Stdout: "  HEAD branch: main\n"},
+	}}
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	cfg := config.Default()
+	cfg.Setup = config.Setup{Templates: []config.Template{
+		{Name: "marker", Match: []string{"*"}, Run: `touch "$GT_WORKDIR/setup-ran.txt"`},
+	}}
+
+	err := clone.Run(context.Background(), runner, printer, cfg, clone.Options{
+		RepoURL:     "git@github.com:pedromvgomes/gt.git",
+		NoSetupAuth: true,
+		NoSetup:     true,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join("gt", "main", "setup-ran.txt")); err == nil {
+		t.Fatal("setup ran despite --no-setup")
+	}
+}
+
 func TestRunInvokesSetAuthWhenEnabled(t *testing.T) {
 	t.Chdir(t.TempDir())
 	runner := &fakeGitRunner{
@@ -243,12 +293,24 @@ type fakeGitRunner struct {
 	errs      map[string]error
 }
 
-func (f *fakeGitRunner) Run(_ context.Context, _ string, args ...string) (git.Result, error) {
+func (f *fakeGitRunner) Run(_ context.Context, dir string, args ...string) (git.Result, error) {
 	f.calls = append(f.calls, append([]string(nil), args...))
 	key := strings.Join(args, " ")
 	if len(args) == 4 && reflect.DeepEqual(args[:2], []string{"clone", "--bare"}) {
 		if err := os.MkdirAll(args[3], 0o755); err != nil {
 			return git.Result{}, err
+		}
+	}
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "worktree" && args[i+1] == "add" {
+			target := args[i+2]
+			if !filepath.IsAbs(target) && dir != "" {
+				target = filepath.Join(dir, target)
+			}
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return git.Result{}, err
+			}
+			break
 		}
 	}
 	if err := f.errs[key]; err != nil {

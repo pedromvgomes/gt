@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -11,10 +12,22 @@ import (
 type Config struct {
 	WorktreeTypes []string `yaml:"worktree_types"`
 	SSH           SSH      `yaml:"ssh"`
+	Setup         Setup    `yaml:"setup"`
 }
 
 type SSH struct {
 	HostAliases map[string]string `yaml:"host_aliases"`
+}
+
+type Setup struct {
+	Templates []Template `yaml:"templates"`
+}
+
+type Template struct {
+	Name   string   `yaml:"name"`
+	Match  []string `yaml:"match,omitempty"`
+	Run    string   `yaml:"run,omitempty"`
+	Script string   `yaml:"script,omitempty"`
 }
 
 func Default() Config {
@@ -46,6 +59,9 @@ func Load(cwd string) (Config, error) {
 			repoCfg, err := read(repoPath)
 			if err != nil {
 				return Config{}, err
+			}
+			if len(repoCfg.Setup.Templates) > 0 {
+				return Config{}, fmt.Errorf("per-repo config %s must not define setup templates; declare them in the global config only", repoPath)
 			}
 			cfg = Merge(cfg, repoCfg)
 		} else if !os.IsNotExist(err) {
@@ -100,6 +116,33 @@ func Validate(cfg Config) error {
 			return fmt.Errorf("worktree type %q is duplicated", typ)
 		}
 		seen[typ] = true
+	}
+	return ValidateSetup(cfg.Setup)
+}
+
+func ValidateSetup(s Setup) error {
+	names := map[string]bool{}
+	for i, tpl := range s.Templates {
+		if strings.TrimSpace(tpl.Name) == "" {
+			return fmt.Errorf("setup.templates[%d]: name is required", i)
+		}
+		if names[tpl.Name] {
+			return fmt.Errorf("setup.templates[%d]: duplicate template name %q", i, tpl.Name)
+		}
+		names[tpl.Name] = true
+		hasRun := strings.TrimSpace(tpl.Run) != ""
+		hasScript := strings.TrimSpace(tpl.Script) != ""
+		if hasRun && hasScript {
+			return fmt.Errorf("setup.templates[%q]: run and script are mutually exclusive", tpl.Name)
+		}
+		if !hasRun && !hasScript {
+			return fmt.Errorf("setup.templates[%q]: one of run or script is required", tpl.Name)
+		}
+		for j, pat := range tpl.Match {
+			if strings.TrimSpace(pat) == "" {
+				return fmt.Errorf("setup.templates[%q].match[%d]: pattern cannot be empty", tpl.Name, j)
+			}
+		}
 	}
 	return nil
 }
@@ -169,4 +212,29 @@ ssh:
   host_aliases: {}
   # Example:
   #   github.com: github-personal
+
+# Optional setup templates run after 'gt clone' (and on demand via
+# 'gt setup'). Templates are evaluated in this order; every template
+# whose 'match' globs match the repo URL runs. Use match: ["*"] for a
+# template that always applies. Each template defines exactly one of
+# 'run:' (inline shell) or 'script:' (path to an executable file).
+#
+# Available env vars in scripts and substituted into 'script:' paths:
+#   GT_ROOT, GT_WORKDIR, GT_LAYOUT (bare|plain),
+#   GT_DEFAULT_BRANCH, GT_REPO_OWNER, GT_REPO_NAME, GT_REPO_URL.
+#
+# setup:
+#   templates:
+#     - name: agentic-toolkit
+#       match:
+#         - "github.com:pedromvgomes/*"
+#         - "github.com/pedromvgomes/*"
+#       run: |
+#         git clone git@github.com:pedromvgomes/agentic-toolkit.git "${GT_WORKDIR}/.agentic"
+#         ln -sfn "${GT_WORKDIR}/.agentic/CLAUDE.md" "${GT_WORKDIR}/CLAUDE.md"
+#     - name: golang-extras
+#       match: ["*"]
+#       script: ${HOME}/.config/gt/setup-scripts/golang-extras.sh
+setup:
+  templates: []
 `

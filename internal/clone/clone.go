@@ -11,6 +11,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/setauth"
+	"github.com/pedromvgomes/gt/internal/setup"
 	"github.com/pedromvgomes/gt/internal/ui"
 )
 
@@ -22,6 +23,12 @@ type Options struct {
 	NoSetupAuth bool
 	User        string
 	AuthRunner  setauth.Runner
+
+	SetupNames []string
+	NoSetup    bool
+	YesSetup   bool
+	ShowSetup  bool
+	DryRunSetup bool
 }
 
 func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, opts Options) error {
@@ -118,6 +125,31 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		if err := setauth.Run(ctx, authRunner, printer, setauth.Options{
 			CWD:  folder,
 			User: opts.User,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if !opts.NoSetup && len(cfg.Setup.Templates) > 0 {
+		rcontext, err := setup.FromBareClone(folder, defaultBranch, repoURL)
+		if err != nil {
+			return err
+		}
+		templates, err := setup.Select(cfg.Setup, rcontext.RepoURL, setup.SelectOptions{
+			Names:   opts.SetupNames,
+			NoSetup: opts.NoSetup,
+		})
+		if err != nil {
+			return err
+		}
+		if len(templates) == 0 {
+			return nil
+		}
+		plan := setup.Plan{Templates: templates, Ctx: rcontext}
+		if err := setup.Execute(ctx, printer, plan, setup.RunOptions{
+			Yes:    opts.YesSetup,
+			Show:   opts.ShowSetup,
+			DryRun: opts.DryRunSetup,
 		}); err != nil {
 			return err
 		}

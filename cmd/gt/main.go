@@ -5,15 +5,20 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/pedromvgomes/gt/internal/clone"
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/scratch"
 	"github.com/pedromvgomes/gt/internal/setauth"
+	"github.com/pedromvgomes/gt/internal/setup"
 	"github.com/pedromvgomes/gt/internal/ui"
 	"github.com/pedromvgomes/gt/internal/worktree"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -47,27 +52,7 @@ func newRootCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			opts.ui = ui.New(os.Stdin, os.Stdout, os.Stderr, opts.noColor, opts.quiet)
-			level := slog.LevelWarn
-			if opts.verbose {
-				level = slog.LevelDebug
-			}
-			if opts.quiet {
-				level = slog.LevelError
-			}
-			slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("resolve current directory: %w", err)
-			}
-			cfg, err := config.Load(cwd)
-			if err != nil {
-				return err
-			}
-			opts.cfg = cfg
-			return nil
-		},
+		PersistentPreRunE: prepareOpts(opts, true),
 	}
 
 	root.PersistentFlags().BoolVarP(&opts.verbose, "verbose", "v", false, "print debug diagnostics")
@@ -77,11 +62,102 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newWorktreeCommand(opts))
 	root.AddCommand(newScratchCommand(opts))
 	root.AddCommand(newSetAuthCommand(opts))
+	root.AddCommand(newConfigCommand(opts))
+	root.AddCommand(newSetupCommand(opts))
 	return root
+}
+
+func newSetupCommand(opts *options) *cobra.Command {
+	var (
+		names    string
+		noSetup  bool
+		yes      bool
+		from     string
+		show     bool
+		dryRun   bool
+	)
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Run configured setup templates against the current git repository",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			rcontext, err := setup.DetectFromCWD(context.Background(), git.ExecRunner{}, cwd)
+			if err != nil {
+				return err
+			}
+			selectOpts := setup.SelectOptions{
+				NoSetup: noSetup,
+				Names:   parseNames(names),
+			}
+			templates, err := setup.Select(opts.cfg.Setup, rcontext.RepoURL, selectOpts)
+			if err != nil {
+				return err
+			}
+			plan := setup.Plan{Templates: templates, Ctx: rcontext}
+			return setup.Execute(context.Background(), opts.ui, plan, setup.RunOptions{
+				Yes: yes, Show: show, DryRun: dryRun, From: from,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&names, "setup", "", "comma-separated template names to run (overrides match)")
+	cmd.Flags().BoolVar(&noSetup, "no-setup", false, "skip all templates")
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	cmd.Flags().StringVar(&from, "from", "", "resume from this template name")
+	cmd.Flags().BoolVar(&show, "show", false, "show full template bodies before prompting")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan without executing it")
+	cmd.MarkFlagsMutuallyExclusive("setup", "no-setup")
+	return cmd
+}
+
+func parseNames(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if name := strings.TrimSpace(p); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func prepareOpts(opts *options, loadConfig bool) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		opts.ui = ui.New(os.Stdin, os.Stdout, os.Stderr, opts.noColor, opts.quiet)
+		level := slog.LevelWarn
+		if opts.verbose {
+			level = slog.LevelDebug
+		}
+		if opts.quiet {
+			level = slog.LevelError
+		}
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+		if !loadConfig {
+			return nil
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve current directory: %w", err)
+		}
+		cfg, err := config.Load(cwd)
+		if err != nil {
+			return err
+		}
+		opts.cfg = cfg
+		return nil
+	}
 }
 
 func newCloneCommand(opts *options) *cobra.Command {
 	var cloneOpts clone.Options
+	var setupNames string
 	cmd := &cobra.Command{
 		Use:   "clone <url> [folder]",
 		Short: "Clone a repository into a bare repo + worktree layout",
@@ -99,6 +175,7 @@ func newCloneCommand(opts *options) *cobra.Command {
 			if len(args) == 2 {
 				cloneOpts.Folder = args[1]
 			}
+			cloneOpts.SetupNames = parseNames(setupNames)
 			return clone.Run(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, cloneOpts)
 		},
 	}
@@ -106,7 +183,13 @@ func newCloneCommand(opts *options) *cobra.Command {
 	cmd.Flags().BoolVar(&cloneOpts.NoSSH, "no-ssh", false, "keep HTTPS repository URLs without prompting")
 	cmd.Flags().BoolVar(&cloneOpts.NoSetupAuth, "no-setup-auth", false, "skip post-clone direnv authentication setup")
 	cmd.Flags().StringVar(&cloneOpts.User, "user", "", "GitHub user for post-clone direnv authentication setup")
+	cmd.Flags().StringVar(&setupNames, "setup", "", "comma-separated setup template names to run after clone")
+	cmd.Flags().BoolVar(&cloneOpts.NoSetup, "no-setup", false, "skip post-clone setup templates")
+	cmd.Flags().BoolVar(&cloneOpts.YesSetup, "yes", false, "skip the setup confirmation prompt")
+	cmd.Flags().BoolVar(&cloneOpts.ShowSetup, "show-setup", false, "show full template bodies before prompting")
+	cmd.Flags().BoolVar(&cloneOpts.DryRunSetup, "dry-run-setup", false, "print the setup plan without executing it")
 	cmd.MarkFlagsMutuallyExclusive("ssh", "no-ssh")
+	cmd.MarkFlagsMutuallyExclusive("setup", "no-setup")
 	return cmd
 }
 
@@ -265,4 +348,184 @@ func newSetAuthCommand(opts *options) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&authOpts.User, "user", "", "GitHub user to bind GH_TOKEN to")
 	return cmd
+}
+
+func newConfigCommand(opts *options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect and manage the gt configuration file",
+		// Skip auto-load so 'config validate' can surface config errors.
+		PersistentPreRunE: prepareOpts(opts, false),
+	}
+	cmd.AddCommand(newConfigPathCommand(opts))
+	cmd.AddCommand(newConfigShowCommand(opts))
+	cmd.AddCommand(newConfigValidateCommand(opts))
+	cmd.AddCommand(newConfigEditCommand(opts))
+	return cmd
+}
+
+func newConfigPathCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "path",
+		Short: "Print the absolute path to the global config file",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := config.GlobalPath()
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(opts.ui.Out, path)
+			return nil
+		},
+	}
+}
+
+func newConfigShowCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the contents of the global config file",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := config.GlobalPath()
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return ui.Errorf(ui.ExitUser, "config file does not exist at %s; run any gt command to bootstrap it", path)
+				}
+				return fmt.Errorf("read config %s: %w", path, err)
+			}
+			_, _ = opts.ui.Out.Write(data)
+			return nil
+		},
+	}
+}
+
+func newConfigValidateCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Parse and validate the global config file",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			if _, err := config.Load(cwd); err != nil {
+				return err
+			}
+			opts.ui.Success("config is valid")
+			return nil
+		},
+	}
+}
+
+func newConfigEditCommand(opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "edit",
+		Short: "Edit the global config in $VISUAL/$EDITOR",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runConfigEdit(opts)
+		},
+	}
+}
+
+func runConfigEdit(opts *options) error {
+	path, err := config.GlobalPath()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve current directory: %w", err)
+	}
+	// Bootstrap the config file if it does not exist (Load handles the seed).
+	if _, err := config.Load(cwd); err != nil {
+		// Even if the existing config is invalid, we still want to edit it.
+		opts.ui.Warn("current config has issues: %v", err)
+	}
+
+	editor := pickEditor()
+	if editor == "" {
+		return ui.Errorf(ui.ExitUser, "no editor configured; set $VISUAL or $EDITOR")
+	}
+
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config %s: %w", path, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "config-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(original); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	for {
+		if err := runEditor(editor, tmpPath); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return fmt.Errorf("read edited file: %w", err)
+		}
+		if validateConfigBytes(data) == nil {
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				return fmt.Errorf("write config: %w", err)
+			}
+			opts.ui.Success("config saved")
+			return nil
+		}
+		verr := validateConfigBytes(data)
+		opts.ui.Error("config is invalid: %v", verr)
+		answer, err := opts.ui.Prompt("Re-open editor? [Y/n]", "Y", false, "")
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(strings.TrimSpace(answer), "y") && strings.TrimSpace(answer) != "" {
+			return ui.Errorf(ui.ExitUser, "config edit aborted; original file unchanged")
+		}
+	}
+}
+
+func pickEditor() string {
+	for _, key := range []string{"VISUAL", "EDITOR"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func runEditor(editor, path string) error {
+	cmd := exec.Command("sh", "-c", editor+" "+shellQuote(path))
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func validateConfigBytes(data []byte) error {
+	cfg := config.Default()
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return err
+	}
+	if cfg.SSH.HostAliases == nil {
+		cfg.SSH.HostAliases = map[string]string{}
+	}
+	return config.Validate(cfg)
 }
