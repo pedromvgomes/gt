@@ -462,7 +462,7 @@ func runConfigEdit(opts *options) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := tmp.Write(original); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write temp file: %w", err)
