@@ -250,6 +250,109 @@ func TestRunInvokesSetAuthWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestResolveAliasUsesUserAlias(t *testing.T) {
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	ssh := config.SSH{
+		HostAliases: map[string]string{"github.com": "github-personal"},
+		UserAliases: map[string]map[string]string{
+			"pedro-work": {"github.com": "github-work"},
+		},
+	}
+	got, err := clone.ResolveAlias(printer, ssh, "github.com", "pedro-work")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-work" {
+		t.Fatalf("ResolveAlias() = %q, want github-work", got)
+	}
+}
+
+func TestResolveAliasFallsBackWhenUserMissing(t *testing.T) {
+	var errBuf strings.Builder
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, &errBuf, true, false)
+	ssh := config.SSH{
+		HostAliases: map[string]string{"github.com": "github-personal"},
+		UserAliases: map[string]map[string]string{
+			"pedromvgomes": {"github.com": "github-personal"},
+		},
+	}
+	got, err := clone.ResolveAlias(printer, ssh, "github.com", "ghost")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-personal" {
+		t.Fatalf("ResolveAlias() = %q, want github-personal (fallback)", got)
+	}
+	if !strings.Contains(errBuf.String(), `user "ghost"`) {
+		t.Fatalf("expected fallback warning, got %q", errBuf.String())
+	}
+}
+
+func TestResolveAliasSingleMatchPicksSilently(t *testing.T) {
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	ssh := config.SSH{
+		UserAliases: map[string]map[string]string{
+			"pedro-work": {"github.com": "github-work"},
+		},
+	}
+	got, err := clone.ResolveAlias(printer, ssh, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-work" {
+		t.Fatalf("ResolveAlias() = %q, want github-work", got)
+	}
+}
+
+func TestResolveAliasMultipleMatchesPrompts(t *testing.T) {
+	printer := &ui.UI{In: strings.NewReader("2\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	ssh := config.SSH{
+		UserAliases: map[string]map[string]string{
+			"alice": {"github.com": "github-alice"},
+			"bob":   {"github.com": "github-bob"},
+		},
+	}
+	got, err := clone.ResolveAlias(printer, ssh, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-bob" {
+		t.Fatalf("ResolveAlias() = %q, want github-bob", got)
+	}
+}
+
+func TestResolveAliasFallsBackToHostAliases(t *testing.T) {
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	ssh := config.SSH{
+		HostAliases: map[string]string{"github.com": "github-personal"},
+	}
+	got, err := clone.ResolveAlias(printer, ssh, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-personal" {
+		t.Fatalf("ResolveAlias() = %q, want github-personal", got)
+	}
+}
+
+func TestResolveRepoURLAppliesUserAlias(t *testing.T) {
+	printer := &ui.UI{In: strings.NewReader("Y\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	cfg := config.Default()
+	cfg.SSH.UserAliases = map[string]map[string]string{
+		"pedro-work": {"github.com": "github-work"},
+	}
+	got, err := clone.ResolveRepoURL(printer, cfg, clone.Options{
+		RepoURL: "https://github.com/pedromvgomes/gt.git",
+		User:    "pedro-work",
+	})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if want := "git@github-work:pedromvgomes/gt.git"; got != want {
+		t.Fatalf("ResolveRepoURL() = %q, want %q", got, want)
+	}
+}
+
 func TestResolveRepoURLForceSSHSkipsPrompt(t *testing.T) {
 	printer := &ui.UI{In: strings.NewReader("n\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
 	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
