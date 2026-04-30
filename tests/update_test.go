@@ -173,7 +173,7 @@ func TestApplyRejectsChecksumMismatch(t *testing.T) {
 		_, _ = w.Write(bad)
 	})
 	mux.HandleFunc("/dl/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, "%s  gt_linux_amd64.tar.gz\n", sha256Hex(good))
+		_, _ = fmt.Fprintf(w, "%s  gt_linux_amd64.tar.gz\n", sha256Hex(good))
 	})
 	srv := httptest.NewServer(mux)
 	serverURL = srv.URL
@@ -293,7 +293,7 @@ func newReleaseServer(t *testing.T, tag string, assets map[string][]byte) *httpt
 				"name":                 name,
 				"browser_download_url": base + "/dl/" + name,
 			})
-			fmt.Fprintf(&checksumLines, "%s  %s\n", sha256Hex(data), name)
+			_, _ = fmt.Fprintf(&checksumLines, "%s  %s\n", sha256Hex(data), name)
 		}
 		entries = append(entries, map[string]string{
 			"name":                 "checksums.txt",
@@ -311,7 +311,7 @@ func newReleaseServer(t *testing.T, tag string, assets map[string][]byte) *httpt
 	}
 	mux.HandleFunc("/dl/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
 		for name, data := range assets {
-			fmt.Fprintf(w, "%s  %s\n", sha256Hex(data), name)
+			_, _ = fmt.Fprintf(w, "%s  %s\n", sha256Hex(data), name)
 		}
 	})
 	server = httptest.NewServer(mux)
