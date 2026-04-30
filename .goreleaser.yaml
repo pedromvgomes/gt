@@ -34,3 +34,16 @@ checksum:
 
 changelog:
   use: git
+  groups:
+    - title: Features
+      regexp: "^.*feat(\\(.+\\))?:.*$"
+      order: 0
+    - title: Bug fixes
+      regexp: "^.*fix(\\(.+\\))?:.*$"
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  footer: |
+    **Full Changelog**: https://github.com/pedromvgomes/gt/compare/{{ .PreviousTag }}...{{ .Tag }}

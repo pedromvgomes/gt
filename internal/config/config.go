@@ -5,14 +5,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	WorktreeTypes []string `yaml:"worktree_types"`
-	SSH           SSH      `yaml:"ssh"`
-	Setup         Setup    `yaml:"setup"`
+	WorktreeTypes []string   `yaml:"worktree_types"`
+	SSH           SSH        `yaml:"ssh"`
+	Setup         Setup      `yaml:"setup"`
+	AutoUpdate    AutoUpdate `yaml:"auto_update"`
+}
+
+type AutoUpdate struct {
+	Enabled       bool          `yaml:"enabled"`
+	CheckInterval time.Duration `yaml:"check_interval"`
 }
 
 type SSH struct {
@@ -37,6 +44,10 @@ func Default() Config {
 		SSH: SSH{
 			HostAliases: map[string]string{},
 			UserAliases: map[string]map[string]string{},
+		},
+		AutoUpdate: AutoUpdate{
+			Enabled:       true,
+			CheckInterval: 24 * time.Hour,
 		},
 	}
 }
@@ -125,9 +136,15 @@ func Validate(cfg Config) error {
 		}
 		seen[typ] = true
 	}
+
+	if cfg.AutoUpdate.Enabled && cfg.AutoUpdate.CheckInterval < time.Hour {
+		return fmt.Errorf("auto_update.check_interval must be at least 1h")
+	}
+
 	if err := ValidateSSH(cfg.SSH); err != nil {
 		return err
 	}
+
 	return ValidateSetup(cfg.Setup)
 }
 
@@ -266,6 +283,14 @@ ssh:
   #       github.com: github-personal
   #     pedro-work:
   #       github.com: github-work
+
+# Auto-update behavior. When enabled, gt checks the GitHub releases
+# API at most once per check_interval and offers to install newer
+# versions via 'gt update'. Set GT_NO_UPDATE_CHECK=1 to disable for a
+# single invocation. Disabled automatically for non-interactive runs.
+auto_update:
+  enabled: true
+  check_interval: 24h
 
 # Optional setup templates run after 'gt clone' (and on demand via
 # 'gt setup'). Templates are evaluated in this order; every template
