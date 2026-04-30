@@ -139,12 +139,12 @@ func Validate(cfg Config) error {
 
 	if cfg.AutoUpdate.Enabled && cfg.AutoUpdate.CheckInterval < time.Hour {
 		return fmt.Errorf("auto_update.check_interval must be at least 1h")
-  }
-  
-  if err := ValidateSSH(cfg.SSH); err != nil {
+	}
+
+	if err := ValidateSSH(cfg.SSH); err != nil {
 		return err
 	}
-    
+
 	return ValidateSetup(cfg.Setup)
 }
 
