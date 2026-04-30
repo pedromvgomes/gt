@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pedromvgomes/gt/internal/clone"
 	"github.com/pedromvgomes/gt/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/setauth"
 	"github.com/pedromvgomes/gt/internal/setup"
 	"github.com/pedromvgomes/gt/internal/ui"
+	"github.com/pedromvgomes/gt/internal/update"
 	"github.com/pedromvgomes/gt/internal/worktree"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -28,11 +30,13 @@ var (
 )
 
 type options struct {
-	verbose bool
-	quiet   bool
-	noColor bool
-	cfg     config.Config
-	ui      *ui.UI
+	verbose      bool
+	quiet        bool
+	noColor      bool
+	cfg          config.Config
+	ui           *ui.UI
+	updateCheck  chan *update.Available
+	updateCancel context.CancelFunc
 }
 
 func main() {
@@ -47,12 +51,13 @@ func main() {
 func newRootCommand() *cobra.Command {
 	opts := &options{}
 	root := &cobra.Command{
-		Use:               "gt",
-		Short:             "Small Go CLI for bare-repo + worktree git workflows",
-		SilenceUsage:      true,
-		SilenceErrors:     true,
-		Version:           fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
-		PersistentPreRunE: prepareOpts(opts, true),
+		Use:                "gt",
+		Short:              "Small Go CLI for bare-repo + worktree git workflows",
+		SilenceUsage:       true,
+		SilenceErrors:      true,
+		Version:            fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
+		PersistentPreRunE:  prepareOpts(opts, true),
+		PersistentPostRunE: postRun(opts),
 	}
 
 	root.PersistentFlags().BoolVarP(&opts.verbose, "verbose", "v", false, "print debug diagnostics")
@@ -64,6 +69,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSetAuthCommand(opts))
 	root.AddCommand(newConfigCommand(opts))
 	root.AddCommand(newSetupCommand(opts))
+	root.AddCommand(newUpdateCommand(opts))
 	return root
 }
 
@@ -151,8 +157,155 @@ func prepareOpts(opts *options, loadConfig bool) func(*cobra.Command, []string) 
 			return err
 		}
 		opts.cfg = cfg
+		startBackgroundUpdateCheck(cmd, opts)
 		return nil
 	}
+}
+
+func startBackgroundUpdateCheck(cmd *cobra.Command, opts *options) {
+	if cmd.Name() == "update" {
+		return
+	}
+	if !opts.cfg.AutoUpdate.Enabled {
+		return
+	}
+	if ok, _ := update.Eligible(version, opts.ui.Interactive); !ok {
+		return
+	}
+	exe, _ := os.Executable()
+	if reason := update.SkipReason(exe); reason != "" {
+		return
+	}
+	statePath, err := update.StatePath()
+	if err != nil {
+		return
+	}
+	state, _ := update.LoadState(statePath)
+	if !update.DueForCheck(state, time.Now(), opts.cfg.AutoUpdate.CheckInterval) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ch := make(chan *update.Available, 1)
+	opts.updateCheck = ch
+	opts.updateCancel = cancel
+	go func() {
+		defer cancel()
+		available, err := update.Check(ctx, version, update.Options{})
+		state.LastCheckedAt = time.Now()
+		if available != nil {
+			state.LatestSeen = available.Latest
+			state.LatestSeenAtRaw = time.Now()
+		}
+		_ = update.SaveState(statePath, state)
+		if err != nil {
+			ch <- nil
+			return
+		}
+		ch <- available
+	}()
+}
+
+func postRun(opts *options) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		if opts.updateCheck == nil {
+			return nil
+		}
+		defer func() {
+			if opts.updateCancel != nil {
+				opts.updateCancel()
+			}
+		}()
+		select {
+		case available := <-opts.updateCheck:
+			if available == nil {
+				return nil
+			}
+			opts.ui.Info("gt v%s is available (you're on v%s). Run 'gt update' to install.", available.Latest, available.Current)
+		case <-time.After(50 * time.Millisecond):
+			// Don't block command exit on a slow check.
+		}
+		return nil
+	}
+}
+
+func newUpdateCommand(opts *options) *cobra.Command {
+	var (
+		checkOnly bool
+		yes       bool
+	)
+	cmd := &cobra.Command{
+		Use:   "update [--check] [--yes]",
+		Short: "Check for and install a newer release of gt",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runUpdate(cmd.Context(), opts, checkOnly, yes)
+		},
+	}
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "only report whether a newer version is available")
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
+
+func runUpdate(ctx context.Context, opts *options, checkOnly, yes bool) error {
+	if version == "dev" {
+		return ui.Errorf(ui.ExitUser, "running a development build; install a release to enable updates")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve current executable: %w", err)
+	}
+	if reason := update.SkipReason(exe); reason != "" {
+		return ui.Errorf(ui.ExitUser, "%s; update through that channel instead", reason)
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	available, err := update.Check(checkCtx, version, update.Options{})
+	if err != nil {
+		return err
+	}
+
+	statePath, _ := update.StatePath()
+	if statePath != "" {
+		state, _ := update.LoadState(statePath)
+		state.LastCheckedAt = time.Now()
+		if available != nil {
+			state.LatestSeen = available.Latest
+			state.LatestSeenAtRaw = time.Now()
+		}
+		_ = update.SaveState(statePath, state)
+	}
+
+	if available == nil {
+		opts.ui.Success("gt v%s is up to date", strings.TrimPrefix(version, "v"))
+		return nil
+	}
+	if checkOnly {
+		opts.ui.Info("gt v%s is available (you're on v%s)", available.Latest, available.Current)
+		return nil
+	}
+
+	if !yes {
+		answer, err := opts.ui.Prompt(
+			fmt.Sprintf("Update gt v%s -> v%s?", available.Current, available.Latest),
+			"Y", false, "re-run with --yes",
+		)
+		if err != nil {
+			return err
+		}
+		if a := strings.ToLower(strings.TrimSpace(answer)); a != "" && a != "y" && a != "yes" {
+			return ui.Errorf(ui.ExitUser, "update aborted")
+		}
+	}
+
+	if err := update.Apply(ctx, opts.ui, available, update.Options{}); err != nil {
+		return err
+	}
+	opts.ui.Success("gt updated to v%s", available.Latest)
+	return nil
 }
 
 func newCloneCommand(opts *options) *cobra.Command {
