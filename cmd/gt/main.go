@@ -15,6 +15,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/scratch"
 	"github.com/pedromvgomes/gt/internal/setauth"
+	"github.com/pedromvgomes/gt/internal/setssh"
 	"github.com/pedromvgomes/gt/internal/setup"
 	"github.com/pedromvgomes/gt/internal/ui"
 	"github.com/pedromvgomes/gt/internal/update"
@@ -67,10 +68,30 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newWorktreeCommand(opts))
 	root.AddCommand(newScratchCommand(opts))
 	root.AddCommand(newSetAuthCommand(opts))
+	root.AddCommand(newSetSSHRemoteCommand(opts))
 	root.AddCommand(newConfigCommand(opts))
 	root.AddCommand(newSetupCommand(opts))
 	root.AddCommand(newUpdateCommand(opts))
 	return root
+}
+
+func newSetSSHRemoteCommand(opts *options) *cobra.Command {
+	var sshOpts setssh.Options
+	cmd := &cobra.Command{
+		Use:   "set-ssh-remote [--user <name>]",
+		Short: "Rewrite origin to use the SSH alias for a configured user",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("resolve current directory: %w", err)
+			}
+			sshOpts.CWD = cwd
+			return setssh.Run(context.Background(), git.ExecRunner{}, opts.ui, opts.cfg, sshOpts)
+		},
+	}
+	cmd.Flags().StringVar(&sshOpts.User, "user", "", "GitHub user whose SSH alias should be applied to origin")
+	return cmd
 }
 
 func newSetupCommand(opts *options) *cobra.Command {
@@ -335,7 +356,7 @@ func newCloneCommand(opts *options) *cobra.Command {
 	cmd.Flags().BoolVar(&cloneOpts.ForceSSH, "ssh", false, "force HTTPS repository URLs to SSH")
 	cmd.Flags().BoolVar(&cloneOpts.NoSSH, "no-ssh", false, "keep HTTPS repository URLs without prompting")
 	cmd.Flags().BoolVar(&cloneOpts.NoSetupAuth, "no-setup-auth", false, "skip post-clone direnv authentication setup")
-	cmd.Flags().StringVar(&cloneOpts.User, "user", "", "GitHub user for post-clone direnv authentication setup")
+	cmd.Flags().StringVar(&cloneOpts.User, "user", "", "GitHub user (selects ssh.user_aliases entry and post-clone GH_TOKEN)")
 	cmd.Flags().StringVar(&setupNames, "setup", "", "comma-separated setup template names to run after clone")
 	cmd.Flags().BoolVar(&cloneOpts.NoSetup, "no-setup", false, "skip post-clone setup templates")
 	cmd.Flags().BoolVar(&cloneOpts.YesSetup, "yes", false, "skip the setup confirmation prompt")
@@ -679,6 +700,9 @@ func validateConfigBytes(data []byte) error {
 	}
 	if cfg.SSH.HostAliases == nil {
 		cfg.SSH.HostAliases = map[string]string{}
+	}
+	if cfg.SSH.UserAliases == nil {
+		cfg.SSH.UserAliases = map[string]map[string]string{}
 	}
 	return config.Validate(cfg)
 }

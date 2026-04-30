@@ -23,7 +23,8 @@ type AutoUpdate struct {
 }
 
 type SSH struct {
-	HostAliases map[string]string `yaml:"host_aliases"`
+	HostAliases map[string]string            `yaml:"host_aliases"`
+	UserAliases map[string]map[string]string `yaml:"user_aliases"`
 }
 
 type Setup struct {
@@ -42,6 +43,7 @@ func Default() Config {
 		WorktreeTypes: []string{"feature", "fix", "chore"},
 		SSH: SSH{
 			HostAliases: map[string]string{},
+			UserAliases: map[string]map[string]string{},
 		},
 		AutoUpdate: AutoUpdate{
 			Enabled:       true,
@@ -107,6 +109,12 @@ func Merge(base, override Config) Config {
 	if base.SSH.HostAliases == nil {
 		base.SSH.HostAliases = map[string]string{}
 	}
+	if override.SSH.UserAliases != nil {
+		base.SSH.UserAliases = override.SSH.UserAliases
+	}
+	if base.SSH.UserAliases == nil {
+		base.SSH.UserAliases = map[string]map[string]string{}
+	}
 	return base
 }
 
@@ -128,10 +136,44 @@ func Validate(cfg Config) error {
 		}
 		seen[typ] = true
 	}
+
 	if cfg.AutoUpdate.Enabled && cfg.AutoUpdate.CheckInterval < time.Hour {
 		return fmt.Errorf("auto_update.check_interval must be at least 1h")
+  }
+  
+  if err := ValidateSSH(cfg.SSH); err != nil {
+		return err
 	}
+    
 	return ValidateSetup(cfg.Setup)
+}
+
+func ValidateSSH(s SSH) error {
+	for host, alias := range s.HostAliases {
+		if strings.TrimSpace(host) == "" {
+			return fmt.Errorf("ssh.host_aliases: host cannot be empty")
+		}
+		if strings.TrimSpace(alias) == "" {
+			return fmt.Errorf("ssh.host_aliases[%q]: alias cannot be empty", host)
+		}
+	}
+	for user, hosts := range s.UserAliases {
+		if strings.TrimSpace(user) == "" {
+			return fmt.Errorf("ssh.user_aliases: user cannot be empty")
+		}
+		if len(hosts) == 0 {
+			return fmt.Errorf("ssh.user_aliases[%q]: at least one host mapping is required", user)
+		}
+		for host, alias := range hosts {
+			if strings.TrimSpace(host) == "" {
+				return fmt.Errorf("ssh.user_aliases[%q]: host cannot be empty", user)
+			}
+			if strings.TrimSpace(alias) == "" {
+				return fmt.Errorf("ssh.user_aliases[%q][%q]: alias cannot be empty", user, host)
+			}
+		}
+	}
+	return nil
 }
 
 func ValidateSetup(s Setup) error {
@@ -188,6 +230,9 @@ func read(path string) (Config, error) {
 	if cfg.SSH.HostAliases == nil {
 		cfg.SSH.HostAliases = map[string]string{}
 	}
+	if cfg.SSH.UserAliases == nil {
+		cfg.SSH.UserAliases = map[string]map[string]string{}
+	}
 	return cfg, nil
 }
 
@@ -218,14 +263,26 @@ worktree_types:
   - fix
   - chore
 
-# Optional SSH host aliases. When 'gt clone' converts an HTTPS URL to
-# SSH, the URL's hostname is looked up here; if mapped, the alias is
-# used instead. Useful when you have a per-account SSH alias in
-# ~/.ssh/config (e.g. github-personal vs github-work).
+# Optional SSH aliases. When 'gt clone' converts an HTTPS URL to SSH
+# (or 'gt set-ssh-remote' rewrites an existing origin), the URL host
+# is looked up here and the alias replaces it. Useful with per-account
+# SSH aliases in ~/.ssh/config (e.g. github-personal vs github-work).
+#
+# host_aliases is the default per-host map. user_aliases is a per-user
+# override layer used when --user is passed (or selected interactively
+# when multiple users are configured for the same host). When --user
+# resolves to no entry, gt warns and falls back to host_aliases.
 ssh:
   host_aliases: {}
+  user_aliases: {}
   # Example:
-  #   github.com: github-personal
+  #   host_aliases:
+  #     github.com: github-personal
+  #   user_aliases:
+  #     pedromvgomes:
+  #       github.com: github-personal
+  #     pedro-work:
+  #       github.com: github-work
 
 # Auto-update behavior. When enabled, gt checks the GitHub releases
 # API at most once per check_interval and offers to install newer
