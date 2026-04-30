@@ -148,6 +148,29 @@ Templates run after `gt clone` and on demand via `gt setup`. They are simple she
 
 Templates live in your global config and run as you with your environment. Treat editing this file the same way you treat editing your shell profile. Per-repo configs cannot inject templates, and `gt setup` will not silently run anything you have not added to your config.
 
+## Coding-agent integration
+
+This repo ships an `agentic/` directory that lets coding agents (Claude Code, Cursor, etc.) discover and follow the bare-repo + worktree workflow without you having to re-explain it every session.
+
+```
+agentic/
+  skills/use-gt/
+    SKILL.md                    # how to drive gt from an agent
+    scripts/ensure-gt.sh        # idempotent installer the skill calls
+  rules/
+    worktree-per-session.md     # short "rules of the road" for agents
+```
+
+- **`agentic/skills/use-gt/`** is a Claude Code skill (with the standard `name` + `description` frontmatter). Point your agent at it once and it will reach for `gt clone` / `gt wt add` / `gt wt rm` instead of raw `git`, install `gt` on demand via the helper script, and ask the right pre-clone questions (which `gh` user to authenticate as, SSH vs HTTPS, etc.).
+- **`agentic/rules/worktree-per-session.md`** captures the non-negotiables: always use the bare-repo layout, sessions start at the gt-managed root, and every session must `gt wt add` its own worktree before doing any work.
+
+Why bother:
+
+- **Consistency across repos.** Same auth wiring, same typed worktrees, same branch naming, regardless of which repo the agent is dropped into.
+- **Parallel-safe sessions.** One worktree per session means multiple agent runs can work side-by-side without stepping on each other or on your default-branch checkout.
+- **No bypassed validation.** Raw `git worktree add` skips the configured worktree-types check; routing through `gt` keeps everything inside the layout you've set up.
+- **Self-bootstrapping.** The skill's `ensure-gt.sh` installs `gt` from the official release script if it's missing, so a fresh agent environment becomes productive on the first command.
+
 ## Shell completions
 
 The installer prompts to install completions for zsh, bash, or fish when run interactively. You can regenerate them manually:
