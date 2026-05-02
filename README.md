@@ -176,10 +176,21 @@ Why bother:
 The installer prompts to install completions for zsh, bash, or fish when run interactively. You can regenerate them manually:
 
 ```sh
-gt completion zsh > ~/.zsh/completions/_gt
+gt completion zsh > "$(brew --prefix)/share/zsh/site-functions/_gt"   # Homebrew zsh, already on $fpath
 gt completion bash > ~/.local/share/bash-completion/completions/gt
 gt completion fish > ~/.config/fish/completions/gt.fish
 ```
+
+If you don't use Homebrew zsh, pick a directory on your `$fpath` (check with `echo $fpath | tr ' ' '\n'`) or add your own:
+
+```sh
+mkdir -p ~/.zsh/completions
+gt completion zsh > ~/.zsh/completions/_gt
+# then in ~/.zshrc, before `compinit`:
+#   fpath=(~/.zsh/completions $fpath)
+```
+
+Restart your shell (or `exec zsh`) to pick up new completions. If oh-my-zsh has cached an older `compinit`, also run `rm -f ~/.zcompdump`.
 
 ## Development
 
