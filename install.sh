@@ -77,7 +77,16 @@ install_dir() {
 completion_path() {
   shell_name="$1"
   case "$shell_name" in
-    zsh) echo "${HOME:-}/.zsh/completions/_gt" ;;
+    zsh)
+      if command -v brew >/dev/null 2>&1; then
+        brew_prefix="$(brew --prefix 2>/dev/null || true)"
+        if [ -n "$brew_prefix" ] && [ -d "$brew_prefix/share/zsh/site-functions" ] && [ -w "$brew_prefix/share/zsh/site-functions" ]; then
+          echo "$brew_prefix/share/zsh/site-functions/_gt"
+          return
+        fi
+      fi
+      echo "${HOME:-}/.zsh/completions/_gt"
+      ;;
     bash) echo "${HOME:-}/.local/share/bash-completion/completions/gt" ;;
     fish) echo "${HOME:-}/.config/fish/completions/gt.fish" ;;
     *) return 1 ;;
@@ -86,8 +95,14 @@ completion_path() {
 
 completion_note() {
   shell_name="$1"
+  path="$2"
   case "$shell_name" in
-    zsh) echo "ensure 'fpath+=(~/.zsh/completions)' is in your ~/.zshrc" ;;
+    zsh)
+      case "$path" in
+        */site-functions/_gt) echo "restart your shell (e.g. 'exec zsh') to load completions" ;;
+        *) echo "add 'fpath=(~/.zsh/completions \$fpath)' to ~/.zshrc before 'compinit', then restart your shell" ;;
+      esac
+      ;;
     bash) echo "restart your shell or source your bash completion setup" ;;
     fish) echo "restart fish or run 'source ~/.config/fish/config.fish'" ;;
   esac
@@ -101,7 +116,7 @@ install_completion() {
   mkdir -p "$(dirname "$path")"
   "$gt_bin" completion "$shell_name" >"$path"
   echo "gt $shell_name completions installed at $path"
-  note="$(completion_note "$shell_name")"
+  note="$(completion_note "$shell_name" "$path")"
   [ -z "$note" ] || echo "Note: $note"
 }
 
