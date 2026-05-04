@@ -163,6 +163,19 @@ func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, er
 	if opts.NoSSH {
 		return opts.RepoURL, nil
 	}
+
+	if host, owner, repo, ok := ParseSSHURL(opts.RepoURL); ok {
+		canonical := CanonicalHost(cfg.SSH, host)
+		alias, err := ResolveAlias(printer, cfg.SSH, canonical, opts.User)
+		if err != nil {
+			return "", err
+		}
+		if alias == host {
+			return opts.RepoURL, nil
+		}
+		return fmt.Sprintf("git@%s:%s/%s.git", alias, owner, repo), nil
+	}
+
 	parsed, isHTTPS, err := parseHTTPSRepo(opts.RepoURL)
 	if err != nil {
 		return "", err
@@ -187,6 +200,45 @@ func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, er
 		return sshURL, nil
 	}
 	return opts.RepoURL, nil
+}
+
+// ParseSSHURL parses git@host:owner/repo[.git] into its components.
+func ParseSSHURL(raw string) (host, owner, repo string, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "git@") {
+		return "", "", "", false
+	}
+	rest := strings.TrimPrefix(raw, "git@")
+	colonIdx := strings.Index(rest, ":")
+	if colonIdx <= 0 {
+		return "", "", "", false
+	}
+	host = rest[:colonIdx]
+	path := strings.TrimSuffix(rest[colonIdx+1:], ".git")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", false
+	}
+	return host, parts[0], parts[1], true
+}
+
+// CanonicalHost reverses the alias maps so a URL like git@github-personal:...
+// resolves back to its canonical host (e.g. github.com) for the next lookup.
+// Returns the input host unchanged if no mapping points to it.
+func CanonicalHost(ssh config.SSH, host string) string {
+	for h, alias := range ssh.HostAliases {
+		if alias == host {
+			return h
+		}
+	}
+	for _, hosts := range ssh.UserAliases {
+		for h, alias := range hosts {
+			if alias == host {
+				return h
+			}
+		}
+	}
+	return host
 }
 
 // HTTPToSSH converts an HTTPS repo URL into its SSH equivalent using a fixed
@@ -245,10 +297,11 @@ func parseHTTPSRepo(raw string) (repoParts, bool, error) {
 // optional --user flag. Resolution order:
 //
 //  1. user != "" and ssh.user_aliases[user][host] is set -> use it.
-//  2. user != "" but no entry -> warn and fall back to host_aliases[host].
+//  2. user != "" but no entry -> warn and fall back to host_aliases[host],
+//     then to ~/.ssh/config.
 //  3. user == "" and exactly one user has an entry for host -> use silently.
 //  4. user == "" and multiple users have entries -> interactive prompt.
-//  5. Otherwise -> host_aliases[host], or host itself if unmapped.
+//  5. Otherwise -> host_aliases[host], then ~/.ssh/config, else host itself.
 func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -262,7 +315,10 @@ func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, er
 			}
 		}
 		printer.Warn("user %q has no SSH alias configured for host %q; falling back to host_aliases", user, host)
-		return hostAliasOrHost(ssh.HostAliases, host), nil
+		if alias := strings.TrimSpace(ssh.HostAliases[host]); alias != "" {
+			return alias, nil
+		}
+		return resolveFromSSHConfig(printer, host)
 	}
 
 	var users []string
@@ -275,7 +331,10 @@ func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, er
 
 	switch len(users) {
 	case 0:
-		return hostAliasOrHost(ssh.HostAliases, host), nil
+		if alias := strings.TrimSpace(ssh.HostAliases[host]); alias != "" {
+			return alias, nil
+		}
+		return resolveFromSSHConfig(printer, host)
 	case 1:
 		return ssh.UserAliases[users[0]][host], nil
 	default:
@@ -283,11 +342,57 @@ func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, er
 	}
 }
 
-func hostAliasOrHost(aliases map[string]string, host string) string {
-	if alias := strings.TrimSpace(aliases[host]); alias != "" {
-		return alias
+func resolveFromSSHConfig(printer *ui.UI, host string) (string, error) {
+	entries, err := findSSHAliasesFor(host)
+	if err != nil {
+		printer.Warn("could not read %s: %v", SSHConfigPath, err)
+		return host, nil
 	}
-	return host
+	if len(entries) == 0 {
+		return host, nil
+	}
+	if len(entries) == 1 {
+		printer.Info("using SSH alias %q from ~/.ssh/config (Hostname matches %s)", entries[0].Alias, host)
+		return entries[0].Alias, nil
+	}
+	if !printer.Interactive {
+		printer.Warn("multiple SSH aliases for %s in ~/.ssh/config but no gt alias configured; not rewriting URL", host)
+		return host, nil
+	}
+	return promptForSSHConfigAlias(printer, host, entries)
+}
+
+func promptForSSHConfigAlias(printer *ui.UI, host string, entries []SSHHostEntry) (string, error) {
+	_, _ = fmt.Fprintf(printer.Out, "No gt alias configured for host %q.\n", host)
+	_, _ = fmt.Fprintf(printer.Out, "Found these SSH aliases in ~/.ssh/config:\n")
+	for i, e := range entries {
+		identity := e.Identity
+		if identity == "" {
+			identity = "<no IdentityFile>"
+		}
+		_, _ = fmt.Fprintf(printer.Out, "  [%d] %s  (IdentityFile: %s)\n", i+1, e.Alias, identity)
+	}
+	keepIdx := len(entries) + 1
+	_, _ = fmt.Fprintf(printer.Out, "  [%d] keep %s (no rewrite)\n", keepIdx, host)
+	answer, err := printer.Prompt(
+		fmt.Sprintf("Pick one [1-%d]", keepIdx),
+		"1",
+		false,
+		"add ssh.host_aliases or ssh.user_aliases to your gt config to skip this prompt",
+	)
+	if err != nil {
+		return "", err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(answer))
+	if err != nil || n < 1 || n > keepIdx {
+		return "", ui.Errorf(ui.ExitUser, "invalid choice %q", answer)
+	}
+	if n == keepIdx {
+		return host, nil
+	}
+	chosen := entries[n-1].Alias
+	printer.Info("To persist this, add the following under ssh: in your gt config:\n  host_aliases:\n    %s: %s", host, chosen)
+	return chosen, nil
 }
 
 func promptForUserAlias(printer *ui.UI, userAliases map[string]map[string]string, host string, users []string) (string, error) {

@@ -381,6 +381,194 @@ func TestResolveRepoURLNoSSHKeepsHTTPS(t *testing.T) {
 	}
 }
 
+func TestParseSSHURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		ok   bool
+		host string
+	}{
+		{name: "plain", raw: "git@github.com:pedromvgomes/gt.git", ok: true, host: "github.com"},
+		{name: "no_dot_git", raw: "git@github.com:pedromvgomes/gt", ok: true, host: "github.com"},
+		{name: "alias_host", raw: "git@github-personal:o/r.git", ok: true, host: "github-personal"},
+		{name: "https_rejected", raw: "https://github.com/o/r.git", ok: false},
+		{name: "missing_owner", raw: "git@github.com:gt.git", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, _, _, ok := clone.ParseSSHURL(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if ok && host != tt.host {
+				t.Fatalf("host = %q, want %q", host, tt.host)
+			}
+		})
+	}
+}
+
+func TestCanonicalHostReversesAliasMaps(t *testing.T) {
+	ssh := config.SSH{
+		HostAliases: map[string]string{"github.com": "github-personal"},
+		UserAliases: map[string]map[string]string{
+			"pedro-work": {"github.com": "github-work"},
+		},
+	}
+	if got := clone.CanonicalHost(ssh, "github-personal"); got != "github.com" {
+		t.Fatalf("CanonicalHost(github-personal) = %q, want github.com", got)
+	}
+	if got := clone.CanonicalHost(ssh, "github-work"); got != "github.com" {
+		t.Fatalf("CanonicalHost(github-work) = %q, want github.com", got)
+	}
+	if got := clone.CanonicalHost(ssh, "gitlab.com"); got != "gitlab.com" {
+		t.Fatalf("CanonicalHost(gitlab.com) = %q, want gitlab.com (unchanged)", got)
+	}
+}
+
+func TestResolveRepoURLRewritesSSHInput(t *testing.T) {
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	cfg := config.Default()
+	cfg.SSH.HostAliases = map[string]string{"github.com": "github-personal"}
+	got, err := clone.ResolveRepoURL(printer, cfg, clone.Options{
+		RepoURL: "git@github.com:wardnet/wardnet.git",
+	})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if want := "git@github-personal:wardnet/wardnet.git"; got != want {
+		t.Fatalf("ResolveRepoURL() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRepoURLLeavesAlreadyAliasedSSH(t *testing.T) {
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	cfg := config.Default()
+	cfg.SSH.HostAliases = map[string]string{"github.com": "github-personal"}
+	in := "git@github-personal:wardnet/wardnet.git"
+	got, err := clone.ResolveRepoURL(printer, cfg, clone.Options{RepoURL: in})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if got != in {
+		t.Fatalf("ResolveRepoURL() = %q, want unchanged %q", got, in)
+	}
+}
+
+func TestResolveRepoURLSSHInputUnchangedWhenNoAlias(t *testing.T) {
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	in := "git@github.com:wardnet/wardnet.git"
+	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{RepoURL: in})
+	if err != nil {
+		t.Fatalf("ResolveRepoURL() error = %v", err)
+	}
+	if got != in {
+		t.Fatalf("ResolveRepoURL() = %q, want unchanged %q", got, in)
+	}
+}
+
+func writeSSHConfig(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := clone.SSHConfigPath
+	clone.SSHConfigPath = path
+	t.Cleanup(func() { clone.SSHConfigPath = prev })
+}
+
+func TestResolveAliasFallsBackToSSHConfigSingleMatch(t *testing.T) {
+	writeSSHConfig(t, `
+Host github-personal
+  Hostname github.com
+  IdentityFile ~/.ssh/personal_key
+`)
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-personal" {
+		t.Fatalf("ResolveAlias() = %q, want github-personal", got)
+	}
+}
+
+func TestResolveAliasFallsBackToSSHConfigPromptsOnMultiple(t *testing.T) {
+	writeSSHConfig(t, `
+Host github.com
+  Hostname github.com
+  IdentityFile ~/.ssh/work_key
+
+Host github-personal
+  Hostname github.com
+  IdentityFile ~/.ssh/personal_key
+`)
+	printer := &ui.UI{In: strings.NewReader("2\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github-personal" {
+		t.Fatalf("ResolveAlias() = %q, want github-personal", got)
+	}
+}
+
+func TestResolveAliasFallsBackKeepHostOption(t *testing.T) {
+	writeSSHConfig(t, `
+Host github.com
+  Hostname github.com
+
+Host github-personal
+  Hostname github.com
+`)
+	printer := &ui.UI{In: strings.NewReader("3\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github.com" {
+		t.Fatalf("ResolveAlias() = %q, want github.com (kept)", got)
+	}
+}
+
+func TestResolveAliasFallsBackNonInteractiveMultipleKeepsHost(t *testing.T) {
+	writeSSHConfig(t, `
+Host github.com
+  Hostname github.com
+
+Host github-personal
+  Hostname github.com
+`)
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	if got != "github.com" {
+		t.Fatalf("ResolveAlias() = %q, want github.com (kept on non-interactive multi-match)", got)
+	}
+}
+
+func TestResolveAliasIgnoresWildcardSSHHosts(t *testing.T) {
+	writeSSHConfig(t, `
+Host *
+  ForwardAgent yes
+
+Host github.com
+  Hostname github.com
+`)
+	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	if err != nil {
+		t.Fatalf("ResolveAlias() error = %v", err)
+	}
+	// The only non-wildcard match has Hostname github.com == alias github.com,
+	// so the alias resolves to itself; returning host unchanged is correct.
+	if got != "github.com" {
+		t.Fatalf("ResolveAlias() = %q, want github.com", got)
+	}
+}
+
 func mustGetwd(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
