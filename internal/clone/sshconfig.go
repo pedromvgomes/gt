@@ -40,7 +40,7 @@ func findSSHAliasesFor(target string) ([]SSHHostEntry, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var (
 		entries []SSHHostEntry
