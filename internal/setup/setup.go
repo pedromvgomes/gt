@@ -19,12 +19,21 @@ const (
 	LayoutPlain = "plain"
 )
 
+// Setup phases, exposed to templates as GT_SETUP_PHASE so a single template can
+// branch on what triggered it.
+const (
+	PhaseClone    = "clone"    // run after 'gt clone' against the default branch
+	PhaseWorktree = "worktree" // run after 'gt wt add' against the new worktree
+	PhaseManual   = "manual"   // run on demand via 'gt setup'
+)
+
 // Context captures the resolved repository state used to build environment
 // variables for setup templates.
 type Context struct {
 	Root          string
 	WorkDir       string
 	Layout        string
+	Phase         string
 	DefaultBranch string
 	RepoOwner     string
 	RepoName      string
@@ -37,6 +46,7 @@ func (c Context) Vars() map[string]string {
 		"GT_ROOT":           c.Root,
 		"GT_WORKDIR":        c.WorkDir,
 		"GT_LAYOUT":         c.Layout,
+		"GT_SETUP_PHASE":    c.Phase,
 		"GT_DEFAULT_BRANCH": c.DefaultBranch,
 		"GT_REPO_OWNER":     c.RepoOwner,
 		"GT_REPO_NAME":      c.RepoName,
@@ -68,6 +78,35 @@ func FromBareClone(root, defaultBranch, repoURL string) (Context, error) {
 		Root:          absRoot,
 		WorkDir:       filepath.Join(absRoot, defaultBranch),
 		Layout:        LayoutBare,
+		Phase:         PhaseClone,
+		DefaultBranch: defaultBranch,
+		RepoOwner:     owner,
+		RepoName:      name,
+		RepoURL:       repoURL,
+	}, nil
+}
+
+// FromWorktree builds a Context for a freshly created worktree. Unlike
+// FromBareClone, WorkDir points at the new worktree itself, so repo-declared
+// setup templates run inside it.
+func FromWorktree(root, worktreePath, defaultBranch, repoURL string) (Context, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return Context{}, fmt.Errorf("resolve root path: %w", err)
+	}
+	absWorktree, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return Context{}, fmt.Errorf("resolve worktree path: %w", err)
+	}
+	owner, name, err := ParseRepoURL(repoURL)
+	if err != nil {
+		return Context{}, err
+	}
+	return Context{
+		Root:          absRoot,
+		WorkDir:       absWorktree,
+		Layout:        LayoutBare,
+		Phase:         PhaseWorktree,
 		DefaultBranch: defaultBranch,
 		RepoOwner:     owner,
 		RepoName:      name,
@@ -96,6 +135,7 @@ func detectBare(ctx context.Context, runner git.Runner, root string) (Context, e
 		Root:          root,
 		WorkDir:       filepath.Join(root, defaultBranch),
 		Layout:        LayoutBare,
+		Phase:         PhaseManual,
 		DefaultBranch: defaultBranch,
 		RepoOwner:     owner,
 		RepoName:      name,
@@ -119,6 +159,7 @@ func detectPlain(ctx context.Context, runner git.Runner, cwd string) (Context, e
 		Root:          root,
 		WorkDir:       root,
 		Layout:        LayoutPlain,
+		Phase:         PhaseManual,
 		DefaultBranch: defaultBranch,
 		RepoOwner:     owner,
 		RepoName:      name,

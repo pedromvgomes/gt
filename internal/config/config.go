@@ -300,7 +300,13 @@ auto_update:
 #
 # Available env vars in scripts and substituted into 'script:' paths:
 #   GT_ROOT, GT_WORKDIR, GT_LAYOUT (bare|plain),
+#   GT_SETUP_PHASE (clone|worktree|manual),
 #   GT_DEFAULT_BRANCH, GT_REPO_OWNER, GT_REPO_NAME, GT_REPO_URL.
+#
+# A repo can also commit its own .gt.yaml (in the repo tree, not at the gt
+# root) with a 'setup:' block. Those templates run unconditionally after
+# 'gt clone' (phase=clone, in the default-branch checkout) and after
+# 'gt wt add' (phase=worktree, in the new worktree).
 #
 # setup:
 #   templates:

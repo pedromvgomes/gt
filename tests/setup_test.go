@@ -349,3 +349,137 @@ func TestExecutePromptDeclines(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+
+func TestLoadRepoTemplatesMissingFile(t *testing.T) {
+	got, err := setup.LoadRepoTemplates(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadRepoTemplates() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("LoadRepoTemplates() = %v, want nil", got)
+	}
+}
+
+func TestLoadRepoTemplatesReadsSetup(t *testing.T) {
+	dir := t.TempDir()
+	body := "setup:\n  templates:\n    - name: agentic-toolkit\n      run: agtk sync\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gt.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := setup.LoadRepoTemplates(dir)
+	if err != nil {
+		t.Fatalf("LoadRepoTemplates() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "agentic-toolkit" || got[0].Run != "agtk sync" {
+		t.Fatalf("LoadRepoTemplates() = %+v", got)
+	}
+}
+
+func TestLoadRepoTemplatesValidates(t *testing.T) {
+	dir := t.TempDir()
+	// run and script are mutually exclusive -> ValidateSetup rejects.
+	body := "setup:\n  templates:\n    - name: bad\n      run: x\n      script: y\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gt.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setup.LoadRepoTemplates(dir); err == nil {
+		t.Fatal("LoadRepoTemplates() expected validation error, got nil")
+	}
+}
+
+func TestMergeTemplatesOverrideAndAppend(t *testing.T) {
+	global := []config.Template{{Name: "a", Run: "global-a"}, {Name: "b", Run: "global-b"}}
+	repo := []config.Template{{Name: "b", Run: "repo-b"}, {Name: "c", Run: "repo-c"}}
+	got := setup.MergeTemplates(global, repo)
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (%+v)", len(got), got)
+	}
+	if got[0].Run != "global-a" || got[1].Run != "repo-b" || got[2].Run != "repo-c" {
+		t.Fatalf("MergeTemplates() = %+v", got)
+	}
+}
+
+func TestFromWorktreeUsesWorktreeAsWorkDir(t *testing.T) {
+	root := t.TempDir()
+	wt := filepath.Join(root, "feature", "x")
+	c, err := setup.FromWorktree(root, wt, "main", "git@github.com:pedromvgomes/gt.git")
+	if err != nil {
+		t.Fatalf("FromWorktree error = %v", err)
+	}
+	if c.WorkDir != wt {
+		t.Fatalf("WorkDir = %q, want %q", c.WorkDir, wt)
+	}
+	if c.DefaultBranch != "main" || c.RepoName != "gt" {
+		t.Fatalf("context = %+v", c)
+	}
+}
+
+func TestSetupPhaseInContext(t *testing.T) {
+	root := t.TempDir()
+	clone, err := setup.FromBareClone(root, "main", "git@github.com:pedromvgomes/gt.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clone.Vars()["GT_SETUP_PHASE"] != setup.PhaseClone {
+		t.Fatalf("clone phase = %q, want %q", clone.Vars()["GT_SETUP_PHASE"], setup.PhaseClone)
+	}
+	wt, err := setup.FromWorktree(root, filepath.Join(root, "feature", "x"), "main", "git@github.com:pedromvgomes/gt.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wt.Vars()["GT_SETUP_PHASE"] != setup.PhaseWorktree {
+		t.Fatalf("worktree phase = %q, want %q", wt.Vars()["GT_SETUP_PHASE"], setup.PhaseWorktree)
+	}
+}
+
+func TestExecuteUntrustedNonInteractiveRefuses(t *testing.T) {
+	out := &bytes.Buffer{}
+	// Non-interactive (no In) + untrusted plan + no --yes must refuse to run.
+	printer := &ui.UI{Out: out, Err: out, Interactive: false}
+	plan := setup.Plan{
+		Templates: []config.Template{{Name: "x", Run: "echo hi"}},
+		Untrusted: true,
+	}
+	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{})
+	if err == nil {
+		t.Fatal("Execute() expected refusal error for untrusted non-interactive plan, got nil")
+	}
+	if !strings.Contains(err.Error(), "without a TTY") {
+		t.Fatalf("Execute() error = %v, want TTY refusal", err)
+	}
+}
+
+func TestExecuteUntrustedNonInteractiveYesRuns(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran.txt")
+	out := &bytes.Buffer{}
+	printer := &ui.UI{Out: out, Err: out, Interactive: false}
+	plan := setup.Plan{
+		Templates: []config.Template{{Name: "x", Run: "touch " + marker}},
+		Untrusted: true,
+	}
+	// --yes is the explicit opt-in that bypasses the TTY gate.
+	if err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{Yes: true}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected template to run with --yes: %v", err)
+	}
+}
+
+func TestExecuteTrustedNonInteractiveStillRuns(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran.txt")
+	out := &bytes.Buffer{}
+	printer := &ui.UI{Out: out, Err: out, Interactive: false}
+	// Trusted (global-config) plans keep auto-running without a TTY.
+	plan := setup.Plan{
+		Templates: []config.Template{{Name: "x", Run: "touch " + marker}},
+	}
+	if err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected trusted template to run: %v", err)
+	}
+}

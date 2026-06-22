@@ -403,6 +403,10 @@ func newWorktreeAddCommand(opts *options) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&addOpts.From, "from", "", "create the branch from this source branch")
+	cmd.Flags().BoolVar(&addOpts.NoSetup, "no-setup", false, "skip the repo's .gt.yaml setup templates")
+	cmd.Flags().BoolVar(&addOpts.YesSetup, "yes", false, "skip the setup confirmation prompt")
+	cmd.Flags().BoolVar(&addOpts.ShowSetup, "show-setup", false, "show full template bodies before prompting")
+	cmd.Flags().BoolVar(&addOpts.DryRunSetup, "dry-run-setup", false, "print the setup plan without executing it")
 	return cmd
 }
 

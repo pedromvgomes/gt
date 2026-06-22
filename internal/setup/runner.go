@@ -16,6 +16,10 @@ import (
 type Plan struct {
 	Templates []config.Template
 	Ctx       Context
+	// Untrusted marks plans that include templates declared by the cloned
+	// repository itself (its committed .gt.yaml) rather than the user's global
+	// config. Such plans are not auto-confirmed in non-interactive sessions.
+	Untrusted bool
 }
 
 // RunOptions controls how Execute behaves.
@@ -61,6 +65,13 @@ func Execute(ctx context.Context, printer *ui.UI, plan Plan, opts RunOptions) er
 	}
 
 	if !opts.Yes {
+		if plan.Untrusted && !printer.Interactive {
+			return ui.Errorf(ui.ExitUser,
+				"refusing to auto-run repo-declared setup templates without a TTY; re-run with --yes to confirm")
+		}
+		if plan.Untrusted {
+			printer.Warn("These setup templates are declared by the repository's .gt.yaml and will run shell commands.")
+		}
 		ok, err := promptConfirm(printer, templates, plan.Ctx.Vars())
 		if err != nil {
 			return err
