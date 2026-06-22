@@ -11,6 +11,7 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
+	"github.com/pedromvgomes/gt/internal/setup"
 	"github.com/pedromvgomes/gt/internal/ui"
 )
 
@@ -18,6 +19,11 @@ type AddOptions struct {
 	Spec string
 	From string
 	CWD  string
+
+	NoSetup     bool
+	YesSetup    bool
+	ShowSetup   bool
+	DryRunSetup bool
 }
 
 type RemoveOptions struct {
@@ -61,6 +67,13 @@ func Add(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		return fmt.Errorf("create worktree type directory: %w", err)
 	}
 
+	if err := createWorktree(ctx, runner, printer, root, worktreePath, branch, opts); err != nil {
+		return err
+	}
+	return runWorktreeSetup(ctx, runner, printer, root, worktreePath, opts)
+}
+
+func createWorktree(ctx context.Context, runner git.Runner, printer *ui.UI, root, worktreePath, branch string, opts AddOptions) error {
 	if exists, err := localBranchExists(ctx, runner, root, branch); err != nil {
 		return err
 	} else if exists {
@@ -94,6 +107,61 @@ func Add(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		return err
 	}
 	return addFromSource(ctx, runner, printer, root, worktreePath, branch, source, true)
+}
+
+// runWorktreeSetup runs any setup templates the repo declares in the new
+// worktree's committed .gt.yaml, executing them inside that worktree.
+func runWorktreeSetup(ctx context.Context, runner git.Runner, printer *ui.UI, root, worktreePath string, opts AddOptions) error {
+	if opts.NoSetup {
+		return nil
+	}
+	templates, err := setup.LoadRepoTemplates(worktreePath)
+	if err != nil {
+		return err
+	}
+	if len(templates) == 0 {
+		return nil
+	}
+	defBranch, err := localDefaultBranch(ctx, runner, root)
+	if err != nil {
+		return err
+	}
+	rcontext, err := setup.FromWorktree(root, worktreePath, defBranch, readOriginURL(ctx, runner, root))
+	if err != nil {
+		return err
+	}
+	// Templates come from the cloned repo's committed .gt.yaml, so they are
+	// untrusted: Execute refuses to auto-run them without a TTY unless --yes.
+	plan := setup.Plan{Templates: templates, Ctx: rcontext, Untrusted: true}
+	return setup.Execute(ctx, printer, plan, setup.RunOptions{
+		Yes:    opts.YesSetup,
+		Show:   opts.ShowSetup,
+		DryRun: opts.DryRunSetup,
+	})
+}
+
+func readOriginURL(ctx context.Context, runner git.Runner, root string) string {
+	if res, err := runner.Run(ctx, "", gitDir(root), "config", "--get", "remote.origin.url"); err == nil {
+		return strings.TrimSpace(res.Stdout)
+	}
+	return ""
+}
+
+// localDefaultBranch resolves the default branch from the local origin/HEAD
+// symref that clone and fetch maintain, avoiding a 'git remote show origin'
+// network round-trip. It falls back to the networked lookup only when that
+// ref is absent.
+func localDefaultBranch(ctx context.Context, runner git.Runner, root string) (string, error) {
+	if res, err := runner.Run(ctx, "", gitDir(root), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		ref := strings.TrimSpace(res.Stdout)
+		if idx := strings.LastIndex(ref, "/"); idx >= 0 {
+			ref = ref[idx+1:]
+		}
+		if ref != "" {
+			return ref, nil
+		}
+	}
+	return defaultBranch(ctx, runner, root)
 }
 
 func Remove(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, opts RemoveOptions) error {

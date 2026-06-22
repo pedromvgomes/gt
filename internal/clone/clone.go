@@ -132,7 +132,7 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		}
 	}
 
-	if !opts.NoSetup && len(cfg.Setup.Templates) > 0 {
+	if !opts.NoSetup {
 		rcontext, err := setup.FromBareClone(folder, defaultBranch, repoURL)
 		if err != nil {
 			return err
@@ -144,10 +144,22 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		if err != nil {
 			return err
 		}
+		// Templates committed in the repo's own .gt.yaml (now checked out on the
+		// default branch) run unconditionally. Skip them when --setup names an
+		// explicit subset, which selects from the global config only.
+		untrusted := false
+		if len(opts.SetupNames) == 0 {
+			repoTemplates, err := setup.LoadRepoTemplates(rcontext.WorkDir)
+			if err != nil {
+				return err
+			}
+			untrusted = len(repoTemplates) > 0
+			templates = setup.MergeTemplates(templates, repoTemplates)
+		}
 		if len(templates) == 0 {
 			return nil
 		}
-		plan := setup.Plan{Templates: templates, Ctx: rcontext}
+		plan := setup.Plan{Templates: templates, Ctx: rcontext, Untrusted: untrusted}
 		if err := setup.Execute(ctx, printer, plan, setup.RunOptions{
 			Yes:    opts.YesSetup,
 			Show:   opts.ShowSetup,
