@@ -83,19 +83,52 @@ func TestWorktreeAddExistingRemoteBranch(t *testing.T) {
 	}
 }
 
-func TestWorktreeRemovePromptsForForce(t *testing.T) {
+// dirtyStatusKey is the fake-runner key for the porcelain status probe Remove
+// runs against a worktree path.
+func dirtyStatusKey(path string) string {
+	return strings.Join([]string{"-C", path, "status", "--porcelain"}, " ")
+}
+
+func TestWorktreeRemoveCleanRemovesWithoutPrompt(t *testing.T) {
 	root := makeManagedRoot(t)
-	if err := os.MkdirAll(filepath.Join(root, "feature", "stale"), 0o755); err != nil {
+	path := filepath.Join(root, "feature", "clean")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeGitRunner{} // empty status response => clean
+	var out bytes.Buffer
+	// A nil reader proves no prompt is read for a clean worktree.
+	printer := &ui.UI{Out: &out, Err: ioDiscard{}, Interactive: true}
+
+	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+		Name: "clean",
+		CWD:  root,
+	})
+	if err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	want := []string{gitDir(root), "worktree", "remove", path}
+	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("last call = %#v, want %#v", got, want)
+	}
+}
+
+func TestWorktreeRemoveDirtyConfirmedForces(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "stale")
+	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeGitRunner{
+		responses: map[string]git.Result{
+			dirtyStatusKey(path): {Stdout: " M file.go\n"},
+		},
 		errs: map[string]error{
-			gitDirKey(root, "worktree", "remove", filepath.Join(root, "feature", "stale")): errors.New("dirty"),
-			gitDirKey(root, "branch", "-d", "feature/stale"):                               errors.New("unmerged"),
+			gitDirKey(root, "branch", "-d", "feature/stale"): errors.New("unmerged"),
 		},
 	}
 	var out bytes.Buffer
-	printer := &ui.UI{In: strings.NewReader("y\ny\n"), Out: &out, Err: ioDiscard{}, Interactive: true}
+	printer := &ui.UI{In: strings.NewReader("y\n"), Out: &out, Err: ioDiscard{}, Interactive: true}
 
 	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
 		Name:         "stale",
@@ -105,16 +138,98 @@ func TestWorktreeRemovePromptsForForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Remove() error = %v", err)
 	}
-
+	// One confirmation covers both the dirty removal and the unmerged branch,
+	// so the branch is force-deleted without a second `branch -d` attempt.
 	wantSuffix := [][]string{
-		{gitDir(root), "worktree", "remove", "--force", filepath.Join(root, "feature", "stale")},
+		{gitDir(root), "worktree", "remove", "--force", path},
 		{gitDir(root), "show-ref", "--verify", "--quiet", "refs/heads/feature/stale"},
-		{gitDir(root), "branch", "-d", "feature/stale"},
 		{gitDir(root), "branch", "-D", "feature/stale"},
 	}
-	gotSuffix := runner.calls[len(runner.calls)-4:]
+	gotSuffix := runner.calls[len(runner.calls)-3:]
 	if !reflect.DeepEqual(gotSuffix, wantSuffix) {
 		t.Fatalf("call suffix = %#v, want %#v", gotSuffix, wantSuffix)
+	}
+}
+
+func TestWorktreeRemoveDirtyDeclinedAborts(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "stale")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeGitRunner{responses: map[string]git.Result{
+		dirtyStatusKey(path): {Stdout: "?? new.go\n"},
+	}}
+	var out bytes.Buffer
+	// EOF (empty reader) is treated as "no".
+	printer := &ui.UI{In: strings.NewReader("n\n"), Out: &out, Err: ioDiscard{}, Interactive: true}
+
+	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+		Name: "stale",
+		CWD:  root,
+	})
+	if err == nil {
+		t.Fatal("Remove() succeeded, want error after declining")
+	}
+	for _, call := range runner.calls {
+		if len(call) >= 3 && call[1] == "worktree" && call[2] == "remove" {
+			t.Fatalf("declined removal still ran: %#v", call)
+		}
+	}
+}
+
+func TestWorktreeRemoveDirtyForcedSkipsPrompt(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "stale")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No status response is configured: --force must skip the dirty probe.
+	runner := &fakeGitRunner{}
+	var out bytes.Buffer
+	printer := &ui.UI{Out: &out, Err: ioDiscard{}, Interactive: true}
+
+	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+		Name:  "stale",
+		Force: true,
+		CWD:   root,
+	})
+	if err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	for _, call := range runner.calls {
+		if len(call) >= 1 && call[0] == "-C" {
+			t.Fatalf("--force still probed status: %#v", call)
+		}
+	}
+	want := []string{gitDir(root), "worktree", "remove", "--force", path}
+	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("last call = %#v, want %#v", got, want)
+	}
+}
+
+func TestWorktreeRemoveDirtyNonInteractiveAborts(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "stale")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeGitRunner{responses: map[string]git.Result{
+		dirtyStatusKey(path): {Stdout: " M file.go\n"},
+	}}
+	printer := quietUI() // Interactive: false
+
+	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+		Name: "stale",
+		CWD:  root,
+	})
+	if err == nil {
+		t.Fatal("Remove() succeeded, want error in non-interactive mode without --force")
+	}
+	for _, call := range runner.calls {
+		if len(call) >= 3 && call[1] == "worktree" && call[2] == "remove" {
+			t.Fatalf("non-interactive removal still ran: %#v", call)
+		}
 	}
 }
 

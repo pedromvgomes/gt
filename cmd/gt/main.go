@@ -413,7 +413,7 @@ func newWorktreeAddCommand(opts *options) *cobra.Command {
 func newWorktreeRemoveCommand(opts *options) *cobra.Command {
 	var rmOpts worktree.RemoveOptions
 	cmd := &cobra.Command{
-		Use:     "rm [--branch] <name>",
+		Use:     "rm [--branch] [--force] <name>",
 		Aliases: []string{"remove", "delete"},
 		Short:   "Remove a worktree by name",
 		Args: func(_ *cobra.Command, args []string) error {
@@ -433,6 +433,7 @@ func newWorktreeRemoveCommand(opts *options) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&rmOpts.DeleteBranch, "branch", "b", false, "also delete the local branch")
+	cmd.Flags().BoolVarP(&rmOpts.Force, "force", "f", false, "remove without prompting, even with uncommitted changes")
 	return cmd
 }
 

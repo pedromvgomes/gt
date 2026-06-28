@@ -45,19 +45,5 @@ func LoadRepoTemplates(dir string) ([]config.Template, error) {
 // (the global entry keeps its position; its body is replaced). Order is
 // preserved: global templates first, then repo templates not already present.
 func MergeTemplates(global, repo []config.Template) []config.Template {
-	out := make([]config.Template, len(global))
-	copy(out, global)
-	index := make(map[string]int, len(out))
-	for i, t := range out {
-		index[t.Name] = i
-	}
-	for _, t := range repo {
-		if i, ok := index[t.Name]; ok {
-			out[i] = t
-			continue
-		}
-		index[t.Name] = len(out)
-		out = append(out, t)
-	}
-	return out
+	return config.MergeTemplates(global, repo)
 }

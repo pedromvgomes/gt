@@ -29,6 +29,7 @@ type AddOptions struct {
 type RemoveOptions struct {
 	Name         string
 	DeleteBranch bool
+	Force        bool
 	CWD          string
 }
 
@@ -178,43 +179,106 @@ func Remove(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.C
 	}
 	branch := typ + "/" + opts.Name
 
-	if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", path); err != nil {
-		answer, promptErr := printer.Prompt("Force remove? [y/N]", "N", false, "")
-		if promptErr != nil {
-			return promptErr
-		}
-		if !isYes(answer) {
-			return ui.Errorf(ui.ExitGeneral, "worktree removal cancelled")
-		}
-		if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", "--force", path); err != nil {
+	// Decide whether we are allowed to force-remove. --force skips the dirty
+	// check entirely; otherwise a worktree with uncommitted changes needs an
+	// explicit confirmation (interactive) or aborts (non-interactive).
+	force := opts.Force
+	if !force {
+		dirty, err := worktreeDirty(ctx, runner, path)
+		if err != nil {
 			return err
+		}
+		if dirty {
+			if !printer.Interactive {
+				return ui.Errorf(ui.ExitUser,
+					"worktree %q has uncommitted changes; re-run with --force to delete it and lose them", opts.Name)
+			}
+			answer, promptErr := printer.Prompt(
+				fmt.Sprintf("Worktree %q has uncommitted changes. Force delete and lose them? [y/N]", opts.Name),
+				"N", false, "")
+			if promptErr != nil {
+				return promptErr
+			}
+			if !isYes(answer) {
+				return ui.Errorf(ui.ExitGeneral, "worktree removal cancelled")
+			}
+			force = true
 		}
 	}
 
+	if err := removeWorktree(ctx, runner, root, path, force); err != nil {
+		return err
+	}
+
 	if opts.DeleteBranch {
-		if exists, err := localBranchExists(ctx, runner, root, branch); err != nil {
+		if err := deleteBranch(ctx, runner, printer, root, branch, force); err != nil {
 			return err
-		} else if exists {
-			if _, err := runner.Run(ctx, "", gitDir(root), "branch", "-d", branch); err != nil {
-				answer, promptErr := printer.Prompt("Force delete? [y/N]", "N", false, "")
-				if promptErr != nil {
-					return promptErr
-				}
-				if isYes(answer) {
-					if _, err := runner.Run(ctx, "", gitDir(root), "branch", "-D", branch); err != nil {
-						return err
-					}
-				} else {
-					printer.Warn("Branch %q was not deleted", branch)
-				}
-			}
-		} else {
-			printer.Warn("Branch %q does not exist locally", branch)
 		}
 	}
 
 	printer.Success("Worktree %q removed", opts.Name)
 	return nil
+}
+
+// worktreeDirty reports whether the worktree at path has uncommitted changes.
+// "Dirty" is any non-empty `git status --porcelain` output, which covers
+// staged, unstaged, AND untracked files.
+func worktreeDirty(ctx context.Context, runner git.Runner, path string) (bool, error) {
+	res, err := runner.Run(ctx, "", "-C", path, "status", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("check worktree status: %w", err)
+	}
+	return strings.TrimSpace(res.Stdout) != "", nil
+}
+
+// removeWorktree runs `git worktree remove`. When force is set it passes
+// --force so git does not re-refuse a dirty worktree, retrying with a second
+// --force for states git only releases under a double force (locked worktrees,
+// worktrees containing a submodule).
+func removeWorktree(ctx context.Context, runner git.Runner, root, path string, force bool) error {
+	if !force {
+		_, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", path)
+		return err
+	}
+	if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", "--force", path); err != nil {
+		if _, err2 := runner.Run(ctx, "", gitDir(root), "worktree", "remove", "--force", "--force", path); err2 != nil {
+			return err2
+		}
+	}
+	return nil
+}
+
+// deleteBranch deletes the local branch backing a removed worktree. When force
+// is set (via --force or a confirmed dirty removal) it deletes unconditionally
+// with `branch -D`, keeping a single confirmation for the whole operation.
+// Otherwise it tries a safe `branch -d` and, only if that fails on an unmerged
+// branch, asks for a separate confirmation before forcing.
+func deleteBranch(ctx context.Context, runner git.Runner, printer *ui.UI, root, branch string, force bool) error {
+	exists, err := localBranchExists(ctx, runner, root, branch)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		printer.Warn("Branch %q does not exist locally", branch)
+		return nil
+	}
+	if force {
+		_, err := runner.Run(ctx, "", gitDir(root), "branch", "-D", branch)
+		return err
+	}
+	if _, err := runner.Run(ctx, "", gitDir(root), "branch", "-d", branch); err == nil {
+		return nil
+	}
+	answer, promptErr := printer.Prompt(fmt.Sprintf("Branch %q is not fully merged. Force delete? [y/N]", branch), "N", false, "")
+	if promptErr != nil {
+		return promptErr
+	}
+	if !isYes(answer) {
+		printer.Warn("Branch %q was not deleted", branch)
+		return nil
+	}
+	_, err = runner.Run(ctx, "", gitDir(root), "branch", "-D", branch)
+	return err
 }
 
 func List(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, cwd string) error {
