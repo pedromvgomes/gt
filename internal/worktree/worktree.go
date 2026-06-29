@@ -34,6 +34,7 @@ type RemoveOptions struct {
 
 type NukeOptions struct {
 	DeleteBranches bool
+	Force          bool
 	CWD            string
 }
 
@@ -251,8 +252,12 @@ func Nuke(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Con
 	removed := 0
 	branches := make([]string, 0, len(items))
 	for _, item := range items {
-		if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", item.Path); err != nil {
-			printer.Warn("Failed to remove worktree at %s", item.Path)
+		if err := nukeRemoveWorktree(ctx, runner, root, item.Path, opts.Force); err != nil {
+			if opts.Force {
+				printer.Warn("Failed to remove worktree at %s", item.Path)
+			} else {
+				printer.Warn("Failed to remove worktree at %s (re-run with --force to discard uncommitted changes)", item.Path)
+			}
 			continue
 		}
 		removed++
@@ -273,6 +278,24 @@ func Nuke(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Con
 		}
 	}
 	printer.Success("Removed %d worktree(s)", removed)
+	return nil
+}
+
+// nukeRemoveWorktree removes a single worktree during a nuke. Without force it
+// runs a plain `git worktree remove`, which git refuses for dirty worktrees.
+// With force it passes --force (to discard uncommitted changes), retrying with
+// a second --force for states git only releases under a double force (locked
+// worktrees, worktrees containing a submodule).
+func nukeRemoveWorktree(ctx context.Context, runner git.Runner, root, path string, force bool) error {
+	if !force {
+		_, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", path)
+		return err
+	}
+	if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", "--force", path); err != nil {
+		if _, err2 := runner.Run(ctx, "", gitDir(root), "worktree", "remove", "--force", "--force", path); err2 != nil {
+			return err2
+		}
+	}
 	return nil
 }
 

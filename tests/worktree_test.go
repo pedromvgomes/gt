@@ -162,6 +162,67 @@ func TestWorktreeNukeDeletesBranchesWhenRequested(t *testing.T) {
 	}
 }
 
+func TestWorktreeNukeForceUsesForceRemoval(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "one")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeGitRunner{}
+
+	err := worktree.Nuke(context.Background(), runner, quietUI(), testConfig(), worktree.NukeOptions{
+		Force: true,
+		CWD:   root,
+	})
+	if err != nil {
+		t.Fatalf("Nuke() error = %v", err)
+	}
+	want := []string{gitDir(root), "worktree", "remove", "--force", path}
+	found := false
+	for _, call := range runner.calls {
+		if reflect.DeepEqual(call, want) {
+			found = true
+		}
+		if reflect.DeepEqual(call, []string{gitDir(root), "worktree", "remove", path}) {
+			t.Fatalf("force nuke issued a non-force remove: %#v", call)
+		}
+	}
+	if !found {
+		t.Fatalf("force remove not issued; calls = %#v", runner.calls)
+	}
+}
+
+func TestWorktreeNukeSkipsDirtyWithoutForce(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "one")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeGitRunner{errs: map[string]error{
+		gitDirKey(root, "worktree", "remove", path): errors.New("worktree is dirty"),
+	}}
+	var out bytes.Buffer
+	printer := &ui.UI{Out: &out, Err: &out}
+
+	err := worktree.Nuke(context.Background(), runner, printer, testConfig(), worktree.NukeOptions{
+		CWD: root,
+	})
+	if err != nil {
+		t.Fatalf("Nuke() error = %v", err)
+	}
+	for _, call := range runner.calls {
+		if len(call) > 0 && reflect.DeepEqual(call[1:], []string{"worktree", "remove", "--force", path}) {
+			t.Fatalf("non-force nuke issued a force remove: %#v", call)
+		}
+	}
+	if !strings.Contains(out.String(), "--force") {
+		t.Fatalf("expected hint to re-run with --force, output = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Removed 0 worktree(s)") {
+		t.Fatalf("expected 0 worktrees removed, output = %q", out.String())
+	}
+}
+
 func TestPruneBranchesDryRunSkipsProtectedAndActive(t *testing.T) {
 	root := makeManagedRoot(t)
 	runner := &fakeGitRunner{responses: map[string]git.Result{
