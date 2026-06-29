@@ -455,7 +455,7 @@ func newWorktreeListCommand(opts *options) *cobra.Command {
 func newWorktreeNukeCommand(opts *options) *cobra.Command {
 	var nukeOpts worktree.NukeOptions
 	cmd := &cobra.Command{
-		Use:   "nuke [--branches]",
+		Use:   "nuke [--branches] [--force]",
 		Short: "Remove all typed worktrees",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -468,6 +468,7 @@ func newWorktreeNukeCommand(opts *options) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&nukeOpts.DeleteBranches, "branches", "b", false, "also delete corresponding local branches")
+	cmd.Flags().BoolVarP(&nukeOpts.Force, "force", "f", false, "force removal, discarding uncommitted changes in dirty worktrees")
 	return cmd
 }
 

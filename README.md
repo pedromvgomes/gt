@@ -80,9 +80,9 @@ Before removing, gt checks whether the worktree has uncommitted changes (any `gi
 
 List typed worktrees and the scratch worktree, including the latest commit summary for each.
 
-### `gt wt nuke [--branches]`
+### `gt wt nuke [--branches] [--force]`
 
-Remove all typed worktrees. With `--branches`/`-b`, force-delete the corresponding local branches.
+Remove all typed worktrees. Worktrees with uncommitted changes are skipped with a warning unless `--force`/`-f` is given, which removes them and discards those changes. With `--branches`/`-b`, force-delete the corresponding local branches.
 
 ### `gt wt prune-branches [--dry-run]`
 
