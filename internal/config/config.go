@@ -73,9 +73,6 @@ func Load(cwd string) (Config, error) {
 			if err != nil {
 				return Config{}, err
 			}
-			if len(repoCfg.Setup.Templates) > 0 {
-				return Config{}, fmt.Errorf("per-repo config %s must not define setup templates; declare them in the global config only", repoPath)
-			}
 			cfg = Merge(cfg, repoCfg)
 		} else if !os.IsNotExist(err) {
 			return Config{}, fmt.Errorf("stat per-repo config: %w", err)
@@ -115,7 +112,33 @@ func Merge(base, override Config) Config {
 	if base.SSH.UserAliases == nil {
 		base.SSH.UserAliases = map[string]map[string]string{}
 	}
+	base.Setup.Templates = MergeTemplates(base.Setup.Templates, override.Setup.Templates)
 	return base
+}
+
+// MergeTemplates layers override templates on top of base. A template in
+// override that shares a name with one in base replaces it in place (the base
+// entry keeps its position; its body is replaced). Templates whose names are
+// not already present are appended in order. base templates first, then the
+// new override templates. This is the precedence used both when a per-repo
+// .gt.yaml extends the global config and when a repo's committed .gt.yaml
+// extends the resolved config.
+func MergeTemplates(base, override []Template) []Template {
+	out := make([]Template, len(base))
+	copy(out, base)
+	index := make(map[string]int, len(out))
+	for i, t := range out {
+		index[t.Name] = i
+	}
+	for _, t := range override {
+		if i, ok := index[t.Name]; ok {
+			out[i] = t
+			continue
+		}
+		index[t.Name] = len(out)
+		out = append(out, t)
+	}
+	return out
 }
 
 func Validate(cfg Config) error {

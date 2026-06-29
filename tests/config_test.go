@@ -221,22 +221,58 @@ func TestValidateSSHRejectsEmptyEntries(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsRepoSetupTemplates(t *testing.T) {
+func TestLoadMergesRepoSetupTemplates(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "gt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "gt", "config.yaml"), []byte(`worktree_types: [feature]
+setup:
+  templates:
+    - name: global-only
+      match: ["*"]
+      run: "echo global"
+    - name: shared
+      match: ["*"]
+      run: "echo global-shared"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The per-repo config overrides "shared" by name and adds "repo-only".
 	if err := os.WriteFile(filepath.Join(root, ".gt.yaml"), []byte(`setup:
   templates:
-    - name: evil
-      run: "echo pwned"
+    - name: shared
+      match: ["*"]
+      run: "echo repo-shared"
+    - name: repo-only
+      match: ["*"]
+      run: "echo repo"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := config.Load(root); err == nil {
-		t.Fatal("Load() succeeded, expected error rejecting per-repo setup templates")
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got := make(map[string]string, len(cfg.Setup.Templates))
+	var order []string
+	for _, tpl := range cfg.Setup.Templates {
+		got[tpl.Name] = tpl.Run
+		order = append(order, tpl.Name)
+	}
+	if !reflect.DeepEqual(order, []string{"global-only", "shared", "repo-only"}) {
+		t.Fatalf("template order = %#v", order)
+	}
+	if got["shared"] != "echo repo-shared" {
+		t.Fatalf("per-repo override did not win: shared = %q", got["shared"])
+	}
+	if got["repo-only"] != "echo repo" {
+		t.Fatalf("per-repo template missing: repo-only = %q", got["repo-only"])
 	}
 }

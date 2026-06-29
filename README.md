@@ -64,9 +64,17 @@ Flags:
 
 Create a typed worktree and branch, for example `gt wt add feature/new-thing --from main`.
 
-### `gt wt rm [--branch] <name>`
+### `gt wt rm [--branch] [--force] <name>`
 
 Remove a worktree by its short name. With `--branch`/`-b`, also delete the matching local branch.
+
+Before removing, gt checks whether the worktree has uncommitted changes (any `git status --porcelain` output — staged, unstaged, or untracked):
+
+- A **clean** worktree is removed without prompting.
+- A **dirty** worktree prompts for confirmation in an interactive terminal (`Force delete and lose them? [y/N]`); answering no aborts with a non-zero exit and leaves the worktree untouched.
+- In a non-interactive session (no TTY) a dirty worktree aborts with an error instead of prompting — pass `--force`/`-f` to remove it anyway.
+
+`--force`/`-f` skips the dirty check entirely and removes without prompting (use it in scripts and CI). A confirmed or forced removal also covers `--branch` deletion of an unmerged branch, so you are asked at most once.
 
 ### `gt wt list`
 
@@ -127,7 +135,7 @@ setup:
       script: ${HOME}/.config/gt/setup-scripts/golang-extras.sh
 ```
 
-Per-repo overrides live at `<gt-managed-root>/.gt.yaml` and override global config per key. Per-repo configs **may not** declare setup templates — only the global config can. This keeps the trust model simple: setup commands live where you put them.
+Per-repo overrides live at `<gt-managed-root>/.gt.yaml` and override global config per key. A per-repo config **may** declare its own `setup.templates`; they are merged on top of the global templates by name — a per-repo template that reuses a global template's `name` replaces it in place, and new names are appended after the global ones. This file lives at your gt-managed root (not committed inside the repo), so its templates are as trusted as the ones in your global config.
 
 ### Setup templates
 
@@ -146,7 +154,7 @@ Templates run after `gt clone` and on demand via `gt setup`. They are simple she
 
 ### Security model
 
-Templates live in your global config and run as you with your environment. Treat editing this file the same way you treat editing your shell profile. Per-repo configs cannot inject templates, and `gt setup` will not silently run anything you have not added to your config.
+Templates in your global config and in a per-repo `<gt-managed-root>/.gt.yaml` run as you with your environment. Both files live on your machine where you put them, so treat editing them the same way you treat editing your shell profile. Templates a repository ships in its own committed `.gt.yaml` are different: they are untrusted, gated behind an explicit confirmation, and never auto-run without a TTY unless you pass `--yes`. `gt setup` will not silently run anything you have not added to a config you control.
 
 ## Coding-agent integration
 
