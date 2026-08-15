@@ -56,15 +56,96 @@ var dependabotPrefix = map[string]string{
 
 const defaultDependabotPrefix = "build"
 
+// Mode is who owns a rendered file's contents after it first appears.
+type Mode string
+
+const (
+	// ModeManaged means gt owns the content: any difference is drift, and sync
+	// rewrites the file to match.
+	ModeManaged Mode = "managed"
+	// ModeScaffold means gt creates the file once and the repository owns it
+	// from then on — pipeline stages are the repo's own work. gt never
+	// rewrites a scaffold and never deletes one, because doing either would
+	// destroy code gt did not write. Existence is the entire contract.
+	ModeScaffold Mode = "scaffold"
+)
+
 // File is one rendered governance file.
 type File struct {
 	// Path is repo-root-relative, always slash-separated.
 	Path string
-	// Content is the fully rendered bytes.
+	// Content is the fully rendered bytes. For a scaffold this is only ever
+	// the initial stub, used when the file does not yet exist.
 	Content []byte
 	// Workflow marks files under .github/workflows/, which GITHUB_TOKEN
 	// cannot write. Sync skips these in CI and defers them to a local run.
 	Workflow bool
+	// Mode decides whether drift is meaningful for this file.
+	Mode Mode
+}
+
+// fileSpec describes something gt can render. It is the single registry both
+// rendering and orphan detection read from: keeping two lists in sync by hand
+// is how a managed path silently stops being orphan-checked, or worse, how a
+// scaffold gets treated as managed and overwritten.
+type fileSpec struct {
+	key      string
+	tmpl     string
+	path     string
+	workflow bool
+	mode     Mode
+	// wanted reports whether this spec asks for the file at all. Most consult
+	// files:, but dependabot.yml is implied by declaring an ecosystem.
+	wanted func(repospec.Spec) bool
+}
+
+func wantsKey(key string) func(repospec.Spec) bool {
+	return func(s repospec.Spec) bool { return s.WantsFile(key) }
+}
+
+// registry is every file gt knows how to render, in one place.
+func registry() []fileSpec {
+	return []fileSpec{
+		{
+			key:  "dependabot",
+			tmpl: "templates/dependabot.yml.tmpl",
+			path: ".github/dependabot.yml",
+			mode: ModeManaged,
+			// Declaring an ecosystem is the opt-in; this one is not in files:.
+			wanted: func(s repospec.Spec) bool { return len(s.Dependabot) > 0 },
+		},
+		{
+			key: "gate", tmpl: "templates/workflows/gate.yml.tmpl",
+			path: ".github/workflows/gate.yml", workflow: true, mode: ModeManaged,
+			wanted: wantsKey("gate"),
+		},
+		{
+			key: "sync", tmpl: "templates/workflows/gt-sync.yml.tmpl",
+			path: ".github/workflows/gt-sync.yml", workflow: true, mode: ModeManaged,
+			wanted: wantsKey("sync"),
+		},
+		{
+			key: "dependabot-auto-merge", tmpl: "templates/workflows/dependabot-auto-merge.yml.tmpl",
+			path: ".github/workflows/dependabot-auto-merge.yml", workflow: true, mode: ModeManaged,
+			// A caller for a disabled feature would be a workflow that exists
+			// only to do nothing on a schedule.
+			wanted: func(s repospec.Spec) bool {
+				return s.WantsFile("dependabot-auto-merge") && s.DependabotAutoMerge.Enabled
+			},
+		},
+		{
+			key: "codeowners", tmpl: "templates/codeowners.tmpl",
+			path: ".github/CODEOWNERS", mode: ModeManaged, wanted: wantsKey("codeowners"),
+		},
+		{
+			key: "editorconfig", tmpl: "templates/editorconfig.tmpl",
+			path: ".editorconfig", mode: ModeManaged, wanted: wantsKey("editorconfig"),
+		},
+		{
+			key: "pr-template", tmpl: "templates/pr-template.tmpl",
+			path: ".github/pull_request_template.md", mode: ModeManaged, wanted: wantsKey("pr-template"),
+		},
+	}
 }
 
 // Input is everything the templates need beyond the spec itself.
@@ -120,43 +201,17 @@ func Render(in Input) ([]File, error) {
 	data := buildData(in)
 
 	var files []File
-
-	// dependabot.yml is rendered whenever any ecosystem is declared, and is not
-	// gated on files: — declaring an ecosystem is the opt-in.
-	if len(in.Spec.Dependabot) > 0 {
-		content, err := renderTemplate("templates/dependabot.yml.tmpl", data)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, File{Path: ".github/dependabot.yml", Content: content})
-	}
-
-	for _, f := range []struct {
-		key      string
-		tmpl     string
-		path     string
-		workflow bool
-	}{
-		{"gate", "templates/workflows/gate.yml.tmpl", ".github/workflows/gate.yml", true},
-		{"sync", "templates/workflows/gt-sync.yml.tmpl", ".github/workflows/gt-sync.yml", true},
-		{"dependabot-auto-merge", "templates/workflows/dependabot-auto-merge.yml.tmpl", ".github/workflows/dependabot-auto-merge.yml", true},
-		{"codeowners", "templates/codeowners.tmpl", ".github/CODEOWNERS", false},
-		{"editorconfig", "templates/editorconfig.tmpl", ".editorconfig", false},
-		{"pr-template", "templates/pr-template.tmpl", ".github/pull_request_template.md", false},
-	} {
-		if !in.Spec.WantsFile(f.key) {
-			continue
-		}
-		// An auto-merge caller with the feature disabled would be a workflow
-		// file that exists only to do nothing on a schedule.
-		if f.key == "dependabot-auto-merge" && !in.Spec.DependabotAutoMerge.Enabled {
+	for _, f := range registry() {
+		if !f.wanted(in.Spec) {
 			continue
 		}
 		content, err := renderTemplate(f.tmpl, data)
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, File{Path: f.path, Content: content, Workflow: f.workflow})
+		files = append(files, File{
+			Path: f.path, Content: content, Workflow: f.workflow, Mode: f.mode,
+		})
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })

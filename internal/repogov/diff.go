@@ -26,18 +26,20 @@ const (
 	StatusOrphaned Status = "orphaned"
 )
 
-// managedPaths is every path gt can render. Orphan detection needs the full
-// set, not just what the current spec selects.
+// managedPaths is every path gt renders and owns the content of. Orphan
+// detection needs the full set, not just what the current spec selects.
+//
+// Scaffolds are deliberately absent: an orphaned scaffold holds work the
+// repository wrote, so it is left alone rather than deleted. It becomes an
+// unreferenced `workflow_call` file, which never runs.
 func managedPaths() []string {
-	return []string{
-		".github/dependabot.yml",
-		".github/workflows/gate.yml",
-		".github/workflows/gt-sync.yml",
-		".github/workflows/dependabot-auto-merge.yml",
-		".github/CODEOWNERS",
-		".editorconfig",
-		".github/pull_request_template.md",
+	var out []string
+	for _, f := range registry() {
+		if f.mode == ModeManaged {
+			out = append(out, f.path)
+		}
 	}
+	return out
 }
 
 // Result is one file's diff outcome.
@@ -45,6 +47,9 @@ type Result struct {
 	Path     string
 	Status   Status
 	Workflow bool
+	// Mode carries the file's ownership, so writing can refuse to overwrite a
+	// scaffold even if something upstream mislabels its status.
+	Mode Mode
 	// Want is the rendered content; Got is what is on disk (nil when missing).
 	Want []byte
 	Got  []byte
@@ -69,18 +74,32 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 		switch {
 		case os.IsNotExist(err):
 			results = append(results, Result{
-				Path: f.Path, Status: StatusMissing, Workflow: f.Workflow, Want: f.Content,
+				Path: f.Path, Status: StatusMissing, Workflow: f.Workflow,
+				Mode: f.Mode, Want: f.Content,
 			})
 			continue
 		case err != nil:
 			return nil, fmt.Errorf("read %s: %w", f.Path, err)
 		}
+
+		// A scaffold that exists has met its contract. Its contents are the
+		// repository's build and test logic; comparing them to the stub would
+		// report drift on every real pipeline and then offer to erase it.
+		if f.Mode == ModeScaffold {
+			results = append(results, Result{
+				Path: f.Path, Status: StatusOK, Workflow: f.Workflow,
+				Mode: f.Mode, Got: got,
+			})
+			continue
+		}
+
 		status := StatusDrifted
 		if bytes.Equal(got, f.Content) {
 			status = StatusOK
 		}
 		results = append(results, Result{
-			Path: f.Path, Status: status, Workflow: f.Workflow, Want: f.Content, Got: got,
+			Path: f.Path, Status: status, Workflow: f.Workflow,
+			Mode: f.Mode, Want: f.Content, Got: got,
 		})
 	}
 	// Anything gt can render, that exists on disk, but that the current spec
@@ -106,7 +125,8 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 			return nil, fmt.Errorf("read %s: %w", p, err)
 		}
 		results = append(results, Result{
-			Path: p, Status: StatusOrphaned, Workflow: isWorkflow, Got: got,
+			Path: p, Status: StatusOrphaned, Workflow: isWorkflow,
+			Mode: ModeManaged, Got: got,
 		})
 	}
 
@@ -137,6 +157,14 @@ func Write(workdir string, results []Result) ([]string, error) {
 		if !r.Drifted() {
 			continue
 		}
+		// Defence in depth on the one irreversible path. Diff only ever marks a
+		// scaffold OK or missing, so this cannot trigger today; if some future
+		// change makes it drifted or orphaned, refusing here is what keeps a
+		// repository's own pipeline from being rewritten or deleted.
+		if r.Mode == ModeScaffold && r.Status != StatusMissing {
+			continue
+		}
+
 		abs := filepath.Join(workdir, filepath.FromSlash(r.Path))
 
 		if r.Status == StatusOrphaned {
