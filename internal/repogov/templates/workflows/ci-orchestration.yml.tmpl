@@ -70,6 +70,10 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+{{- if .BulwarkDir }}
+    with:
+      dir: {{ .BulwarkDir }}
+{{- end }}
 {{- end }}
 
   # The single required check. `if: always()` so it still reports when a stage

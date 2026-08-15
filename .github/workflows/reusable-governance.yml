@@ -1,0 +1,31 @@
+name: gt governance
+
+# Verifies the repository still matches what .gt-repo.yaml declares.
+#
+# Catches drift at the point it would be introduced, rather than waiting for
+# the weekly sync to notice and open a PR reverting it.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  governance:
+    name: governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gt
+        run: curl -fsSL https://raw.githubusercontent.com/pedromvgomes/gt/main/install.sh | sh
+
+      - name: Check governance
+        run: gt repo check

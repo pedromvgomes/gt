@@ -295,3 +295,41 @@ func TestPipelineValidation(t *testing.T) {
 		})
 	}
 }
+
+// A `uses:` pointing at a workflow gt does not ship fails at resolution time,
+// before any job starts — the same silent shape as the missing @v0 tag, and
+// just as hard to read from the run page. Renaming a reusable workflow without
+// updating the renderer must fail here instead.
+func TestEveryUpstreamReferenceExists(t *testing.T) {
+	// tests/ sits alongside .github/ in the repository root.
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	spec.Files = repospec.FileKeys
+
+	seen := 0
+	for path, content := range pipelineFiles(t, spec) {
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.Contains(line, repogov.Upstream+"/") {
+				continue
+			}
+			ref := line[strings.Index(line, repogov.Upstream+"/"):]
+			ref = strings.TrimPrefix(ref, repogov.Upstream+"/")
+			if i := strings.Index(ref, "@"); i >= 0 {
+				ref = ref[:i]
+			}
+			seen++
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(ref))); err != nil {
+				t.Errorf("%s references %s, which gt does not ship: %v", path, ref, err)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no upstream references found; the test is not checking anything")
+	}
+}

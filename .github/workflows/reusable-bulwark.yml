@@ -1,26 +1,27 @@
 name: gt bulwark
 
-# Reusable code-quality and security gate for repositories governed by
-# `gt repo`. Every governed repo carries this by default; it is the quality
-# gate, and the PR gate waits on its check automatically.
+# Reusable code-quality and security gate. Every governed repo carries it by
+# default; it is the quality gate, and ci-gate waits on it.
 #
-# The defaults here are deliberately the self-contained ones. `tests-mode: run`
-# lets bulwark execute the suite itself, so this works in any repository
-# without artifact plumbing between jobs. Repos that already produce a coverage
-# profile in their own pipeline — and want bulwark to consume it rather than
-# re-run the suite — are better served keeping that wiring and setting
-# `bulwark.enabled: false`, because feeding a profile across jobs is exactly
-# the repo-specific knowledge a shared workflow cannot have.
+# Coverage arrives by convention rather than configuration: ci-test uploads an
+# artifact named `gt-coverage`, and this workflow consumes it instead of running
+# the suite a second time. That is the entire double-run fix. With no artifact
+# it falls back to running the tests itself, which is correct but slower.
+#
+# The mapping from artifact contents to bulwark's per-language report inputs is
+# deliberately narrow for now — Go's coverage profile and an lcov file. Anything
+# richer, and particularly a multi-language monorepo, is what the deferred
+# `.bulwark.yml` coverage.source change is for; guessing more here would be
+# reimplementing that badly.
 
 on:
   workflow_call:
     inputs:
-      tests-mode:
-        description: bulwark's tests-mode — "run" or "skip".
-        type: string
-        default: run
       dir:
-        description: Subdirectory to scan, for repos whose source is not at the root.
+        description: >-
+          Subdirectory to scan, for repos whose source is not at the root. Stays
+          an input rather than moving into .bulwark.yml because that file lives
+          at the scan root, so bulwark must know the root to find it.
         type: string
         default: ""
 
@@ -29,12 +30,12 @@ permissions:
 
 jobs:
   scan:
-    name: Scan
+    name: scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      # bulwark caches coverage baselines on the bulwark-state branch and
-      # posts a summary comment on the PR.
+      # bulwark caches coverage baselines on the bulwark-state branch and posts
+      # a summary comment on the PR.
       contents: write
       pull-requests: write
     steps:
@@ -46,8 +47,53 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # bulwark resolves the PR's base commit to scan the diff, which needs
-          # the full history rather than a shallow clone.
+          # full history rather than a shallow clone.
           fetch-depth: 0
+
+      - name: Download coverage from the test stage
+        id: coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: gt-coverage
+          path: ${{ runner.temp }}/gt-coverage
+
+      - name: Decide whether bulwark runs the tests
+        id: mode
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/gt-coverage
+        run: |
+          set -euo pipefail
+
+          go_report=""
+          lcov_report=""
+
+          if [[ -d "$COVERAGE_DIR" ]]; then
+            # Resolve to repo-relative paths: bulwark reads them relative to
+            # its scan directory, not the runner temp.
+            if [[ -f "${COVERAGE_DIR}/coverage.out" ]]; then
+              cp "${COVERAGE_DIR}/coverage.out" ./gt-coverage.out
+              go_report="gt-coverage.out"
+            fi
+            if [[ -f "${COVERAGE_DIR}/lcov.info" ]]; then
+              cp "${COVERAGE_DIR}/lcov.info" ./gt-lcov.info
+              lcov_report="gt-lcov.info"
+            fi
+          fi
+
+          if [[ -n "$go_report" || -n "$lcov_report" ]]; then
+            mode=skip
+            echo "consuming coverage from the test stage; not re-running the suite"
+          else
+            mode=run
+            echo "no gt-coverage artifact; bulwark will run the tests itself"
+          fi
+
+          {
+            echo "tests-mode=$mode"
+            echo "go-report=$go_report"
+            echo "lcov-report=$lcov_report"
+          } >> "$GITHUB_OUTPUT"
 
       # Every third-party action above is SHA-pinned, because a tag its owner
       # controls can be silently repointed at code we never reviewed. bulwark is
@@ -57,10 +103,10 @@ jobs:
       # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
       - uses: wardnet/bulwark@v1
         with:
-          tests-mode: ${{ inputs.tests-mode }}
           dir: ${{ inputs.dir }}
+          tests-mode: ${{ steps.mode.outputs.tests-mode }}
+          go-report: ${{ steps.mode.outputs.go-report }}
           # GitHub withholds secrets from Dependabot events, so those runs fall
-          # back to bulwark's token-less path automatically; passing empty here
-          # is the documented way that degrades rather than fails.
+          # back to bulwark's token-less path automatically.
           semgrep-app-token: ${{ secrets.SEMGREP_APP_TOKEN }}
           codecov-token: ${{ secrets.CODECOV_TOKEN }}

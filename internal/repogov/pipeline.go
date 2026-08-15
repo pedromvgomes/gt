@@ -215,6 +215,7 @@ type ciData struct {
 	PRTitleEnforced bool
 	MergeQueue      bool
 	Bulwark         bool
+	BulwarkDir      string
 	AttestContext   string
 	CheckoutRef     string
 	SkipGuard       string
@@ -268,6 +269,7 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		PRTitleEnforced: in.Spec.ConventionalCommits.EnforcesPRTitle(),
 		MergeQueue:      in.Spec.Pipeline.CI.MergeQueue,
 		Bulwark:         in.Spec.Bulwark.Enabled,
+		BulwarkDir:      in.Spec.Bulwark.Dir,
 		AttestContext:   AttestContext,
 		CheckoutRef:     checkoutRef,
 		SkipGuard:       attestGuard,
