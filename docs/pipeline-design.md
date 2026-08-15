@@ -69,9 +69,11 @@ anyone had moved those jobs into the stages.
 ```yaml
 name: PR
 on:
+  # No `branches:` filter, so PRs stacked onto a feature branch run too.
   pull_request:
-    branches: [main]
     types: [opened, synchronize, reopened, edited, ready_for_review]
+  # merge_group only when pipeline.ci.merge_queue is set; without it a queued
+  # PR waits forever for a required check that never reports.
   workflow_dispatch:
 
 permissions:
@@ -231,6 +233,50 @@ full pipeline.
 `freshness` runs only for `pull_request` events; a `workflow_dispatch` run has
 no base to be behind.
 
+### Stacked PRs
+
+Freshness compares against `github.event.pull_request.base.ref` — the PR's
+actual base — never a hardcoded `main`. A PR stacked onto `feature/a` is
+measured against `feature/a`.
+
+It also **fails only when the base is the default branch, and warns
+otherwise.** A stacked PR sits behind its base almost continuously, because the
+base is itself moving; failing there would make stacking unusable. Nothing is
+lost: the CD-trust argument only depends on what lands on the default branch,
+and the last PR in a stack targets it.
+
+For the same reason `ci-orchestration.yml` carries **no `branches:` filter** on
+its `pull_request` trigger. Filtering to `[main]` would mean a PR stacked onto a
+feature branch ran no CI at all — the worst outcome, since a stack's
+intermediate steps are exactly where mistakes hide.
+
+### Merge queues
+
+A merge queue solves the concurrency cost directly: it tests each PR against the
+base tip plus the PRs ahead of it on a temporary `gh-readonly-queue/…` branch,
+and [gives "the same benefits as Require branches to be up to date … but does
+not require a pull request author to update their pull request
+branch"](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
+Where one is enabled, `require_up_to_date` and `freshness` are both redundant.
+
+It cannot be the default, because it is unavailable for exactly the repositories
+gt itself lives in. Merge queue requires a repository **owned by an
+organization** — public, or private on Enterprise Cloud. `pedromvgomes/gt`,
+`agentic-toolkit` and `boma` are user-owned and can never have one.
+
+So it is an opt-in mode. With `pipeline.ci.merge_queue: true`:
+
+- `ci-orchestration.yml` also triggers on `merge_group` — without it the queue
+  waits forever for a required check that never reports;
+- the `freshness` job is not rendered;
+- `settings apply` leaves `require_up_to_date` false, and the CD coupling check
+  accepts the merge queue in its place.
+
+One interaction to know: a merge queue applies only to its protected base
+branch, so stacked PRs onto feature branches merge normally and still rely on
+freshness' warning.
+
+
 ## The preflight contract
 
 wardnet gates each leaf on a `detect-changes` preflight so untouched areas skip
@@ -316,6 +362,7 @@ pipeline:
   ci:
     enabled: true
     stages: [preflight, build, test, end2end]
+    merge_queue: false      # org-owned repos only; drops freshness + strict
   cd:
     enabled: true
     stages: [preflight, publish, deploy, verify]
