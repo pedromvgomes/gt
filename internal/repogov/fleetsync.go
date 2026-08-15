@@ -18,7 +18,6 @@ type FleetResult struct {
 	// reported and skipped rather than treated as failures.
 	Governed bool
 	Drifted  []Result
-	Findings []Finding
 	// PR is the URL of a PR opened by a sync run, when one was opened.
 	PR string
 	// Err records a per-repo failure. The sweep continues past it: one
@@ -28,7 +27,7 @@ type FleetResult struct {
 
 // Clean reports whether the repository needed nothing.
 func (r FleetResult) Clean() bool {
-	return r.Err == nil && (!r.Governed || (len(r.Drifted) == 0 && len(r.Findings) == 0))
+	return r.Err == nil && (!r.Governed || len(r.Drifted) == 0)
 }
 
 // FleetOptions configures a fleet sweep.
@@ -91,7 +90,6 @@ func sweepOne(ctx context.Context, gh GH, runner git.Runner, repo string, opts F
 		return res
 	}
 	res.Drifted = Drifted(report.Results)
-	res.Findings = report.Findings
 
 	if !opts.Apply || len(res.Drifted) == 0 {
 		return res

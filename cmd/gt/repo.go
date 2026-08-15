@@ -76,9 +76,8 @@ func newRepoInitCommand(opts *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create " + repospec.FileName + " from what the repository already contains",
-		Long: "Detects Dependabot ecosystems from the files on disk and seeds checks.required\n" +
-			"from the check names the repository's existing pull_request workflows produce.\n" +
-			"The result is a starting point to edit, not a final answer.",
+		Long: "Detects Dependabot ecosystems from the files on disk and writes a spec with\n" +
+			"gt's defaults. The result is a starting point to edit, not a final answer.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			govOpts, err := repoOptions(false)
@@ -156,9 +155,8 @@ func newRepoCheckCommand(opts *options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Report governance drift and gate-configuration problems",
-		Long: "Renders " + repospec.FileName + ", compares it against the working tree, and lints the\n" +
-			"workflow triggers the gate depends on. Exits non-zero when anything is wrong,\n" +
-			"which is what makes it usable as a PR check.",
+		Long: "Renders " + repospec.FileName + " and compares it against the working tree.\n" +
+			"Exits non-zero on drift, which is what makes it usable as a PR check.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			govOpts, err := repoOptions(skipWorkflows)
@@ -221,13 +219,13 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 			drifted := repogov.Drifted(report.Results)
 			if len(drifted) == 0 {
 				opts.ui.Info("Nothing to write.")
-				return lintOnlyResult(report)
+				return nil
 			}
 			if dryRun {
 				// Lint findings still count. Returning nil here would make
 				// `sync --dry-run` pass on a repo with drift *and* lint
 				// problems while failing on a clean one with lint problems.
-				return lintOnlyResult(report)
+				return nil
 			}
 			if !yes {
 				ok, err := confirmSync(opts.ui, drifted)
@@ -246,7 +244,7 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 			for _, p := range written {
 				opts.ui.Success("wrote %s", p)
 			}
-			return lintOnlyResult(report)
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would change without writing")
@@ -254,17 +252,6 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 	cmd.Flags().BoolVar(&skipWorkflows, "skip-workflows", false,
 		"leave .github/workflows/** alone (for CI, where GITHUB_TOKEN cannot write them)")
 	return cmd
-}
-
-// lintOnlyResult fails a sync that wrote everything it could but still found
-// lint problems. Those cannot be fixed by writing files — they are statements
-// about the repository's own workflows — so they must not be silently swallowed
-// by a successful write.
-func lintOnlyResult(report repogov.Report) error {
-	if len(report.Findings) > 0 {
-		return ui.Errorf(ui.ExitGeneral, "gate configuration has %d problem(s); see above", len(report.Findings))
-	}
-	return nil
 }
 
 func confirmSync(printer *ui.UI, drifted []repogov.Result) (bool, error) {
@@ -307,13 +294,16 @@ func printSpecSummary(printer *ui.UI, spec repospec.Spec, opts repogov.Options) 
 	for _, e := range spec.Dependabot {
 		_, _ = fmt.Fprintf(printer.Out, "  dependabot: %-15s %s\n", e.Ecosystem, e.Directory)
 	}
-	if len(spec.Checks.Required) == 0 {
-		_, _ = fmt.Fprintln(printer.Out, "  checks:     (none found; add them once CI exists)")
+	if spec.Pipeline.CI.Enabled {
+		_, _ = fmt.Fprintf(printer.Out, "  ci stages:  %s\n", strings.Join(spec.Pipeline.CI.Stages, ", "))
 	}
-	for _, c := range spec.Checks.Required {
-		_, _ = fmt.Fprintf(printer.Out, "  check:      %s\n", c)
+	if spec.Pipeline.CD.Enabled {
+		_, _ = fmt.Fprintf(printer.Out, "  cd stages:  %s\n", strings.Join(spec.Pipeline.CD.Stages, ", "))
+		_, _ = fmt.Fprintf(printer.Out, "  cd tags:    %s\n", strings.Join(spec.Pipeline.CD.Tags, ", "))
 	}
-	_, _ = fmt.Fprintf(printer.Out, "  gate check: %s  (the only one branch protection needs)\n", repospec.GateCheckName)
+	_, _ = fmt.Fprintf(printer.Out, "  gate check: %s  (the only one branch protection needs)\n", repospec.GateCheckJob)
+	_, _ = fmt.Fprintln(printer.Out,
+		"\nThe ci-*/cd-* stage files are yours: gt creates them empty once, then never touches them.")
 }
 
 func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
@@ -345,12 +335,6 @@ func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
 		printer.Info("Skipped %s — GITHUB_TOKEN cannot write workflow files.", repogov.WorkflowDir)
 	}
 
-	if len(report.Findings) > 0 {
-		_, _ = fmt.Fprintf(printer.Out, "\n%d gate configuration problem(s):\n", len(report.Findings))
-		for _, f := range report.Findings {
-			_, _ = fmt.Fprintf(printer.Out, "  %s\n", f)
-		}
-	}
 }
 
 func printDiff(printer *ui.UI, drifted []repogov.Result) {
@@ -377,27 +361,17 @@ func printJSON(report repogov.Report) error {
 		Status   string `json:"status"`
 		Workflow bool   `json:"workflow"`
 	}
-	type jsonFinding struct {
-		Check   string `json:"check,omitempty"`
-		Path    string `json:"path,omitempty"`
-		Message string `json:"message"`
-	}
 	out := struct {
-		Compliant    bool          `json:"compliant"`
-		VersionStale bool          `json:"version_stale"`
-		Files        []jsonFile    `json:"files"`
-		Findings     []jsonFinding `json:"findings"`
+		Compliant    bool       `json:"compliant"`
+		VersionStale bool       `json:"version_stale"`
+		Files        []jsonFile `json:"files"`
 	}{
 		Compliant:    report.Clean(),
 		VersionStale: report.VersionStale,
 		Files:        make([]jsonFile, 0, len(report.Results)),
-		Findings:     make([]jsonFinding, 0, len(report.Findings)),
 	}
 	for _, r := range report.Results {
 		out.Files = append(out.Files, jsonFile{Path: r.Path, Status: string(r.Status), Workflow: r.Workflow})
-	}
-	for _, f := range report.Findings {
-		out.Findings = append(out.Findings, jsonFinding{Check: f.Check, Path: f.Path, Message: f.Message})
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

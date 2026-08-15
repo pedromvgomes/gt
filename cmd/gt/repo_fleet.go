@@ -114,7 +114,7 @@ func printFleetResults(printer *ui.UI, results []repogov.FleetResult, applied bo
 			_, _ = fmt.Fprintf(printer.Out, "  %-40s ok\n", r.Repo)
 		default:
 			drifted++
-			detail := fmt.Sprintf("%d file(s), %d finding(s)", len(r.Drifted), len(r.Findings))
+			detail := fmt.Sprintf("%d file(s) to change", len(r.Drifted))
 			if r.PR != "" {
 				detail += "  -> " + r.PR
 			}

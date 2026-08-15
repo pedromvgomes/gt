@@ -22,6 +22,11 @@ import (
 //go:embed templates
 var templatesFS embed.FS
 
+// WorkflowDir is where GitHub looks for workflow definitions. Subdirectories
+// are not supported, for triggered or reusable workflows alike, which is why
+// the pipeline family is grouped by a `ci-`/`cd-` filename prefix.
+const WorkflowDir = ".github/workflows"
+
 // Upstream is the repository hosting gt's reusable workflows. Callers pin the
 // moving major tag of this repo.
 const Upstream = "pedromvgomes/gt"
@@ -191,7 +196,6 @@ type templateData struct {
 	RepoOwner            string
 	RepoName             string
 	Branch               string
-	GateCheckName        string
 	GateWorkflowRef      string
 	SyncWorkflowRef      string
 	AutoMergeWorkflowRef string
@@ -271,7 +275,6 @@ func buildData(in Input) templateData {
 		RepoOwner:            in.RepoOwner,
 		RepoName:             in.RepoName,
 		Branch:               in.Spec.Settings.BranchProtection.Branch,
-		GateCheckName:        repospec.GateCheckName,
 		GateWorkflowRef:      workflowRef("gate.yml", major, in.RepoOwner, in.RepoName),
 		SyncWorkflowRef:      workflowRef("sync.yml", major, in.RepoOwner, in.RepoName),
 		AutoMergeWorkflowRef: workflowRef("dependabot-auto-merge.yml", major, in.RepoOwner, in.RepoName),

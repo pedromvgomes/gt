@@ -12,9 +12,6 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if spec.Checks.TimeoutMinutes != 30 {
-		t.Errorf("timeout_minutes = %d, want 30", spec.Checks.TimeoutMinutes)
-	}
 	if !spec.DependabotAutoMerge.Enabled || spec.DependabotAutoMerge.MaxBump != repospec.BumpMinor {
 		t.Errorf("auto-merge defaults = %+v", spec.DependabotAutoMerge)
 	}
@@ -86,11 +83,6 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			mutate:  func(s *repospec.Spec) { s.Files = []string{"makefile"} },
 			wantSub: "unknown file",
 		},
-		{
-			name:    "zero timeout",
-			mutate:  func(s *repospec.Spec) { s.Checks.TimeoutMinutes = 0 },
-			wantSub: "timeout_minutes",
-		},
 	}
 
 	for _, tc := range tests {
@@ -103,25 +95,6 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantSub)
-			}
-		})
-	}
-}
-
-// The gate is the aggregator; listing it among the checks it waits on would
-// make it wait on itself and hang until the timeout.
-func TestValidateRejectsSelfReferentialGateCheck(t *testing.T) {
-	for _, field := range []string{"required", "optional"} {
-		t.Run(field, func(t *testing.T) {
-			spec := repospec.Default()
-			if field == "required" {
-				spec.Checks.Required = []string{repospec.GateCheckName}
-			} else {
-				spec.Checks.Optional = []string{repospec.GateCheckName}
-			}
-			err := repospec.Validate(spec)
-			if err == nil || !strings.Contains(err.Error(), "aggregator") {
-				t.Fatalf("Validate() = %v, want an error about the aggregator", err)
 			}
 		})
 	}

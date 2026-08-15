@@ -245,9 +245,12 @@ func TestSpecJSONPreservesExplicitFalse(t *testing.T) {
 			Enabled      bool `json:"enabled"`
 			DeleteBranch bool `json:"delete_branch"`
 		} `json:"dependabot_auto_merge"`
-		Checks struct {
-			TimeoutMinutes int `json:"timeout_minutes"`
-		} `json:"checks"`
+		Pipeline struct {
+			CI struct {
+				Enabled bool     `json:"enabled"`
+				Stages  []string `json:"stages"`
+			} `json:"ci"`
+		} `json:"pipeline"`
 	}
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
@@ -268,82 +271,8 @@ func TestSpecJSONPreservesExplicitFalse(t *testing.T) {
 	if len(got.ConventionalCommits.Types) == 0 {
 		t.Error("conventional_commits.types is empty; the gate would not get gt's defaults")
 	}
-	if got.Checks.TimeoutMinutes == 0 {
-		t.Error("checks.timeout_minutes lost its default")
-	}
-}
-
-// Two workflows exposing a job of the same name is unremarkable, and a
-// duplicate in checks.required fails validation — so without dedup, init would
-// abort with "generated spec is invalid" on an ordinary repo.
-func TestInitHandlesDuplicateCheckNamesAcrossWorkflows(t *testing.T) {
-	root := t.TempDir()
-	writeWorkflow(t, root, "ci.yml", `
-name: CI
-on: pull_request
-jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-`)
-	writeWorkflow(t, root, "codeql.yml", `
-name: CodeQL
-on: pull_request
-jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-`)
-
-	spec, err := repogov.Init(testOptions(root))
-	if err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-	if len(spec.Checks.Required) != 1 || spec.Checks.Required[0] != "Test" {
-		t.Fatalf("checks.required = %v, want exactly [Test]", spec.Checks.Required)
-	}
-	if err := repospec.Validate(spec); err != nil {
-		t.Fatalf("generated spec must validate: %v", err)
-	}
-}
-
-// Which workflow gets recorded as a check's producer decided whether the
-// paths-filter finding fired. Taken from map order, that made the lint flip
-// between red and green across identical runs.
-func TestLintIsDeterministicWithDuplicateCheckNames(t *testing.T) {
-	root := t.TempDir()
-	writeWorkflow(t, root, "a-clean.yml", `
-name: A
-on: pull_request
-jobs:
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-`)
-	writeWorkflow(t, root, "b-filtered.yml", `
-name: B
-on:
-  pull_request:
-    paths: ["src/**"]
-jobs:
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-`)
-
-	first, err := repogov.Lint(root, specRequiring("Build"))
-	if err != nil {
-		t.Fatalf("Lint() error = %v", err)
-	}
-	for i := 0; i < 20; i++ {
-		next, err := repogov.Lint(root, specRequiring("Build"))
-		if err != nil {
-			t.Fatalf("Lint() error = %v", err)
-		}
-		if len(next) != len(first) {
-			t.Fatalf("run %d produced %d findings, first produced %d — lint is not deterministic",
-				i, len(next), len(first))
-		}
+	if !got.Pipeline.CI.Enabled || len(got.Pipeline.CI.Stages) == 0 {
+		t.Error("pipeline.ci lost its defaults")
 	}
 }
 

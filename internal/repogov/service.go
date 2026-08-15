@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/git"
@@ -51,9 +50,8 @@ type Options struct {
 
 // Report is the outcome of a check or a dry-run sync.
 type Report struct {
-	Spec     repospec.Spec
-	Results  []Result
-	Findings []Finding
+	Spec    repospec.Spec
+	Results []Result
 	// VersionStale is set when the spec records an older gt than the one
 	// running, meaning re-rendering may produce different output.
 	VersionStale bool
@@ -61,7 +59,7 @@ type Report struct {
 
 // Clean reports whether the repository is fully compliant.
 func (r Report) Clean() bool {
-	return len(Drifted(r.Results)) == 0 && len(r.Findings) == 0
+	return len(Drifted(r.Results)) == 0
 }
 
 // Check renders the spec, diffs it against the working tree, and lints the
@@ -88,14 +86,9 @@ func checkSpec(spec repospec.Spec, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	findings, err := Lint(opts.WorkDir, spec)
-	if err != nil {
-		return Report{}, err
-	}
 	return Report{
 		Spec:         spec,
 		Results:      results,
-		Findings:     findings,
 		VersionStale: spec.GTVersion != "" && spec.GTVersion != opts.GTVersion,
 	}, nil
 }
@@ -151,84 +144,10 @@ func Init(opts Options) (repospec.Spec, error) {
 	}
 	spec.Dependabot = entries
 
-	names, err := ExistingCheckNames(opts.WorkDir)
-	if err != nil {
-		return spec, err
-	}
-	spec.Checks.Required = names
-
 	if err := repospec.Validate(spec); err != nil {
 		return spec, fmt.Errorf("generated spec is invalid: %w", err)
 	}
 	return spec, nil
-}
-
-// ExistingCheckNames returns the check names the repository's current
-// pull_request workflows produce, excluding gt's own files. Seeding
-// checks.required from these means `gt repo init` on an existing repo starts
-// from what that repo already enforces rather than from nothing.
-//
-// Names from workflows carrying a top-level paths: filter are excluded: they
-// would immediately fail the lint, and they are exactly the checks that belong
-// in checks.optional instead.
-func ExistingCheckNames(workdir string) ([]string, error) {
-	workflows, err := loadWorkflows(workdir)
-	if err != nil {
-		return nil, err
-	}
-	// Deduplicated: two workflows can legitimately expose jobs with the same
-	// name (a `Test` job in both ci.yml and codeql.yml is unremarkable), and a
-	// duplicate in checks.required fails validation — so without this, init
-	// would abort with "generated spec is invalid" on an ordinary repo, with
-	// no flag to work around it.
-	seen := map[string]bool{}
-	var out []string
-	for _, path := range sortedKeys(workflows) {
-		if isGTManaged(path) {
-			continue
-		}
-		wf := workflows[path]
-		trigger := parsePRTrigger(wf.On)
-		if !trigger.Present || len(trigger.Paths) > 0 || len(trigger.PathsIgnore) > 0 {
-			continue
-		}
-		names, _ := checkNames(wf, workflows, "", 0)
-		for _, n := range names {
-			// Matrix jobs report one check per matrix value with the
-			// expression expanded, so the template text is not a usable name.
-			// Seeding it would hand the user a spec that fails its own lint.
-			if IsTemplated(n) || seen[n] {
-				continue
-			}
-			seen[n] = true
-			out = append(out, n)
-		}
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
-// sortedKeys gives map iteration a stable order. Workflow maps are keyed by
-// path, and several results depend on which workflow is visited first.
-func sortedKeys(workflows map[string]*workflow) []string {
-	out := make([]string, 0, len(workflows))
-	for k := range workflows {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// isGTManaged reports whether a workflow path is one gt renders, so init never
-// seeds checks.required with gt's own aggregator.
-func isGTManaged(path string) bool {
-	switch path {
-	case WorkflowDir + "/gate.yml",
-		WorkflowDir + "/gt-sync.yml",
-		WorkflowDir + "/dependabot-auto-merge.yml":
-		return true
-	}
-	return false
 }
 
 // SaveSpec writes the manifest back, preserving a managed header so the file

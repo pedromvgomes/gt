@@ -28,7 +28,6 @@ type Spec struct {
 	GTVersion string `yaml:"gt_version,omitempty" json:"gt_version,omitempty"`
 
 	Dependabot          []DependabotEntry   `yaml:"dependabot" json:"dependabot"`
-	Checks              Checks              `yaml:"checks" json:"checks"`
 	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge" json:"dependabot_auto_merge"`
 	Bulwark             Bulwark             `yaml:"bulwark" json:"bulwark"`
 	Pipeline            Pipeline            `yaml:"pipeline" json:"pipeline"`
@@ -45,14 +44,6 @@ type DependabotEntry struct {
 	Ecosystem string `yaml:"ecosystem" json:"ecosystem"`
 	Directory string `yaml:"directory" json:"directory"`
 	Note      string `yaml:"note,omitempty" json:"note,omitempty"`
-}
-
-// Checks lists the check runs the gate aggregates. gt's own check is never
-// listed here — it is the aggregator, and listing it would deadlock.
-type Checks struct {
-	TimeoutMinutes int      `yaml:"timeout_minutes" json:"timeout_minutes"`
-	Required       []string `yaml:"required" json:"required"`
-	Optional       []string `yaml:"optional" json:"optional"`
 }
 
 type DependabotAutoMerge struct {
@@ -143,11 +134,6 @@ const (
 	BumpMajor = "major"
 )
 
-// GateCheckName is retained only so a repository still carrying the previous
-// thin-caller gate can have that check recognised and replaced. New repos get
-// GateCheckJob.
-const GateCheckName = "PR / Gate"
-
 // CIStages and CDStages are the stage vocabularies, in the order the
 // orchestrators wire them.
 var (
@@ -185,7 +171,6 @@ var FileKeys = []string{
 // keeps a sensible value rather than a zero one.
 func Default() Spec {
 	return Spec{
-		Checks: Checks{TimeoutMinutes: 30},
 		DependabotAutoMerge: DependabotAutoMerge{
 			Enabled:      true,
 			Schedule:     "0 1 * * *",
@@ -284,9 +269,6 @@ func Validate(s Spec) error {
 	if err := validateDependabot(s.Dependabot); err != nil {
 		return err
 	}
-	if err := validateChecks(s.Checks); err != nil {
-		return err
-	}
 	if err := validateAutoMerge(s.DependabotAutoMerge); err != nil {
 		return err
 	}
@@ -323,33 +305,6 @@ func validateDependabot(entries []DependabotEntry) error {
 			return fmt.Errorf("dependabot[%d]: duplicate entry for %s at %s", i, e.Ecosystem, e.Directory)
 		}
 		seen[key] = true
-	}
-	return nil
-}
-
-func validateChecks(c Checks) error {
-	if c.TimeoutMinutes <= 0 {
-		return fmt.Errorf("checks.timeout_minutes must be greater than 0")
-	}
-	seen := map[string]bool{}
-	for field, names := range map[string][]string{
-		"checks.required": c.Required,
-		"checks.optional": c.Optional,
-	} {
-		for i, n := range names {
-			if strings.TrimSpace(n) == "" {
-				return fmt.Errorf("%s[%d]: check name cannot be empty", field, i)
-			}
-			// Listing gt's own aggregator would make it wait on itself.
-			if n == GateCheckName {
-				return fmt.Errorf("%s[%d]: %q is gt's own aggregator and must not be listed; it validates the others",
-					field, i, GateCheckName)
-			}
-			if seen[n] {
-				return fmt.Errorf("%s[%d]: duplicate check %q", field, i, n)
-			}
-			seen[n] = true
-		}
 	}
 	return nil
 }

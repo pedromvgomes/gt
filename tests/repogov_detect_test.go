@@ -21,6 +21,12 @@ func writeFile(t *testing.T, root, rel, body string) {
 	}
 }
 
+// writeWorkflow drops a workflow file into a fixture repo.
+func writeWorkflow(t *testing.T, root, name, body string) {
+	t.Helper()
+	writeFile(t, root, ".github/workflows/"+name, body)
+}
+
 // detected renders the result as a comparable set of "ecosystem@directory".
 func detected(t *testing.T, root string) map[string]bool {
 	t.Helper()
@@ -160,58 +166,5 @@ func TestDetectProducesValidSpec(t *testing.T) {
 	spec.Dependabot = entries
 	if err := repospec.Validate(spec); err != nil {
 		t.Fatalf("detected spec failed validation: %v", err)
-	}
-}
-
-// init seeds checks.required from existing workflows. Seeding gt's own gate
-// would make it wait on itself; seeding a matrix template would make it wait
-// for a name that can never appear.
-func TestExistingCheckNamesExcludesGateAndTemplates(t *testing.T) {
-	root := t.TempDir()
-	writeWorkflow(t, root, "ci.yml", `
-name: CI
-on: pull_request
-jobs:
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-  analyze:
-    name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
-`)
-	writeWorkflow(t, root, "gate.yml", `
-name: PR
-on: pull_request
-jobs:
-  PR:
-    uses: pedromvgomes/gt/.github/workflows/gate.yml@v0
-`)
-	// A paths-filtered workflow would fail the lint the moment it was seeded.
-	writeWorkflow(t, root, "e2e.yml", `
-name: E2E
-on:
-  pull_request:
-    paths: ["e2e/**"]
-jobs:
-  e2e:
-    name: E2E
-    runs-on: ubuntu-latest
-`)
-
-	names, err := repogov.ExistingCheckNames(root)
-	if err != nil {
-		t.Fatalf("ExistingCheckNames() error = %v", err)
-	}
-	got := map[string]bool{}
-	for _, n := range names {
-		got[n] = true
-	}
-	if !got["Build"] {
-		t.Errorf("missing Build; got %v", names)
-	}
-	for _, unwanted := range []string{"Analyze (${{ matrix.language }})", "PR / Gate", "E2E"} {
-		if got[unwanted] {
-			t.Errorf("unexpectedly seeded %q; got %v", unwanted, names)
-		}
 	}
 }

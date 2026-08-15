@@ -51,9 +51,6 @@ jobs:
 	if len(loaded.Dependabot) != len(spec.Dependabot) {
 		t.Errorf("dependabot entries = %d, want %d", len(loaded.Dependabot), len(spec.Dependabot))
 	}
-	if len(loaded.Checks.Required) != 1 || loaded.Checks.Required[0] != "Build" {
-		t.Errorf("checks.required = %v, want [Build]", loaded.Checks.Required)
-	}
 	if loaded.ConventionalCommits.Scope != spec.ConventionalCommits.Scope {
 		t.Errorf("scope = %q, want %q", loaded.ConventionalCommits.Scope, spec.ConventionalCommits.Scope)
 	}
@@ -99,8 +96,7 @@ func TestCheckSyncConverges(t *testing.T) {
 		t.Fatalf("Check() after sync error = %v", err)
 	}
 	if !after.Clean() {
-		t.Fatalf("Check() after sync is not clean: files=%v findings=%v",
-			repogov.Drifted(after.Results), after.Findings)
+		t.Fatalf("Check() after sync is not clean: %v", repogov.Drifted(after.Results))
 	}
 
 	// A second sync must be a no-op; anything else means rendering is not
@@ -172,8 +168,8 @@ func TestSyncSkipWorkflowsLeavesWorkflowFilesAlone(t *testing.T) {
 		t.Fatalf("Sync() error = %v", err)
 	}
 
-	if _, err := os.Stat(root + "/.github/workflows/gate.yml"); !os.IsNotExist(err) {
-		t.Error("gate.yml was written despite --skip-workflows")
+	if _, err := os.Stat(root + "/.github/workflows/ci-orchestration.yml"); !os.IsNotExist(err) {
+		t.Error("ci-orchestration.yml was written despite --skip-workflows")
 	}
 	if _, err := os.Stat(root + "/.github/dependabot.yml"); err != nil {
 		t.Errorf("dependabot.yml should still be written: %v", err)
