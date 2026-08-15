@@ -103,8 +103,8 @@ jobs:
   governance:
     uses: pedromvgomes/gt/.github/workflows/reusable-governance.yml@v0
 
-  Gate:
-    name: Gate
+  ci-gate:
+    name: ci-gate
     needs: [preflight, build, test, end2end, bulwark, conventional-commits, governance]
     if: always()
     runs-on: ubuntu-latest
@@ -141,11 +141,11 @@ The orchestrator gates on `!= 'false'`, so the scaffolded stub — which emits
 nothing — runs everything. A repo opts into change detection by filling in
 `ci-preflight.yml`; it never has to opt out.
 
-Skipped stages pass the gate, matching wardnet's `all-checks-passed`. That is
+Skipped stages pass `ci-gate`, matching wardnet's `all-checks-passed`. That is
 the point of change detection: a skipped leaf is a legitimate outcome, not a
 missing one.
 
-## The gate is a job, not a file
+## `ci-gate` is a job, not a file
 
 It is tempting to give the gate its own `ci-gate.yml`, since it serves a
 different purpose from the stages: it is the one check branch protection names.
@@ -158,15 +158,17 @@ This is what wardnet already does: `all-checks-passed` is a job at
 `pr.yml:220`, alongside `preflight` and the build leaves, not a workflow of its
 own.
 
-So `ci-orchestration.yml` holds the stages *and* the `Gate` job. That still
+So `ci-orchestration.yml` holds the stages *and* the `ci-gate` job. That still
 gives a single gt-managed required check that accounts for which stages ran —
 the `if: always()` job fails only on `failure` or `cancelled`, so a stage
-preflight skipped passes. Only the file boundary is different.
+preflight skipped passes. Only the file boundary is different, and keeping the
+`ci-` prefix on the job name means the required check still reads as part of
+the same family.
 
-## The required check becomes `Gate`
+## The required check becomes `ci-gate`
 
-`Gate` is a plain job in a workflow the repository owns, so it reports under its
-own name with no prefix — `Gate`, not `PR / Gate`.
+`ci-gate` is a plain job in a workflow the repository owns, so it reports under
+its own name with no prefix — `ci-gate`, not `PR / Gate`.
 
 Branch protection has to move in the same window as the merge, or PRs block on a
 check that can never report. `gt repo settings apply` handles it; the ordering
