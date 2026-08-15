@@ -1,0 +1,66 @@
+name: gt bulwark
+
+# Reusable code-quality and security gate for repositories governed by
+# `gt repo`. Every governed repo carries this by default; it is the quality
+# gate, and the PR gate waits on its check automatically.
+#
+# The defaults here are deliberately the self-contained ones. `tests-mode: run`
+# lets bulwark execute the suite itself, so this works in any repository
+# without artifact plumbing between jobs. Repos that already produce a coverage
+# profile in their own pipeline — and want bulwark to consume it rather than
+# re-run the suite — are better served keeping that wiring and setting
+# `bulwark.enabled: false`, because feeding a profile across jobs is exactly
+# the repo-specific knowledge a shared workflow cannot have.
+
+on:
+  workflow_call:
+    inputs:
+      tests-mode:
+        description: bulwark's tests-mode — "run" or "skip".
+        type: string
+        default: run
+      dir:
+        description: Subdirectory to scan, for repos whose source is not at the root.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # bulwark caches coverage baselines on the bulwark-state branch and
+      # posts a summary comment on the PR.
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # bulwark resolves the PR's base commit to scan the diff, which needs
+          # the full history rather than a shallow clone.
+          fetch-depth: 0
+
+      # Every third-party action above is SHA-pinned, because a tag its owner
+      # controls can be silently repointed at code we never reviewed. bulwark is
+      # ours: the floating v1 alias is its intended delivery channel, moved
+      # deliberately on each release so consumers pick up scanner fixes without
+      # a bump PR each time.
+      # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+      - uses: wardnet/bulwark@v1
+        with:
+          tests-mode: ${{ inputs.tests-mode }}
+          dir: ${{ inputs.dir }}
+          # GitHub withholds secrets from Dependabot events, so those runs fall
+          # back to bulwark's token-less path automatically; passing empty here
+          # is the documented way that degrades rather than fails.
+          semgrep-app-token: ${{ secrets.SEMGREP_APP_TOKEN }}
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}

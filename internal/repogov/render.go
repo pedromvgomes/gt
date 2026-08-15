@@ -185,9 +185,9 @@ func buildData(in Input) templateData {
 		RepoName:             in.RepoName,
 		Branch:               in.Spec.Settings.BranchProtection.Branch,
 		GateCheckName:        repospec.GateCheckName,
-		GateWorkflowRef:      workflowRef("gate.yml", major),
-		SyncWorkflowRef:      workflowRef("sync.yml", major),
-		AutoMergeWorkflowRef: workflowRef("dependabot-auto-merge.yml", major),
+		GateWorkflowRef:      workflowRef("gate.yml", major, in.RepoOwner, in.RepoName),
+		SyncWorkflowRef:      workflowRef("sync.yml", major, in.RepoOwner, in.RepoName),
+		AutoMergeWorkflowRef: workflowRef("dependabot-auto-merge.yml", major, in.RepoOwner, in.RepoName),
 		SyncSchedule:         SyncSchedule,
 		AutoMergeSchedule:    in.Spec.DependabotAutoMerge.Schedule,
 		MaxBump:              in.Spec.DependabotAutoMerge.MaxBump,
@@ -204,7 +204,16 @@ func buildData(in Input) templateData {
 // caller filenames rendered into consumer repos. Without that distinction, gt
 // governing itself would overwrite its own reusable workflows with thin callers
 // pointing at themselves.
-func workflowRef(file, majorTag string) string {
+// In the upstream repository the reference is local (`./…`) rather than pinned
+// to the moving tag. A local ref resolves to the caller's own commit, so gt's
+// PRs exercise the gate logic *in that PR*; pinning the tag would test the last
+// release instead, leaving changes to the reusable workflows unverifiable until
+// after they had already shipped. Everywhere else the pinned tag is the whole
+// point — it is what lets gate logic reach consumers without editing any file.
+func workflowRef(file, majorTag, owner, name string) string {
+	if owner+"/"+name == Upstream {
+		return "./.github/workflows/reusable-" + file
+	}
 	return fmt.Sprintf("%s/.github/workflows/reusable-%s@%s", Upstream, file, majorTag)
 }
 
