@@ -72,6 +72,9 @@ on:
   # No `branches:` filter, so PRs stacked onto a feature branch run too.
   pull_request:
     types: [opened, synchronize, reopened, edited, ready_for_review]
+  # Push to the default branch, so an already-validated tree can skip.
+  push:
+    branches: [main]
   # merge_group only when pipeline.ci.merge_queue is set; without it a queued
   # PR waits forever for a required check that never reports.
   workflow_dispatch:
@@ -80,38 +83,38 @@ permissions:
   contents: read
 
 jobs:
-  # Fails immediately when the branch is behind its base, before anything
-  # expensive runs. See "Trusting the PR gate" — skipping revalidation on
-  # release depends on this holding.
-  freshness:
-    if: github.event_name == 'pull_request'
-    uses: pedromvgomes/gt/.github/workflows/reusable-freshness.yml@v0
+  # On a push, reports whether this exact tree already carries a passing
+  # attestation from the PR that produced it. On a PR, a passthrough.
+  attest:
+    uses: pedromvgomes/gt/.github/workflows/reusable-attest.yml@v0
 
   preflight:
-    needs: freshness
+    needs: attest
+    if: needs.attest.outputs.validated != 'true'
     uses: ./.github/workflows/ci-preflight.yml
     secrets: inherit
 
   build:
-    needs: preflight
-    if: needs.preflight.outputs.run-build != 'false'
+    needs: [attest, preflight]
+    if: needs.attest.outputs.validated != 'true' && needs.preflight.outputs.run-build != 'false'
     uses: ./.github/workflows/ci-build.yml
     secrets: inherit
 
   test:
-    needs: [preflight, build]
-    if: needs.preflight.outputs.run-test != 'false'
+    needs: [attest, preflight, build]
+    if: needs.attest.outputs.validated != 'true' && needs.preflight.outputs.run-test != 'false'
     uses: ./.github/workflows/ci-test.yml
     secrets: inherit
 
   end2end:
-    needs: [preflight, build]
-    if: needs.preflight.outputs.run-end2end != 'false'
+    needs: [attest, preflight, build]
+    if: needs.attest.outputs.validated != 'true' && needs.preflight.outputs.run-end2end != 'false'
     uses: ./.github/workflows/ci-end2end.yml
     secrets: inherit
 
   bulwark:
-    needs: test
+    needs: [attest, test]
+    if: needs.attest.outputs.validated != 'true'
     uses: pedromvgomes/gt/.github/workflows/reusable-bulwark.yml@v0
     secrets: inherit
 
@@ -123,7 +126,7 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    needs: [freshness, preflight, build, test, end2end, bulwark, conventional-commits, governance]
+    needs: [attest, preflight, build, test, end2end, bulwark, conventional-commits, governance]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -161,7 +164,14 @@ permissions:
   contents: read
 
 jobs:
+  # Refuses to ship a tree that never passed the gate.
+  verify-attestation:
+    uses: pedromvgomes/gt/.github/workflows/reusable-attest.yml@v0
+    with:
+      require: true
+
   preflight:
+    needs: verify-attestation
     uses: ./.github/workflows/cd-preflight.yml
     secrets: inherit
 
@@ -185,7 +195,7 @@ jobs:
 
   cd-gate:
     name: cd-gate
-    needs: [preflight, publish, deploy, verify]
+    needs: [verify-attestation, preflight, publish, deploy, verify]
     if: always()
     runs-on: ubuntu-latest
     steps: …same failure/cancelled check as ci-gate…
@@ -200,81 +210,100 @@ wardnet-cloud releases several independently-versioned components. Both
 orchestrations also carry `workflow_dispatch`, so either can be run against a
 chosen branch from the Actions UI.
 
-## Trusting the PR gate, and what makes that safe
+## Validated-tree attestation
 
-`cd-orchestration` deliberately does **not** re-run the CI gauntlet. wardnet's
-`release.yml` does, but that is insurance against a gap this design can close
-directly: the commit being tagged already passed `ci-gate`, so re-running it is
-duplicated cost — *provided* the commit was actually tested against the code it
-merged into.
+The question "was this PR tested against the code it is landing on?" can be
+answered as a fact rather than enforced as a policy, and that is strictly
+better.
 
-Two things make that hold, and gt owns both:
+For `pull_request` events GitHub does not test the PR branch — it tests
+`refs/pull/N/merge`, the *merged result* of the PR into its base as it stood at
+the time. A squash merge produces a commit whose tree is that same merge
+result. So the tree `ci-gate` validated and the tree that lands on the default
+branch are directly comparable.
 
-1. **Branch protection requires branches to be up to date before merging**
-   (`required_status_checks.strict`, already `require_up_to_date: true` in the
-   spec). This is what guarantees the passing run happened against current
-   `main`.
-2. **`ci-orchestration` fails fast when the branch is behind.** A first
-   `freshness` job compares the PR's base SHA with the tip of the base branch
-   and fails immediately if they differ, before any build or test runs. Strict
-   mode can be turned off or bypassed by an admin; this makes the invariant
-   visible in CI rather than assumed.
+On success `ci-gate` records what it validated, as a commit status on the PR
+head:
 
-Because the two are load-bearing together, **gt validates the coupling**:
-enabling CD while `require_up_to_date` is false is a spec error, not a silent
-weakening. Skipping revalidation on release is only sound if the thing being
-trusted is actually enforced.
+```
+context:     gt/validated-tree
+description: <tree SHA of refs/pull/N/merge>
+state:       success
+```
 
-The cost is real and worth stating: on a repo with concurrent PRs, every merge
-turns the other open PRs red until they are updated. That is what "require
-rebase" means — this design just surfaces it in seconds rather than after a
-full pipeline.
+Anything downstream then compares that against the tree actually in hand.
 
-`freshness` runs only for `pull_request` events; a `workflow_dispatch` run has
-no base to be behind.
+### This replaces `require_up_to_date` and the freshness job
+
+Both existed only to make "tested against current base" *true by construction*.
+The attestation makes it *checkable*, which is better on every axis:
+
+- No one has to rebase, so a merge never turns other open PRs red.
+- It is content-based. If the base moved in a way that changes the merged tree,
+  the trees differ and CI runs. If it somehow does not, nothing was missed.
+- It fails safe: no attestation, or a mismatch, means run CI. The check can only
+  ever be conservative.
+- It works everywhere, including `pedromvgomes/*`, where merge queues cannot be
+  enabled at all.
+
+`settings apply` therefore leaves `require_up_to_date` false, and there is no
+CI/CD coupling rule to validate — the guarantee is carried by evidence rather
+than configuration.
+
+### Skipping CI on the default branch
+
+`ci-orchestration` also runs on push to the default branch, where an `attest`
+job asks whether the pushed commit's tree already carries a passing
+attestation from the PR that produced it:
+
+- **Match** — every stage skips. The identical tree already passed; re-running
+  proves nothing.
+- **No match** — the stages run as normal, and on success `attest` writes
+  `gt/validated-tree` onto the pushed commit itself.
+
+Either way the default-branch commit ends up carrying an attestation, which is
+what makes the next part possible.
+
+### CD verifies rather than trusts
+
+`cd-orchestration` does not re-run the CI gauntlet, and no longer needs to
+trust that it was run. It checks that the tagged commit carries a passing
+`gt/validated-tree` matching its own tree, and refuses to publish otherwise.
+
+That is a stronger guarantee than wardnet's release-time re-run: a re-run tells
+you the code passes *now*, on a runner, again; the attestation tells you this
+exact tree passed the full gate, and costs nothing.
+
+Its one real limit is worth stating: an attestation is only as good as the
+suite that produced it. A flaky test that happened to pass on this tree
+attests just as confidently as a solid one.
 
 ### Stacked PRs
 
-Freshness compares against `github.event.pull_request.base.ref` — the PR's
-actual base — never a hardcoded `main`. A PR stacked onto `feature/a` is
-measured against `feature/a`.
+`ci-orchestration.yml` carries **no `branches:` filter** on its `pull_request`
+trigger. Filtering to `[main]` would mean a PR stacked onto a feature branch
+ran no CI at all — the worst outcome, since a stack's intermediate steps are
+exactly where mistakes hide.
 
-It also **fails only when the base is the default branch, and warns
-otherwise.** A stacked PR sits behind its base almost continuously, because the
-base is itself moving; failing there would make stacking unusable. Nothing is
-lost: the CD-trust argument only depends on what lands on the default branch,
-and the last PR in a stack targets it.
-
-For the same reason `ci-orchestration.yml` carries **no `branches:` filter** on
-its `pull_request` trigger. Filtering to `[main]` would mean a PR stacked onto a
-feature branch ran no CI at all — the worst outcome, since a stack's
-intermediate steps are exactly where mistakes hide.
+Attestation needs no special handling for stacks. Each PR in a stack is tested
+against its own base and attests its own merged tree; only the tree that
+finally lands on the default branch is ever compared against.
 
 ### Merge queues
 
-A merge queue solves the concurrency cost directly: it tests each PR against the
-base tip plus the PRs ahead of it on a temporary `gh-readonly-queue/…` branch,
-and [gives "the same benefits as Require branches to be up to date … but does
-not require a pull request author to update their pull request
-branch"](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
-Where one is enabled, `require_up_to_date` and `freshness` are both redundant.
+A merge queue remains available and is now orthogonal rather than an
+alternative. It tests each PR against the base tip plus those ahead of it, so
+it prevents semantic conflicts between PRs that pass individually — something
+attestation does not do, since it only reports what *was* tested.
 
-It cannot be the default, because it is unavailable for exactly the repositories
-gt itself lives in. Merge queue requires a repository **owned by an
-organization** — public, or private on Enterprise Cloud. `pedromvgomes/gt`,
-`agentic-toolkit` and `boma` are user-owned and can never have one.
+It cannot be a default: merge queue requires an organization-owned
+repository — public, or private on Enterprise Cloud — so `pedromvgomes/gt`,
+`agentic-toolkit` and `boma` can never have one.
 
-So it is an opt-in mode. With `pipeline.ci.merge_queue: true`:
-
-- `ci-orchestration.yml` also triggers on `merge_group` — without it the queue
-  waits forever for a required check that never reports;
-- the `freshness` job is not rendered;
-- `settings apply` leaves `require_up_to_date` false, and the CD coupling check
-  accepts the merge queue in its place.
-
-One interaction to know: a merge queue applies only to its protected base
-branch, so stacked PRs onto feature branches merge normally and still rely on
-freshness' warning.
+With `pipeline.ci.merge_queue: true`, `ci-orchestration.yml` also triggers on
+`merge_group`; without that trigger a queued PR waits forever for a required
+check that never reports. Attestation continues to work unchanged, recording
+whatever tree the queue actually validated.
 
 
 ## The preflight contract
@@ -362,7 +391,7 @@ pipeline:
   ci:
     enabled: true
     stages: [preflight, build, test, end2end]
-    merge_queue: false      # org-owned repos only; drops freshness + strict
+    merge_queue: false      # org-owned repos only; adds the merge_group trigger
   cd:
     enabled: true
     stages: [preflight, publish, deploy, verify]
@@ -397,6 +426,8 @@ they run on push until a `ci-main.yml` covers it.
 ## What this deletes
 
 - The Checks API polling loop and `checks.timeout_minutes`
+- `require_up_to_date` as a load-bearing setting, and the freshness job that
+  backed it up — replaced by an attestation that is checked rather than assumed
 - The absent-versus-not-started ambiguity
 - `internal/repogov/lint.go` in full — the trigger lint exists only to make that
   ambiguity statically detectable
