@@ -400,3 +400,64 @@ func TestResolveWorkDirOutsideARepository(t *testing.T) {
 		t.Error("ResolveWorkDir() outside a repo = nil, want error")
 	}
 }
+
+// A PR-title check that does not re-run on `edited` leaves a corrected title
+// red until an unrelated push — the failure mode tumika's pr-title.yml calls
+// out as load-bearing. When gt enforces the title, the caller must ask for it.
+func TestGateCallerListensForTitleEditsOnlyWhenTitleIsEnforced(t *testing.T) {
+	tests := []struct {
+		name      string
+		scope     string
+		enabled   bool
+		wantTypes bool
+	}{
+		{"pr_title enforces the title", repospec.ScopePRTitle, true, true},
+		{"both enforces the title", repospec.ScopeBoth, true, true},
+		{"commits does not touch the title", repospec.ScopeCommits, true, false},
+		{"disabled enforces nothing", repospec.ScopePRTitle, false, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := repospec.Default()
+			spec.ConventionalCommits.Enabled = tc.enabled
+			spec.ConventionalCommits.Scope = tc.scope
+
+			content := renderMap(t, testInput(spec))[".github/workflows/gate.yml"]
+			var wf struct {
+				On struct {
+					PullRequest struct {
+						Types []string `yaml:"types"`
+					} `yaml:"pull_request"`
+				} `yaml:"on"`
+			}
+			if err := yaml.Unmarshal(content, &wf); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			var hasEdited bool
+			for _, ty := range wf.On.PullRequest.Types {
+				if ty == "edited" {
+					hasEdited = true
+				}
+			}
+			if hasEdited != tc.wantTypes {
+				t.Errorf("edited trigger = %v, want %v\n%s", hasEdited, tc.wantTypes, content)
+			}
+			// Narrowing types must never drop the defaults the gate relies on.
+			if tc.wantTypes {
+				for _, required := range []string{"opened", "synchronize", "reopened"} {
+					found := false
+					for _, ty := range wf.On.PullRequest.Types {
+						if ty == required {
+							found = true
+						}
+					}
+					if !found {
+						t.Errorf("types %v dropped the default %q", wf.On.PullRequest.Types, required)
+					}
+				}
+			}
+		})
+	}
+}

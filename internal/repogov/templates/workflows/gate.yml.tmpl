@@ -13,6 +13,14 @@ name: PR
 on:
   pull_request:
     branches: [{{ .Branch }}]
+{{- if .PRTitleEnforced }}
+    # `edited` is load-bearing when the PR title is enforced: without it,
+    # correcting a rejected title leaves the check red until an unrelated push.
+    # The gate runs no builds of its own — those live in the repo's own
+    # workflows with their own triggers — so re-running it on a title edit is
+    # cheap, and the aggregation step finds the other checks already concluded.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+{{- end }}
 
 # A called reusable workflow can only narrow these, never widen them.
 # pull-requests: read is what lets the gate read the PR's own check results;

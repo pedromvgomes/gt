@@ -82,6 +82,7 @@ type templateData struct {
 	SyncSchedule         string
 	AutoMergeSchedule    string
 	MaxBump              string
+	PRTitleEnforced      bool
 	CooldownDays         int
 	Entries              []dependabotEntry
 }
@@ -176,6 +177,7 @@ func buildData(in Input) templateData {
 		SyncSchedule:         SyncSchedule,
 		AutoMergeSchedule:    in.Spec.DependabotAutoMerge.Schedule,
 		MaxBump:              in.Spec.DependabotAutoMerge.MaxBump,
+		PRTitleEnforced:      in.Spec.ConventionalCommits.EnforcesPRTitle(),
 		CooldownDays:         CooldownDays,
 		Entries:              entries,
 	}
