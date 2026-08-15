@@ -196,7 +196,6 @@ type templateData struct {
 	RepoOwner            string
 	RepoName             string
 	Branch               string
-	GateWorkflowRef      string
 	SyncWorkflowRef      string
 	AutoMergeWorkflowRef string
 	SyncSchedule         string
@@ -275,7 +274,6 @@ func buildData(in Input) templateData {
 		RepoOwner:            in.RepoOwner,
 		RepoName:             in.RepoName,
 		Branch:               in.Spec.Settings.BranchProtection.Branch,
-		GateWorkflowRef:      workflowRef("gate.yml", major, in.RepoOwner, in.RepoName),
 		SyncWorkflowRef:      workflowRef("sync.yml", major, in.RepoOwner, in.RepoName),
 		AutoMergeWorkflowRef: workflowRef("dependabot-auto-merge.yml", major, in.RepoOwner, in.RepoName),
 		SyncSchedule:         SyncSchedule,

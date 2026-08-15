@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,5 +332,116 @@ func TestEveryUpstreamReferenceExists(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("no upstream references found; the test is not checking anything")
+	}
+}
+
+// A called reusable workflow may only NARROW the caller's token. If the caller
+// grants less than the called workflow declares, the run fails at parse time —
+// no job starts, ci-gate never reports, and branch protection blocks every PR.
+//
+// The earlier permissions test could not catch this: it only inspected
+// workflow-level `permissions` on the thin callers, not the per-job grants the
+// orchestrator makes to gt's own reusable workflows.
+func TestOrchestratorJobsGrantWhatTheCalledWorkflowsDeclare(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	type jobPerms struct {
+		Uses        string            `yaml:"uses"`
+		Permissions map[string]string `yaml:"permissions"`
+	}
+
+	// Permission strength, so "the caller granted at least this" is checkable.
+	rank := map[string]int{"none": 0, "read": 1, "write": 2}
+
+	for _, path := range []string{
+		".github/workflows/ci-orchestration.yml",
+		".github/workflows/cd-orchestration.yml",
+	} {
+		content := pipelineFiles(t, repospec.Default())[path]
+		var wf struct {
+			Jobs map[string]jobPerms `yaml:"jobs"`
+		}
+		if err := yaml.Unmarshal(content, &wf); err != nil {
+			t.Fatalf("unmarshal %s: %v", path, err)
+		}
+
+		for id, job := range wf.Jobs {
+			if !strings.Contains(job.Uses, repogov.Upstream+"/") {
+				continue
+			}
+			ref := job.Uses[strings.Index(job.Uses, repogov.Upstream+"/"):]
+			ref = strings.TrimPrefix(ref, repogov.Upstream+"/")
+			if i := strings.Index(ref, "@"); i >= 0 {
+				ref = ref[:i]
+			}
+
+			called, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(ref)))
+			if err != nil {
+				t.Fatalf("%s: cannot read %s: %v", path, ref, err)
+			}
+			var cw struct {
+				Jobs map[string]jobPerms `yaml:"jobs"`
+			}
+			if err := yaml.Unmarshal(called, &cw); err != nil {
+				t.Fatalf("unmarshal %s: %v", ref, err)
+			}
+
+			for calledID, calledJob := range cw.Jobs {
+				for scope, level := range calledJob.Permissions {
+					granted := job.Permissions[scope]
+					if rank[granted] < rank[level] {
+						t.Errorf(
+							"%s job %q grants %s:%s but %s job %q declares %s:%s — "+
+								"the run fails at parse time and no job starts",
+							path, id, scope, orNone(granted), ref, calledID, scope, level)
+					}
+				}
+			}
+		}
+	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+// A stage skipped by preflight must not take bulwark down with it: GitHub skips
+// a job whose needs were skipped, and ci-gate counts skipped as a pass — so the
+// security gate would silently vanish while the required check stayed green.
+func TestBulwarkSurvivesASkippedTestStage(t *testing.T) {
+	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	bulwark, ok := jobs["bulwark"]
+	if !ok {
+		t.Fatal("bulwark job was not rendered")
+	}
+	if !strings.Contains(bulwark.If, "!cancelled()") {
+		t.Errorf("bulwark if = %q, want it to survive a skipped dependency", bulwark.If)
+	}
+}
+
+// With CI disabled nothing renders ci-orchestration.yml, so requiring the gate
+// context would block every PR on a check that can never report.
+func TestBranchProtectionOnlyRequiresTheGateWhenCIIsEnabled(t *testing.T) {
+	gh := &fakeGH{responses: map[string]string{
+		"branches/main/protection": `{"required_status_checks":{"strict":false,"contexts":[]}}`,
+		"repos/pedromvgomes/demo":  compliantRepoJSON,
+	}}
+	spec := repospec.Default()
+	spec.Pipeline.CI.Enabled = false
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, spec, "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	for _, c := range changes {
+		if strings.Contains(c.Field, "contexts") {
+			t.Errorf("would require %q with CI disabled — no workflow can report it", c.Want)
+		}
 	}
 }

@@ -13,11 +13,13 @@ name: {{ .Name }}
 
 on:
   workflow_call:
+{{- if .Gated }}
     outputs:
 {{- range .Gated }}
       run-{{ . }}:
         description: Set to "false" to skip the {{ . }} stage.
         value: ${{ "{{" }} jobs.preflight.outputs.run-{{ . }} {{ "}}" }}
+{{- end }}
 {{- end }}
 
 permissions:
@@ -27,9 +29,11 @@ jobs:
   preflight:
     name: preflight
     runs-on: ubuntu-latest
+{{- if .Gated }}
     outputs:
 {{- range .Gated }}
       run-{{ . }}: ${{ "{{" }} steps.decide.outputs.run-{{ . }} {{ "}}" }}
+{{- end }}
 {{- end }}
     steps:
       - name: Decide which stages to run

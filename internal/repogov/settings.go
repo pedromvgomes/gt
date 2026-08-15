@@ -138,7 +138,14 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		return nil, fmt.Errorf("parse branch protection: %w", err)
 	}
 
-	wantContexts := []string{repospec.GateCheckJob}
+	// Only require the gate when something renders it. With CI disabled there
+	// is no ci-orchestration.yml — Diff even deletes an existing one as an
+	// orphan — so requiring the context would block every PR forever on a check
+	// nothing can report.
+	var wantContexts []string
+	if spec.Pipeline.CI.Enabled {
+		wantContexts = append(wantContexts, repospec.GateCheckJob)
+	}
 	gotContexts := []string{}
 	gotStrict := false
 	if liveProt.RequiredStatusChecks != nil {
@@ -196,10 +203,14 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 	// manages must be sent on every call. Fields gt does not manage are set to
 	// explicit nulls rather than omitted, because omitting them is what
 	// silently clears them.
+	contexts := []string{}
+	if spec.Pipeline.CI.Enabled {
+		contexts = append(contexts, repospec.GateCheckJob)
+	}
 	payload := map[string]any{
 		"required_status_checks": map[string]any{
 			"strict":   bp.RequireUpToDate,
-			"contexts": []string{repospec.GateCheckJob},
+			"contexts": contexts,
 		},
 		"enforce_admins": nil,
 		"required_pull_request_reviews": map[string]any{
@@ -233,8 +244,11 @@ func isBranchNotProtected(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "http 404") || strings.Contains(msg, "branch not protected")
+	// Deliberately not "http 404": that is also what a *nonexistent* branch
+	// returns, and reporting a mistyped branch_protection.branch as "this
+	// branch has no protection" would then have settings apply PUT protection
+	// at a ref that does not exist.
+	return strings.Contains(strings.ToLower(err.Error()), "branch not protected")
 }
 
 func sameStrings(a, b []string) bool {

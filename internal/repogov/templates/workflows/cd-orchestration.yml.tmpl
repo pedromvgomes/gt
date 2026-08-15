@@ -27,9 +27,12 @@ jobs:
     uses: {{ .AttestWorkflowRef }}
     with:
       require: true
+    # Must cover everything reusable-attest declares; a caller granting less
+    # fails the run at parse time.
     permissions:
       contents: read
       statuses: read
+      pull-requests: read
 {{- range .CDStages }}
 
   {{ .Name }}:

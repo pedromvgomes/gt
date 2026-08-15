@@ -152,7 +152,13 @@ func applyAndPropose(
 	if _, err := runner.Run(ctx, dir, "add", "-A"); err != nil {
 		return "", fmt.Errorf("stage changes: %w", err)
 	}
-	if _, err := runner.Run(ctx, dir, "commit", "-m", "chore(gt): sync repository governance"); err != nil {
+	// Identity passed per-invocation rather than assumed: the cache clone has
+	// no local config, and a machine without a global user.name would fail here
+	// with the whole sweep reported as an error.
+	if _, err := runner.Run(ctx, dir,
+		"-c", "user.name=gt",
+		"-c", "user.email=gt@users.noreply.github.com",
+		"commit", "-m", "chore(gt): sync repository governance"); err != nil {
 		return "", fmt.Errorf("commit: %w", err)
 	}
 	// Plain --force, not --force-with-lease: a fresh clone has no

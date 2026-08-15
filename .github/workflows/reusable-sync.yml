@@ -49,11 +49,11 @@ jobs:
           set -euo pipefail
 
           # --skip-workflows keeps the run to files this token can actually
-          # write. Lint findings are reported but must not fail the job: they
-          # describe the repo's own workflows, which a sync cannot fix, and
-          # failing here would mean a permanently red weekly run.
-          gt repo sync --yes --skip-workflows | tee sync.log || true
-          rm -f sync.log
+          # write. No `|| true` here: swallowing a failure meant an invalid
+          # .gt-repo.yaml produced no changes, an empty `git status`, and a
+          # cheerful "No governance drift" — green exactly when governance was
+          # broken.
+          gt repo sync --yes --skip-workflows
 
           # `git status --porcelain`, not `git diff`: sync usually *creates*
           # files (.github/dependabot.yml, CODEOWNERS, .editorconfig), and
@@ -77,7 +77,15 @@ jobs:
           # Written outside the working tree: the PR step below stages with
           # `git add -A`, which would otherwise commit this scratch file.
           report="${RUNNER_TEMP}/gt-check.json"
+          # check exits non-zero on drift, which is the normal case here, so the
+          # status is not meaningful — but the report must still be readable.
+          # An empty file would make jq yield "" and hide the very drift this
+          # step exists to surface.
           gt repo check --json > "$report" || true
+          if ! jq -e . "$report" >/dev/null 2>&1; then
+            echo "::error::gt repo check produced no usable report"
+            exit 1
+          fi
 
           pending=$(jq -r '[.files[] | select(.workflow and .status != "ok") | .path] | join(", ")' "$report")
           echo "pending=$pending" >> "$GITHUB_OUTPUT"

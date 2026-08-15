@@ -33,9 +33,13 @@ jobs:
   # merely squashed an already-validated PR does not run everything again.
   attest:
     uses: {{ .AttestWorkflowRef }}
+    # A called workflow may only narrow these. Granting less than
+    # reusable-attest declares fails the run at parse time, before any job
+    # starts — so ci-gate never reports and every PR blocks.
     permissions:
       contents: read
-      statuses: write
+      statuses: read
+      pull-requests: read
 
 {{- range .CIStages }}
 
@@ -64,7 +68,11 @@ jobs:
 
   bulwark:
     needs: [{{ .BulwarkNeeds }}]
-    if: {{ .SkipGuard }}
+    # `!cancelled()` because a job whose needs were skipped is skipped too, and
+    # ci-gate counts skipped as a pass. Without it a preflight that skips tests
+    # would silently disable the security gate while the required check stayed
+    # green. bulwark still runs *after* tests, to consume their coverage.
+    if: "!cancelled() && {{ .SkipGuard }}"
     uses: {{ .BulwarkWorkflowRef }}
     secrets: inherit
     permissions:
@@ -108,6 +116,10 @@ jobs:
       # Records the tree this run validated, so a later push or tag can prove
       # the same content already passed rather than re-running to find out.
       - name: Attest the validated tree
+        # Read-only GITHUB_TOKEN (fork PRs, and every Dependabot event) cannot
+        # POST a status. Losing the attestation only costs a re-run on the
+        # default branch; failing the gate would block the PR entirely.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ "{{" }} github.token {{ "}}" }}
           REPO: ${{ "{{" }} github.repository {{ "}}" }}

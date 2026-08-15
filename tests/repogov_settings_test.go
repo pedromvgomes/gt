@@ -315,6 +315,12 @@ func TestPendingWorkflowPRsAppliesTheSameGatesAsTheInRepoJob(t *testing.T) {
 
 func TestParseBump(t *testing.T) {
 	tests := map[string]string{
+		// github-actions bumps are the whole reason merge-pending exists: they
+		// touch .github/workflows/** and so can never be merged in CI. They are
+		// titled with a bare major when the action is pinned to a moving tag.
+		"bump actions/checkout from 4 to 5":                 repospec.BumpMajor,
+		"bump actions/setup-go from 5 to 5.1":               repospec.BumpMinor,
+		"bump actions/cache from v4.0.1 to v4.0.2":          repospec.BumpPatch,
 		"bump serde from 1.2.3 to 1.2.4":                    repospec.BumpPatch,
 		"bump serde from 1.2.3 to 1.3.0":                    repospec.BumpMinor,
 		"bump serde from 1.2.3 to 2.0.0":                    repospec.BumpMajor,

@@ -222,10 +222,11 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 				return nil
 			}
 			if dryRun {
-				// Lint findings still count. Returning nil here would make
-				// `sync --dry-run` pass on a repo with drift *and* lint
-				// problems while failing on a clean one with lint problems.
-				return nil
+				// Same exit code as `check` for the same state. Returning 0
+				// here made `sync --dry-run` permanently green as a CI drift
+				// detector, which is exactly what someone would reach for it to
+				// do.
+				return ui.Errorf(ui.ExitGeneral, "repository is not compliant")
 			}
 			if !yes {
 				ok, err := confirmSync(opts.ui, drifted)

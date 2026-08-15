@@ -130,23 +130,41 @@ func eligibility(pr pullRequest, maxBump string) (bump string, eligible bool, re
 
 // dependabotTitle matches Dependabot's stable title format,
 // "bump <pkg> from <old> to <new>", optionally suffixed with " in /path".
+//
+// Minor and patch are optional. That is not a nicety: github-actions bumps are
+// titled "bump actions/checkout from 4 to 5" when the action is pinned to a
+// moving major tag, and those are precisely the PRs this code exists to
+// classify — they are the ones that touch .github/workflows/** and so can
+// never be merged in CI. Demanding a full semver made merge-pending a no-op
+// for its entire reason for existing.
 var dependabotTitle = regexp.MustCompile(
-	`from (\d+)\.(\d+)\.\d+(?:-[A-Za-z0-9.\-]+)? to (\d+)\.(\d+)\.\d+(?:-[A-Za-z0-9.\-]+)?`)
+	`from v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-[A-Za-z0-9.\-]+)? to v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-[A-Za-z0-9.\-]+)?`)
 
 // ParseBump classifies a Dependabot PR title as a patch, minor or major bump.
+// An omitted component counts as zero, so "from 4 to 5" is a major bump and
+// "from 4 to 4.1" a minor one.
 func ParseBump(title string) (string, bool) {
 	m := dependabotTitle.FindStringSubmatch(title)
 	if m == nil {
 		return "", false
 	}
+	oldMajor, oldMinor := m[1], zeroIfEmpty(m[2])
+	newMajor, newMinor := m[4], zeroIfEmpty(m[5])
 	switch {
-	case m[1] != m[3]:
+	case oldMajor != newMajor:
 		return repospec.BumpMajor, true
-	case m[2] != m[4]:
+	case oldMinor != newMinor:
 		return repospec.BumpMinor, true
 	default:
 		return repospec.BumpPatch, true
 	}
+}
+
+func zeroIfEmpty(s string) string {
+	if s == "" {
+		return "0"
+	}
+	return s
 }
 
 func bumpRank(bump string) int {

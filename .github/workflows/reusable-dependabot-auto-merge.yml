@@ -127,15 +127,21 @@ jobs:
 
             # Dependabot's title format is stable: "bump <pkg> from <old> to <new>",
             # optionally suffixed with " in /path".
-            if [[ ! "$title" =~ from\ ([0-9]+\.[0-9]+\.[0-9]+)(-[A-Za-z0-9\.\-]+)?\ to\ ([0-9]+\.[0-9]+\.[0-9]+)(-[A-Za-z0-9\.\-]+)? ]]; then
+            #
+            # Minor and patch are optional. github-actions bumps read
+            # "from 4 to 5" when the action is pinned to a moving major tag,
+            # and requiring a full semver would silently skip every one of them.
+            if [[ ! "$title" =~ from\ v?([0-9]+(\.[0-9]+)*)(-[A-Za-z0-9\.\-]+)?\ to\ v?([0-9]+(\.[0-9]+)*)(-[A-Za-z0-9\.\-]+)? ]]; then
               echo "   → skip: couldn't parse versions from title"
               continue
             fi
             old="${BASH_REMATCH[1]}"
-            new="${BASH_REMATCH[3]}"
+            new="${BASH_REMATCH[4]}"
+            # An omitted component counts as zero, so 4 -> 5 is major.
             old_major="${old%%.*}"; new_major="${new%%.*}"
-            old_rest="${old#*.}"; old_minor="${old_rest%%.*}"
-            new_rest="${new#*.}"; new_minor="${new_rest%%.*}"
+            old_minor=0; new_minor=0
+            [[ "$old" == *.* ]] && { old_rest="${old#*.}"; old_minor="${old_rest%%.*}"; }
+            [[ "$new" == *.* ]] && { new_rest="${new#*.}"; new_minor="${new_rest%%.*}"; }
 
             if [[ "$old_major" != "$new_major" ]]; then
               bump="major"; rank=3
