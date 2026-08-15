@@ -119,5 +119,5 @@ func printSettingChanges(printer *ui.UI, changes []repogov.SettingChange, opts r
 	for _, c := range changes {
 		_, _ = fmt.Fprintf(printer.Out, "  %s\n", c)
 	}
-	_, _ = fmt.Fprintf(printer.Out, "\nBranch protection will require exactly one check: %q\n", repospec.GateCheckName)
+	_, _ = fmt.Fprintf(printer.Out, "\nBranch protection will require exactly one check: %q\n", repospec.GateCheckJob)
 }

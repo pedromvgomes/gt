@@ -27,12 +27,6 @@ func TestRenderedCallersGrantPermissionsTheCalledJobsNeed(t *testing.T) {
 		want map[string]string
 	}{
 		{
-			// `gh pr checks` needs pull-requests: read; without it the gate
-			// reads nothing and waits out the full timeout.
-			path: ".github/workflows/gate.yml",
-			want: map[string]string{"pull-requests": "read", "checks": "read", "contents": "read"},
-		},
-		{
 			// Merging PRs and deleting branches needs writes.
 			path: ".github/workflows/dependabot-auto-merge.yml",
 			want: map[string]string{"contents": "write", "pull-requests": "write"},
@@ -87,6 +81,11 @@ func TestCallersReferenceDistinctlyNamedUpstreamWorkflows(t *testing.T) {
 			if job.Uses == "" {
 				continue
 			}
+			// A `./` reference is a pipeline stage the repository owns, not an
+			// upstream workflow; only the latter is under test here.
+			if strings.HasPrefix(job.Uses, "./") {
+				continue
+			}
 			// The upstream path must differ from the rendered path, or the
 			// caller would reference itself once gt governs its own repo.
 			upstream := job.Uses
@@ -112,7 +111,7 @@ func TestOrphanedFilesAreDetectedAndRemoved(t *testing.T) {
 
 	spec := repospec.Default()
 	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
-	spec.Files = []string{"gate", "codeowners"}
+	spec.Files = []string{"sync", "codeowners"}
 	if err := repogov.SaveSpec(root, spec); err != nil {
 		t.Fatalf("SaveSpec() error = %v", err)
 	}
@@ -125,7 +124,7 @@ func TestOrphanedFilesAreDetectedAndRemoved(t *testing.T) {
 	}
 
 	// Opt out of CODEOWNERS and of Dependabot entirely.
-	spec.Files = []string{"gate"}
+	spec.Files = []string{"sync"}
 	spec.Dependabot = nil
 	if err := repogov.SaveSpec(root, spec); err != nil {
 		t.Fatalf("SaveSpec() error = %v", err)
@@ -404,7 +403,7 @@ func TestResolveWorkDirOutsideARepository(t *testing.T) {
 // A PR-title check that does not re-run on `edited` leaves a corrected title
 // red until an unrelated push — the failure mode tumika's pr-title.yml calls
 // out as load-bearing. When gt enforces the title, the caller must ask for it.
-func TestGateCallerListensForTitleEditsOnlyWhenTitleIsEnforced(t *testing.T) {
+func TestOrchestratorListensForTitleEditsOnlyWhenTitleIsEnforced(t *testing.T) {
 	tests := []struct {
 		name      string
 		scope     string
@@ -423,7 +422,7 @@ func TestGateCallerListensForTitleEditsOnlyWhenTitleIsEnforced(t *testing.T) {
 			spec.ConventionalCommits.Enabled = tc.enabled
 			spec.ConventionalCommits.Scope = tc.scope
 
-			content := renderMap(t, testInput(spec))[".github/workflows/gate.yml"]
+			content := renderMap(t, testInput(spec))[".github/workflows/ci-orchestration.yml"]
 			var wf struct {
 				On struct {
 					PullRequest struct {

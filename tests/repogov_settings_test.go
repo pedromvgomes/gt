@@ -67,8 +67,8 @@ func compliantProtectionJSON(t *testing.T) string {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"required_status_checks": map[string]any{
-			"strict":   true,
-			"contexts": []string{repospec.GateCheckName},
+			"strict":   false,
+			"contexts": []string{repospec.GateCheckJob},
 		},
 	})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
 	prot, err := json.Marshal(map[string]any{
 		"required_status_checks": map[string]any{
-			"strict":   true,
+			"strict":   false,
 			"contexts": []string{"CI / build", "CI / test"},
 		},
 	})
@@ -136,8 +136,8 @@ func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
 	if len(changes) != 1 || !strings.Contains(changes[0].Field, "contexts") {
 		t.Fatalf("SettingsDiff() = %v, want a contexts change", changes)
 	}
-	if changes[0].Want != repospec.GateCheckName {
-		t.Errorf("want contexts = %q, expected %q", changes[0].Want, repospec.GateCheckName)
+	if changes[0].Want != repospec.GateCheckJob {
+		t.Errorf("want contexts = %q, expected %q", changes[0].Want, repospec.GateCheckJob)
 	}
 }
 
@@ -186,8 +186,8 @@ func TestSettingsApplySendsGateAsTheOnlyRequiredCheck(t *testing.T) {
 		t.Fatalf("payload missing required_status_checks: %v", payload)
 	}
 	contexts, ok := checks["contexts"].([]any)
-	if !ok || len(contexts) != 1 || contexts[0] != repospec.GateCheckName {
-		t.Errorf("contexts = %v, want exactly [%q]", checks["contexts"], repospec.GateCheckName)
+	if !ok || len(contexts) != 1 || contexts[0] != repospec.GateCheckJob {
+		t.Errorf("contexts = %v, want exactly [%q]", checks["contexts"], repospec.GateCheckJob)
 	}
 }
 

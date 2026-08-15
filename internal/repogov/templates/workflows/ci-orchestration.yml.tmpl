@@ -1,0 +1,121 @@
+# Managed by gt — edit .gt-repo.yaml, then run `gt repo sync`.
+#
+# gt owns the orchestration; the ci-* stages it calls are yours. Because every
+# stage is a job in this one workflow, `{{ .GateJob }}` aggregates them with
+# `needs:` rather than polling the checks API — no timeout, and no way to
+# confuse "absent" with "not started yet".
+#
+# Branch protection requires exactly one check: "{{ .GateJob }}".
+name: CI
+
+on:
+  # No `branches:` filter: a PR stacked onto a feature branch must run CI too.
+  pull_request:
+{{- if .PRTitleEnforced }}
+    # `edited` is load-bearing: without it, correcting a rejected title leaves
+    # the check red until an unrelated push.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+{{- end }}
+  # On the default branch an already-validated tree skips every stage.
+  push:
+    branches: [{{ .Branch }}]
+{{- if .MergeQueue }}
+  # Without this a queued PR waits forever for a check that never reports.
+  merge_group:
+{{- end }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Reports whether this exact tree already passed the gate, so a push that
+  # merely squashed an already-validated PR does not run everything again.
+  attest:
+    uses: {{ .AttestWorkflowRef }}
+    permissions:
+      contents: read
+      statuses: write
+
+{{- range .CIStages }}
+
+  {{ .Name }}:
+    needs: [{{ .Needs }}]
+{{- if .If }}
+    if: {{ .If }}
+{{- end }}
+    uses: ./.github/workflows/ci-{{ .Name }}.yml
+    secrets: inherit
+{{- end }}
+
+  conventional-commits:
+    needs: [attest]
+    if: {{ .SkipGuard }}
+    uses: {{ .ConventionalCommitsWorkflowRef }}
+    permissions:
+      contents: read
+      pull-requests: read
+
+  governance:
+    needs: [attest]
+    if: {{ .SkipGuard }}
+    uses: {{ .GovernanceWorkflowRef }}
+{{- if .Bulwark }}
+
+  bulwark:
+    needs: [{{ .BulwarkNeeds }}]
+    if: {{ .SkipGuard }}
+    uses: {{ .BulwarkWorkflowRef }}
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+{{- end }}
+
+  # The single required check. `if: always()` so it still reports when a stage
+  # was skipped, and a skipped stage passes — that is the point of preflight.
+  {{ .GateJob }}:
+    name: {{ .GateJob }}
+    needs: [{{ .GateNeeds }}]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Verify every stage succeeded or was legitimately skipped
+        env:
+          RESULTS: ${{ "{{" }} toJSON(needs.*.result) {{ "}}" }}
+        run: |
+          set -euo pipefail
+          echo "stage results: ${RESULTS}"
+          if [[ "${{ "{{" }} contains(needs.*.result, 'failure') {{ "}}" }}" == "true" ]]; then
+            echo "::error::a required stage failed"
+            exit 1
+          fi
+          if [[ "${{ "{{" }} contains(needs.*.result, 'cancelled') {{ "}}" }}" == "true" ]]; then
+            echo "::error::a required stage was cancelled"
+            exit 1
+          fi
+
+      - uses: {{ .CheckoutRef }}
+
+      # Records the tree this run validated, so a later push or tag can prove
+      # the same content already passed rather than re-running to find out.
+      - name: Attest the validated tree
+        env:
+          GH_TOKEN: ${{ "{{" }} github.token {{ "}}" }}
+          REPO: ${{ "{{" }} github.repository {{ "}}" }}
+          SHA: ${{ "{{" }} github.event.pull_request.head.sha || github.sha {{ "}}" }}
+        run: |
+          set -euo pipefail
+          # For a pull_request event HEAD is refs/pull/N/merge, so this is the
+          # tree of the merged result — which is exactly what a squash merge
+          # puts on the default branch.
+          tree=$(git rev-parse "HEAD^{tree}")
+          gh api "repos/${REPO}/statuses/${SHA}" \
+            -f state=success \
+            -f context={{ .AttestContext }} \
+            -f description="$tree" >/dev/null
+          echo "attested tree ${tree} on ${SHA}"

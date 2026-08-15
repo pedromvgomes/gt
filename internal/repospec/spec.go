@@ -30,6 +30,8 @@ type Spec struct {
 	Dependabot          []DependabotEntry   `yaml:"dependabot" json:"dependabot"`
 	Checks              Checks              `yaml:"checks" json:"checks"`
 	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge" json:"dependabot_auto_merge"`
+	Bulwark             Bulwark             `yaml:"bulwark" json:"bulwark"`
+	Pipeline            Pipeline            `yaml:"pipeline" json:"pipeline"`
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
 	Files               []string            `yaml:"files" json:"files"`
@@ -58,6 +60,48 @@ type DependabotAutoMerge struct {
 	Schedule     string `yaml:"schedule" json:"schedule"`
 	MaxBump      string `yaml:"max_bump" json:"max_bump"`
 	DeleteBranch bool   `yaml:"delete_branch" json:"delete_branch"`
+}
+
+// Bulwark is the shared code-quality and security gate. Every governed repo
+// carries it — that is the convention — and it is disabled only where a repo
+// already wires bulwark into its own pipeline with coverage plumbing gt cannot
+// generically reproduce.
+type Bulwark struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Dir scopes bulwark to a subdirectory. It stays an input rather than
+	// moving into .bulwark.yml because that file lives *at* the scan root, so
+	// bulwark must know the root before it can read its own config.
+	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
+}
+
+// Pipeline declares the CI and CD orchestration gt renders. Each listed stage
+// becomes a job in the orchestrator calling a scaffolded workflow the
+// repository owns.
+//
+// `uses:` cannot be computed at runtime, so the stage list is baked into the
+// rendered orchestrator: changing it is a re-render, and therefore a
+// workflow-file change. Rare by design.
+type Pipeline struct {
+	CI PipelineCI `yaml:"ci" json:"ci"`
+	CD PipelineCD `yaml:"cd" json:"cd"`
+}
+
+type PipelineCI struct {
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Stages  []string `yaml:"stages" json:"stages"`
+	// MergeQueue adds the merge_group trigger. Without it a queued PR waits
+	// forever for a required check that never reports. Merge queues need an
+	// organization-owned repository, so this is off by default.
+	MergeQueue bool `yaml:"merge_queue" json:"merge_queue"`
+}
+
+type PipelineCD struct {
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Stages  []string `yaml:"stages" json:"stages"`
+	// Tags are the push patterns that trigger delivery. Repos ship on
+	// different ones — a single component on v*.*.*, or several independently
+	// versioned components on their own prefixes.
+	Tags []string `yaml:"tags" json:"tags"`
 }
 
 type ConventionalCommits struct {
@@ -99,11 +143,22 @@ const (
 	BumpMajor = "major"
 )
 
-// GateCheckName is the single check gt configures in branch protection.
-// Reusable workflows report as "<caller job> / <called job>", so this pairs
-// the caller job `PR` with the called job `Gate`. It never changes, which is
-// what lets branch protection be written once and left alone.
+// GateCheckName is retained only so a repository still carrying the previous
+// thin-caller gate can have that check recognised and replaced. New repos get
+// GateCheckJob.
 const GateCheckName = "PR / Gate"
+
+// CIStages and CDStages are the stage vocabularies, in the order the
+// orchestrators wire them.
+var (
+	CIStages = []string{"preflight", "build", "test", "end2end"}
+	CDStages = []string{"preflight", "publish", "deploy", "verify"}
+)
+
+// GateCheckJob is the aggregating job, and so the single check branch
+// protection requires. It is a plain job in a repo-owned workflow, so its
+// check name carries no "<caller> / " prefix.
+const GateCheckJob = "ci-gate"
 
 // Ecosystems gt can render a Dependabot entry for. Keys match Dependabot's
 // package-ecosystem values.
@@ -119,7 +174,6 @@ var Ecosystems = []string{
 
 // Renderable file keys accepted in `files:`.
 var FileKeys = []string{
-	"gate",
 	"sync",
 	"dependabot-auto-merge",
 	"codeowners",
@@ -158,11 +212,24 @@ func Default() Spec {
 				DeleteBranchOnMerge: true,
 			},
 			BranchProtection: BranchProtection{
-				Branch:          "main",
-				RequireUpToDate: true,
+				Branch: "main",
+				// False by design. Requiring branches to be up to date turns
+				// every other open PR red on each merge; the validated-tree
+				// attestation proves the same property after the fact, without
+				// anyone having to rebase.
+				RequireUpToDate: false,
 			},
 		},
-		Files: []string{"gate", "sync", "dependabot-auto-merge"},
+		Bulwark: Bulwark{Enabled: true},
+		Pipeline: Pipeline{
+			CI: PipelineCI{Enabled: true, Stages: append([]string(nil), CIStages...)},
+			CD: PipelineCD{
+				Enabled: true,
+				Stages:  append([]string(nil), CDStages...),
+				Tags:    []string{"v*.*.*"},
+			},
+		},
+		Files: []string{"sync", "dependabot-auto-merge"},
 	}
 }
 
@@ -227,6 +294,9 @@ func Validate(s Spec) error {
 		return err
 	}
 	if err := validateSettings(s.Settings); err != nil {
+		return err
+	}
+	if err := validatePipeline(s.Pipeline); err != nil {
 		return err
 	}
 	return validateFiles(s.Files)
@@ -316,6 +386,39 @@ func validateConventionalCommits(c ConventionalCommits) error {
 		if strings.TrimSpace(s) == "" {
 			return fmt.Errorf("conventional_commits.scopes[%d]: scope cannot be empty", i)
 		}
+	}
+	return nil
+}
+
+func validatePipeline(p Pipeline) error {
+	if err := validateStages("pipeline.ci.stages", p.CI.Enabled, p.CI.Stages, CIStages); err != nil {
+		return err
+	}
+	if err := validateStages("pipeline.cd.stages", p.CD.Enabled, p.CD.Stages, CDStages); err != nil {
+		return err
+	}
+	if p.CD.Enabled && len(p.CD.Tags) == 0 {
+		return fmt.Errorf("pipeline.cd.tags cannot be empty when CD is enabled; nothing would ever trigger it")
+	}
+	return nil
+}
+
+func validateStages(field string, enabled bool, got, known []string) error {
+	if !enabled {
+		return nil
+	}
+	if len(got) == 0 {
+		return fmt.Errorf("%s cannot be empty when the pipeline is enabled", field)
+	}
+	seen := map[string]bool{}
+	for i, st := range got {
+		if !contains(known, st) {
+			return fmt.Errorf("%s[%d]: unknown stage %q (accepted: %s)", field, i, st, strings.Join(known, ", "))
+		}
+		if seen[st] {
+			return fmt.Errorf("%s[%d]: duplicate stage %q", field, i, st)
+		}
+		seen[st] = true
 	}
 	return nil
 }

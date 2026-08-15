@@ -97,6 +97,11 @@ type fileSpec struct {
 	// wanted reports whether this spec asks for the file at all. Most consult
 	// files:, but dependabot.yml is implied by declaring an ecosystem.
 	wanted func(repospec.Spec) bool
+	// data returns this file's template input. Nil means the shared
+	// templateData. Orchestrators and stage stubs each need their own shape,
+	// and giving them separate types keeps CI's fields from being visible —
+	// and mistakable — inside CD's template.
+	data func(Input, templateData) (any, error)
 }
 
 func wantsKey(key string) func(repospec.Spec) bool {
@@ -115,11 +120,6 @@ func registry() []fileSpec {
 			wanted: func(s repospec.Spec) bool { return len(s.Dependabot) > 0 },
 		},
 		{
-			key: "gate", tmpl: "templates/workflows/gate.yml.tmpl",
-			path: ".github/workflows/gate.yml", workflow: true, mode: ModeManaged,
-			wanted: wantsKey("gate"),
-		},
-		{
 			key: "sync", tmpl: "templates/workflows/gt-sync.yml.tmpl",
 			path: ".github/workflows/gt-sync.yml", workflow: true, mode: ModeManaged,
 			wanted: wantsKey("sync"),
@@ -131,6 +131,28 @@ func registry() []fileSpec {
 			// only to do nothing on a schedule.
 			wanted: func(s repospec.Spec) bool {
 				return s.WantsFile("dependabot-auto-merge") && s.DependabotAutoMerge.Enabled
+			},
+		},
+		{
+			key:      "ci-orchestration",
+			tmpl:     "templates/workflows/ci-orchestration.yml.tmpl",
+			path:     WorkflowDir + "/ci-orchestration.yml",
+			workflow: true,
+			mode:     ModeManaged,
+			wanted:   func(s repospec.Spec) bool { return s.Pipeline.CI.Enabled },
+			data: func(in Input, shared templateData) (any, error) {
+				return buildCIData(in, shared)
+			},
+		},
+		{
+			key:      "cd-orchestration",
+			tmpl:     "templates/workflows/cd-orchestration.yml.tmpl",
+			path:     WorkflowDir + "/cd-orchestration.yml",
+			workflow: true,
+			mode:     ModeManaged,
+			wanted:   func(s repospec.Spec) bool { return s.Pipeline.CD.Enabled },
+			data: func(in Input, shared templateData) (any, error) {
+				return buildCDData(in, shared)
 			},
 		},
 		{
@@ -200,12 +222,22 @@ const SyncSchedule = "0 6 * * 1"
 func Render(in Input) ([]File, error) {
 	data := buildData(in)
 
+	specs := append(registry(), pipelineScaffolds(in.Spec)...)
+
 	var files []File
-	for _, f := range registry() {
+	for _, f := range specs {
 		if !f.wanted(in.Spec) {
 			continue
 		}
-		content, err := renderTemplate(f.tmpl, data)
+		tmplData := any(data)
+		if f.data != nil {
+			d, err := f.data(in, data)
+			if err != nil {
+				return nil, fmt.Errorf("build template data for %s: %w", f.path, err)
+			}
+			tmplData = d
+		}
+		content, err := renderTemplate(f.tmpl, tmplData)
 		if err != nil {
 			return nil, err
 		}
@@ -308,7 +340,7 @@ var funcs = template.FuncMap{
 	},
 }
 
-func renderTemplate(name string, data templateData) ([]byte, error) {
+func renderTemplate(name string, data any) ([]byte, error) {
 	raw, err := templatesFS.ReadFile(name)
 	if err != nil {
 		return nil, fmt.Errorf("read embedded template %s: %w", name, err)

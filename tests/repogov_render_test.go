@@ -160,9 +160,11 @@ func TestRenderCallersPinMovingMajorTag(t *testing.T) {
 	spec := repospec.Default()
 	files := renderMap(t, testInput(spec))
 	for _, path := range []string{
-		".github/workflows/gate.yml",
 		".github/workflows/gt-sync.yml",
 		".github/workflows/dependabot-auto-merge.yml",
+		// The orchestrator is not a thin caller, but the fixed jobs inside it
+		// still reference gt by the moving tag.
+		".github/workflows/ci-orchestration.yml",
 	} {
 		content, ok := files[path]
 		if !ok {
@@ -179,29 +181,33 @@ func TestRenderCallersPinMovingMajorTag(t *testing.T) {
 
 // The check name is the one string branch protection is configured with. If it
 // ever changes, every governed repo silently stops being protected.
+//
+// The aggregator is a plain job in a repo-owned workflow, so its check name is
+// simply the job name — no "<caller> / " prefix.
 func TestRenderedGateProducesTheExpectedCheckName(t *testing.T) {
-	content := renderMap(t, testInput(repospec.Default()))[".github/workflows/gate.yml"]
+	content := renderMap(t, testInput(repospec.Default()))[".github/workflows/ci-orchestration.yml"]
 
 	var wf struct {
-		Name string `yaml:"name"`
 		Jobs map[string]struct {
 			Name string `yaml:"name"`
 			Uses string `yaml:"uses"`
 		} `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal(content, &wf); err != nil {
-		t.Fatalf("unmarshal gate.yml: %v", err)
+		t.Fatalf("unmarshal ci-orchestration.yml: %v", err)
 	}
-	if len(wf.Jobs) != 1 {
-		t.Fatalf("gate.yml has %d jobs, want exactly 1", len(wf.Jobs))
+
+	gate, ok := wf.Jobs[repospec.GateCheckJob]
+	if !ok {
+		t.Fatalf("no job named %q; jobs = %v", repospec.GateCheckJob, wf.Jobs)
 	}
-	// A reusable-workflow job reports as "<caller job> / <called job>". The
-	// caller job id supplies the first half.
-	for id := range wf.Jobs {
-		want := id + " / Gate"
-		if want != repospec.GateCheckName {
-			t.Errorf("caller job %q yields check %q, want %q", id, want, repospec.GateCheckName)
-		}
+	if gate.Uses != "" {
+		t.Errorf("%s calls a reusable workflow (%s), which would prefix its check name",
+			repospec.GateCheckJob, gate.Uses)
+	}
+	if gate.Name != repospec.GateCheckJob {
+		t.Errorf("job name = %q, want %q — branch protection is configured with this string",
+			gate.Name, repospec.GateCheckJob)
 	}
 }
 

@@ -138,7 +138,7 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		return nil, fmt.Errorf("parse branch protection: %w", err)
 	}
 
-	wantContexts := []string{repospec.GateCheckName}
+	wantContexts := []string{repospec.GateCheckJob}
 	gotContexts := []string{}
 	gotStrict := false
 	if liveProt.RequiredStatusChecks != nil {
@@ -199,7 +199,7 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 	payload := map[string]any{
 		"required_status_checks": map[string]any{
 			"strict":   bp.RequireUpToDate,
-			"contexts": []string{repospec.GateCheckName},
+			"contexts": []string{repospec.GateCheckJob},
 		},
 		"enforce_admins": nil,
 		"required_pull_request_reviews": map[string]any{
