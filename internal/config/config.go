@@ -343,6 +343,17 @@ auto_update:
 #     - name: golang-extras
 #       match: ["*"]
 #       script: ${HOME}/.config/gt/setup-scripts/golang-extras.sh
+#
+# To govern every repo you clone, add a template that runs 'gt repo sync'.
+# It renders the files declared by the repo's committed .gt-repo.yaml
+# (Dependabot config, the PR gate, auto-merge). Repos without that file are
+# left alone, so this is safe to match broadly:
+#
+#     - name: repo-governance
+#       match:
+#         - "github.com:pedromvgomes/*"
+#         - "github.com/pedromvgomes/*"
+#       run: gt repo sync --yes
 setup:
   templates: []
 `

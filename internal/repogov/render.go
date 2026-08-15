@@ -1,0 +1,240 @@
+// Package repogov renders a repository's governance files from its
+// .gt-repo.yaml, diffs them against what is on disk, and lints the workflow
+// triggers the gate depends on.
+//
+// Templates are embedded in the binary rather than fetched: repo governance is
+// a single standard gt itself owns, so the policy version is the gt version.
+// That removes the whole fetch/lock/cache layer a federated model would need.
+package repogov
+
+import (
+	"bytes"
+	"embed"
+	"fmt"
+	"path"
+	"sort"
+	"strings"
+	"text/template"
+
+	"github.com/pedromvgomes/gt/internal/repospec"
+)
+
+//go:embed templates
+var templatesFS embed.FS
+
+// Upstream is the repository hosting gt's reusable workflows. Callers pin the
+// moving major tag of this repo.
+const Upstream = "pedromvgomes/gt"
+
+// Shared Dependabot policy. These live here, not in .gt-repo.yaml, so changing
+// them for every governed repo is a one-line edit in gt.
+const (
+	CooldownDays      = 3
+	DependabotInerval = "weekly"
+)
+
+// dependabotPrefix maps an ecosystem to its conventional-commit prefix. All
+// dependency bumps are chore(deps) so the squashed subject on the default
+// branch is conventional without any extra tooling; github-actions is ci(deps)
+// because those bumps change the pipeline rather than the product.
+var dependabotPrefix = map[string]string{
+	"github-actions": "ci(deps):",
+}
+
+const defaultDependabotPrefix = "chore(deps):"
+
+// File is one rendered governance file.
+type File struct {
+	// Path is repo-root-relative, always slash-separated.
+	Path string
+	// Content is the fully rendered bytes.
+	Content []byte
+	// Workflow marks files under .github/workflows/, which GITHUB_TOKEN
+	// cannot write. Sync skips these in CI and defers them to a local run.
+	Workflow bool
+}
+
+// Input is everything the templates need beyond the spec itself.
+type Input struct {
+	Spec      repospec.Spec
+	RepoOwner string
+	RepoName  string
+	// GTVersion is the running gt version, stamped into every rendered file so
+	// a file carries the policy version that produced it.
+	GTVersion string
+}
+
+// templateData is the flattened view handed to text/template. Templates stay
+// free of Go logic; everything they need is precomputed here.
+type templateData struct {
+	GTVersion            string
+	MajorTag             string
+	RepoOwner            string
+	RepoName             string
+	Branch               string
+	GateCheckName        string
+	GateWorkflowRef      string
+	SyncWorkflowRef      string
+	AutoMergeWorkflowRef string
+	SyncSchedule         string
+	AutoMergeSchedule    string
+	MaxBump              string
+	CooldownDays         int
+	Entries              []dependabotEntry
+}
+
+type dependabotEntry struct {
+	Ecosystem string
+	Directory string
+	Note      string
+	Interval  string
+	Prefix    string
+}
+
+// SyncSchedule is the weekly cron for the drift-repair workflow. Unlike the
+// auto-merge schedule it is not configurable per repo — there is no reason for
+// repos to disagree about when they check themselves.
+const SyncSchedule = "0 6 * * 1"
+
+// Render produces the full set of governance files the spec asks for, sorted
+// by path so output is deterministic.
+func Render(in Input) ([]File, error) {
+	data := buildData(in)
+
+	var files []File
+
+	// dependabot.yml is rendered whenever any ecosystem is declared, and is not
+	// gated on files: — declaring an ecosystem is the opt-in.
+	if len(in.Spec.Dependabot) > 0 {
+		content, err := renderTemplate("templates/dependabot.yml.tmpl", data)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: ".github/dependabot.yml", Content: content})
+	}
+
+	for _, f := range []struct {
+		key      string
+		tmpl     string
+		path     string
+		workflow bool
+	}{
+		{"gate", "templates/workflows/gate.yml.tmpl", ".github/workflows/gate.yml", true},
+		{"sync", "templates/workflows/gt-sync.yml.tmpl", ".github/workflows/gt-sync.yml", true},
+		{"dependabot-auto-merge", "templates/workflows/dependabot-auto-merge.yml.tmpl", ".github/workflows/dependabot-auto-merge.yml", true},
+		{"codeowners", "templates/codeowners.tmpl", ".github/CODEOWNERS", false},
+		{"editorconfig", "templates/editorconfig.tmpl", ".editorconfig", false},
+		{"pr-template", "templates/pr-template.tmpl", ".github/pull_request_template.md", false},
+	} {
+		if !in.Spec.WantsFile(f.key) {
+			continue
+		}
+		// An auto-merge caller with the feature disabled would be a workflow
+		// file that exists only to do nothing on a schedule.
+		if f.key == "dependabot-auto-merge" && !in.Spec.DependabotAutoMerge.Enabled {
+			continue
+		}
+		content, err := renderTemplate(f.tmpl, data)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, File{Path: f.path, Content: content, Workflow: f.workflow})
+	}
+
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
+}
+
+func buildData(in Input) templateData {
+	major := MajorTag(in.GTVersion)
+	entries := make([]dependabotEntry, 0, len(in.Spec.Dependabot))
+	for _, e := range in.Spec.Dependabot {
+		prefix, ok := dependabotPrefix[e.Ecosystem]
+		if !ok {
+			prefix = defaultDependabotPrefix
+		}
+		entries = append(entries, dependabotEntry{
+			Ecosystem: e.Ecosystem,
+			Directory: e.Directory,
+			Note:      e.Note,
+			Interval:  DependabotInerval,
+			Prefix:    prefix,
+		})
+	}
+	return templateData{
+		GTVersion:            in.GTVersion,
+		MajorTag:             major,
+		RepoOwner:            in.RepoOwner,
+		RepoName:             in.RepoName,
+		Branch:               in.Spec.Settings.BranchProtection.Branch,
+		GateCheckName:        repospec.GateCheckName,
+		GateWorkflowRef:      workflowRef("gate.yml", major),
+		SyncWorkflowRef:      workflowRef("sync.yml", major),
+		AutoMergeWorkflowRef: workflowRef("dependabot-auto-merge.yml", major),
+		SyncSchedule:         SyncSchedule,
+		AutoMergeSchedule:    in.Spec.DependabotAutoMerge.Schedule,
+		MaxBump:              in.Spec.DependabotAutoMerge.MaxBump,
+		CooldownDays:         CooldownDays,
+		Entries:              entries,
+	}
+}
+
+func workflowRef(file, majorTag string) string {
+	return fmt.Sprintf("%s/.github/workflows/%s@%s", Upstream, file, majorTag)
+}
+
+// MajorTag returns the moving tag callers pin, derived from a gt version.
+// v0.6.0 yields "v0"; v1.2.3 yields "v1". Tracking the major rather than
+// hardcoding v1 means the scheme works today, while gt is still 0.x, and keeps
+// working across a 1.0 release without rewriting every caller.
+//
+// An unparseable version (a dev build) falls back to v0 so local runs still
+// render something valid.
+func MajorTag(version string) string {
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if i := strings.IndexAny(v, ".-+"); i > 0 {
+		v = v[:i]
+	}
+	if v == "" || strings.ContainsFunc(v, func(r rune) bool { return r < '0' || r > '9' }) {
+		return "v0"
+	}
+	return "v" + v
+}
+
+var funcs = template.FuncMap{
+	// comment re-emits a spec `note:` as YAML comment lines at the given
+	// indent, so per-repo rationale survives into the rendered file instead of
+	// being lost the moment the file is generated.
+	"comment": func(indent, body string) string {
+		lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+		out := make([]string, 0, len(lines))
+		for _, l := range lines {
+			if strings.TrimSpace(l) == "" {
+				out = append(out, indent+"#")
+				continue
+			}
+			out = append(out, indent+"# "+l)
+		}
+		return strings.Join(out, "\n")
+	},
+}
+
+func renderTemplate(name string, data templateData) ([]byte, error) {
+	raw, err := templatesFS.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded template %s: %w", name, err)
+	}
+	tmpl, err := template.New(path.Base(name)).Funcs(funcs).Parse(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parse template %s: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("render template %s: %w", name, err)
+	}
+	out := buf.Bytes()
+	// Every rendered file ends with exactly one newline, so a trailing-newline
+	// difference never shows up as spurious drift.
+	out = append(bytes.TrimRight(out, "\n"), '\n')
+	return out, nil
+}

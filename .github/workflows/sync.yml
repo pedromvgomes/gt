@@ -1,0 +1,123 @@
+name: gt sync
+
+# Reusable weekly drift repair for repositories governed by `gt repo`.
+#
+# Runs `gt repo sync` and opens a PR only when something changed. It never
+# pushes to the default branch, so gt's own updates are reviewed by the gate
+# like any other change — a bad gt release cannot land unreviewed across every
+# governed repo at once.
+#
+# Workflow files are excluded deliberately: GITHUB_TOKEN cannot create or
+# update anything under .github/workflows/**. When one has drifted this job
+# reports it and asks for a local `gt repo fleet sync` rather than failing
+# opaquely. Because the callers gt renders pin the moving major tag, gate logic
+# changes need no file change at all, so this stays rare.
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: Branch the sync PR is opened from.
+        type: string
+        default: gt/repo-sync
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install gt
+        run: curl -fsSL https://raw.githubusercontent.com/pedromvgomes/gt/main/install.sh | sh
+
+      - name: Sync governance files
+        id: sync
+        run: |
+          set -euo pipefail
+
+          # --skip-workflows keeps the run to files this token can actually
+          # write. Lint findings are reported but must not fail the job: they
+          # describe the repo's own workflows, which a sync cannot fix, and
+          # failing here would mean a permanently red weekly run.
+          gt repo sync --yes --skip-workflows | tee sync.log || true
+
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect workflow drift needing local escalation
+        id: workflows
+        run: |
+          set -euo pipefail
+
+          # A full check (without --skip-workflows) reveals drift this job is
+          # structurally unable to repair. Surfacing it is the whole point:
+          # otherwise it would sit unnoticed until someone ran gt locally.
+          gt repo check --json > check.json || true
+
+          pending=$(jq -r '[.files[] | select(.workflow and .status != "ok") | .path] | join(", ")' check.json)
+          echo "pending=$pending" >> "$GITHUB_OUTPUT"
+          if [[ -n "$pending" ]]; then
+            {
+              echo "### Workflow files need a local sync"
+              echo
+              echo "GITHUB_TOKEN cannot write \`.github/workflows/**\`, so these were left alone:"
+              echo
+              for f in ${pending//,/ }; do echo "- \`$f\`"; done
+              echo
+              echo "Run \`gt repo fleet sync\` locally to update them."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open sync PR
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ inputs.branch }}
+          PENDING: ${{ steps.workflows.outputs.pending }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Force-push a single long-lived branch so consecutive weeks replace
+          # the previous proposal instead of accumulating stale PRs.
+          git switch -C "$BRANCH"
+          git add -A
+          git commit -m "chore(gt): sync repository governance"
+          git push --force-with-lease origin "$BRANCH"
+
+          body="Automated \`gt repo sync\`."
+          if [[ -n "$PENDING" ]]; then
+            body="${body}"$'\n\n'"⚠️ These workflow files also drifted but could not be written by \`GITHUB_TOKEN\`: ${PENDING}."$'\n'"Run \`gt repo fleet sync\` locally to update them."
+          fi
+
+          if existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number') && [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --body "$body"
+            echo "Updated existing PR #${existing}."
+          else
+            gh pr create \
+              --title "chore(gt): sync repository governance" \
+              --body "$body" \
+              --head "$BRANCH"
+          fi
+
+      - name: Report clean
+        if: steps.sync.outputs.changed == 'false'
+        run: echo "No governance drift." >> "$GITHUB_STEP_SUMMARY"

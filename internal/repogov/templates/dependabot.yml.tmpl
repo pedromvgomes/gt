@@ -1,0 +1,24 @@
+# Managed by gt ({{ .GTVersion }}) — edit .gt-repo.yaml, then run `gt repo sync`.
+#
+# Shared policy (cooldown, commit-message prefix, schedule) lives in gt's
+# template, not here, so changing it for every repo is a one-line edit in gt.
+#
+# The {{ .CooldownDays }}-day cooldown is the supply-chain guard: by the time a PR exists,
+# the upstream release has been in the wild long enough to surface yanks and
+# compromised publishers before an auto-merge-eligible PR lands on the default
+# branch.
+version: 2
+updates:
+{{- range .Entries }}
+{{- if .Note }}
+{{ .Note | comment "  " }}
+{{- end }}
+  - package-ecosystem: "{{ .Ecosystem }}"
+    directory: "{{ .Directory }}"
+    schedule:
+      interval: "{{ .Interval }}"
+    commit-message:
+      prefix: "{{ .Prefix }}"
+    cooldown:
+      default-days: {{ $.CooldownDays }}
+{{ end -}}

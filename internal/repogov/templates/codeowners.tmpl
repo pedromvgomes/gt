@@ -1,0 +1,11 @@
+# Managed by gt ({{ .GTVersion }}) — edit .gt-repo.yaml, then run `gt repo sync`.
+#
+# Default owner for everything in the repo.
+* @{{ .RepoOwner }}
+
+# Governance surfaces gt manages. Listing them explicitly means a PR that
+# touches CI or dependency policy always surfaces for review, even if broader
+# ownership is relaxed later.
+/.github/workflows/ @{{ .RepoOwner }}
+/.github/dependabot.yml @{{ .RepoOwner }}
+/.gt-repo.yaml @{{ .RepoOwner }}

@@ -1,0 +1,154 @@
+package tests
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/pedromvgomes/gt/internal/repospec"
+)
+
+func TestParseAppliesDefaults(t *testing.T) {
+	spec, err := repospec.Parse([]byte("dependabot:\n  - ecosystem: gomod\n    directory: /\n"), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if spec.Checks.TimeoutMinutes != 30 {
+		t.Errorf("timeout_minutes = %d, want 30", spec.Checks.TimeoutMinutes)
+	}
+	if !spec.DependabotAutoMerge.Enabled || spec.DependabotAutoMerge.MaxBump != repospec.BumpMinor {
+		t.Errorf("auto-merge defaults = %+v", spec.DependabotAutoMerge)
+	}
+	if !spec.Settings.Merge.Squash || spec.Settings.Merge.MergeCommit {
+		t.Errorf("merge defaults should be squash-only, got %+v", spec.Settings.Merge)
+	}
+	if spec.Settings.BranchProtection.Branch != "main" {
+		t.Errorf("branch = %q, want main", spec.Settings.BranchProtection.Branch)
+	}
+}
+
+func TestValidateRejectsBadSpecs(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*repospec.Spec)
+		wantSub string
+	}{
+		{
+			name: "unknown ecosystem",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{Ecosystem: "maven", Directory: "/"}}
+			},
+			wantSub: "unknown ecosystem",
+		},
+		{
+			name:    "missing directory",
+			mutate:  func(s *repospec.Spec) { s.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod"}} },
+			wantSub: "directory is required",
+		},
+		{
+			name: "relative directory",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "web"}}
+			},
+			wantSub: `must start with "/"`,
+		},
+		{
+			name: "duplicate ecosystem/directory",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{
+					{Ecosystem: "gomod", Directory: "/"},
+					{Ecosystem: "gomod", Directory: "/"},
+				}
+			},
+			wantSub: "duplicate entry",
+		},
+		{
+			name:    "invalid conventional-commit scope",
+			mutate:  func(s *repospec.Spec) { s.ConventionalCommits.Scope = "title" },
+			wantSub: "conventional_commits.scope",
+		},
+		{
+			name:    "invalid max_bump",
+			mutate:  func(s *repospec.Spec) { s.DependabotAutoMerge.MaxBump = "patchy" },
+			wantSub: "max_bump",
+		},
+		{
+			name:    "malformed cron",
+			mutate:  func(s *repospec.Spec) { s.DependabotAutoMerge.Schedule = "0 1 * *" },
+			wantSub: "expected 5 space-separated fields",
+		},
+		{
+			name:    "no merge method",
+			mutate:  func(s *repospec.Spec) { s.Settings.Merge = repospec.MergeSettings{} },
+			wantSub: "at least one merge method",
+		},
+		{
+			name:    "unknown file key",
+			mutate:  func(s *repospec.Spec) { s.Files = []string{"makefile"} },
+			wantSub: "unknown file",
+		},
+		{
+			name:    "zero timeout",
+			mutate:  func(s *repospec.Spec) { s.Checks.TimeoutMinutes = 0 },
+			wantSub: "timeout_minutes",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := repospec.Default()
+			tc.mutate(&spec)
+			err := repospec.Validate(spec)
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error containing %q", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// The gate is the aggregator; listing it among the checks it waits on would
+// make it wait on itself and hang until the timeout.
+func TestValidateRejectsSelfReferentialGateCheck(t *testing.T) {
+	for _, field := range []string{"required", "optional"} {
+		t.Run(field, func(t *testing.T) {
+			spec := repospec.Default()
+			if field == "required" {
+				spec.Checks.Required = []string{repospec.GateCheckName}
+			} else {
+				spec.Checks.Optional = []string{repospec.GateCheckName}
+			}
+			err := repospec.Validate(spec)
+			if err == nil || !strings.Contains(err.Error(), "aggregator") {
+				t.Fatalf("Validate() = %v, want an error about the aggregator", err)
+			}
+		})
+	}
+}
+
+func TestConventionalCommitScopeHelpers(t *testing.T) {
+	tests := []struct {
+		scope       string
+		enabled     bool
+		wantTitle   bool
+		wantCommits bool
+		description string
+	}{
+		{repospec.ScopePRTitle, true, true, false, "pr_title lints the title only"},
+		{repospec.ScopeCommits, true, false, true, "commits lints subjects only"},
+		{repospec.ScopeBoth, true, true, true, "both lints title and subjects"},
+		{repospec.ScopeBoth, false, false, false, "disabled lints nothing"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			c := repospec.ConventionalCommits{Enabled: tc.enabled, Scope: tc.scope}
+			if got := c.EnforcesPRTitle(); got != tc.wantTitle {
+				t.Errorf("EnforcesPRTitle() = %v, want %v", got, tc.wantTitle)
+			}
+			if got := c.EnforcesCommits(); got != tc.wantCommits {
+				t.Errorf("EnforcesCommits() = %v, want %v", got, tc.wantCommits)
+			}
+		})
+	}
+}

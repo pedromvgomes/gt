@@ -71,6 +71,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSetSSHRemoteCommand(opts))
 	root.AddCommand(newConfigCommand(opts))
 	root.AddCommand(newSetupCommand(opts))
+	root.AddCommand(newRepoCommand(opts))
 	root.AddCommand(newUpdateCommand(opts))
 	return root
 }

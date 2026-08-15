@@ -1,0 +1,24 @@
+# Managed by gt ({{ .GTVersion }}) — edit .gt-repo.yaml, then run `gt repo sync`.
+#
+# Thin caller. All gate logic lives in gt's reusable workflow, pinned to the
+# moving {{ .MajorTag }} tag, so gate changes reach this repo without editing this file.
+# That matters: GITHUB_TOKEN cannot write .github/workflows/**, so a workflow
+# that had to be rewritten on every policy change could never self-update.
+#
+# Branch protection requires exactly one check: "{{ .GateCheckName }}".
+# Reusable workflows report as "<caller job> / <called job>", which is why the
+# caller job below is named PR and gt's called job is named Gate.
+name: PR
+
+on:
+  pull_request:
+    branches: [{{ .Branch }}]
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+
+jobs:
+  PR:
+    uses: {{ .GateWorkflowRef }}

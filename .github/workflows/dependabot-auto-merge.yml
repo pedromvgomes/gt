@@ -1,0 +1,169 @@
+name: gt dependabot auto-merge
+
+# Reusable Dependabot auto-merge for repositories governed by `gt repo`.
+#
+# Adapted from wardnet's dependabot-auto-merge.yml, which is the version that
+# got the details right: process substitution so per-PR state survives the
+# loop, failure tracking so one rejected merge does not abort the batch, and
+# classification of benign rejections as skips rather than errors.
+#
+# The Dependabot cooldown (set in .github/dependabot.yml) is the supply-chain
+# guard: by the time a PR exists, the upstream release has been in the wild
+# long enough to surface yanks and compromised publishers. This workflow is
+# only the merge executor on top of that.
+#
+# Known gap, not a bug: PRs touching .github/workflows/** can never be merged
+# here. No `permissions:` key grants GITHUB_TOKEN the `workflow` scope, so the
+# github-actions ecosystem always needs `gt repo fleet merge-pending`, which
+# runs with your own credentials.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Auto-merge eligible Dependabot PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # squash-merge PRs and delete their branches
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read policy from .gt-repo.yaml
+        id: policy
+        run: |
+          set -euo pipefail
+          {
+            echo "enabled=$(yq -r '.dependabot_auto_merge.enabled // true' .gt-repo.yaml)"
+            echo "max_bump=$(yq -r '.dependabot_auto_merge.max_bump // "minor"' .gt-repo.yaml)"
+            echo "delete_branch=$(yq -r '.dependabot_auto_merge.delete_branch // true' .gt-repo.yaml)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Merge eligible Dependabot PRs
+        if: steps.policy.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MAX_BUMP: ${{ steps.policy.outputs.max_bump }}
+          DELETE_BRANCH: ${{ steps.policy.outputs.delete_branch }}
+        run: |
+          set -euo pipefail
+
+          case "$MAX_BUMP" in
+            patch) max_rank=1 ;;
+            minor) max_rank=2 ;;
+            major) max_rank=3 ;;
+            *) echo "::error::dependabot_auto_merge.max_bump=$MAX_BUMP is not one of patch, minor, major"; exit 1 ;;
+          esac
+
+          merge_args=(--squash)
+          if [[ "$DELETE_BRANCH" == "true" ]]; then
+            merge_args+=(--delete-branch)
+          fi
+
+          # mergeStateStatus ∈ {BEHIND, BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS,
+          # UNKNOWN, UNSTABLE}.
+          gh pr list --repo "$REPO" \
+            --author app/dependabot \
+            --state open \
+            --json number,title,mergeable,mergeStateStatus,isDraft \
+            > prs.json
+
+          echo "Found $(jq 'length' prs.json) open Dependabot PR(s); max bump: ${MAX_BUMP}."
+
+          # Track failures so one bad PR does not abort the batch under `set -e`.
+          # Fed via process substitution, NOT a pipe, so the loop runs in this
+          # shell and `failed` survives past `done`.
+          failed=0
+
+          while read -r pr; do
+            number=$(jq -r '.number' <<<"$pr")
+            title=$(jq -r '.title' <<<"$pr")
+            mergeable=$(jq -r '.mergeable' <<<"$pr")
+            state=$(jq -r '.mergeStateStatus' <<<"$pr")
+            draft=$(jq -r '.isDraft' <<<"$pr")
+
+            echo ""
+            echo "── PR #${number}: ${title}"
+            echo "   mergeable=${mergeable} state=${state} draft=${draft}"
+
+            if [[ "$draft" == "true" ]]; then
+              echo "   → skip: draft"
+              continue
+            fi
+            if [[ "$mergeable" != "MERGEABLE" ]]; then
+              echo "   → skip: not mergeable (conflicts?)"
+              continue
+            fi
+            # UNSTABLE = required checks passed but optional ones failed.
+            # Branch protection already enforces the required set, so this is
+            # eligible.
+            if [[ "$state" != "CLEAN" && "$state" != "HAS_HOOKS" && "$state" != "UNSTABLE" ]]; then
+              echo "   → skip: mergeStateStatus=${state} (checks not green)"
+              continue
+            fi
+
+            # Dependabot's title format is stable: "bump <pkg> from <old> to <new>",
+            # optionally suffixed with " in /path".
+            if [[ ! "$title" =~ from\ ([0-9]+\.[0-9]+\.[0-9]+)(-[A-Za-z0-9\.\-]+)?\ to\ ([0-9]+\.[0-9]+\.[0-9]+)(-[A-Za-z0-9\.\-]+)? ]]; then
+              echo "   → skip: couldn't parse versions from title"
+              continue
+            fi
+            old="${BASH_REMATCH[1]}"
+            new="${BASH_REMATCH[3]}"
+            old_major="${old%%.*}"; new_major="${new%%.*}"
+            old_rest="${old#*.}"; old_minor="${old_rest%%.*}"
+            new_rest="${new#*.}"; new_minor="${new_rest%%.*}"
+
+            if [[ "$old_major" != "$new_major" ]]; then
+              bump="major"; rank=3
+            elif [[ "$old_minor" != "$new_minor" ]]; then
+              bump="minor"; rank=2
+            else
+              bump="patch"; rank=1
+            fi
+            echo "   bump: ${old} → ${new} (${bump})"
+
+            if [[ "$rank" -gt "$max_rank" ]]; then
+              echo "   → skip: ${bump} exceeds max_bump=${MAX_BUMP}; needs human review"
+              continue
+            fi
+
+            echo "   → merging (squash)"
+            if out=$(gh pr merge "$number" --repo "$REPO" "${merge_args[@]}" 2>&1); then
+              echo "   → merged"
+              continue
+            fi
+
+            # Classify the rejection: some reasons are expected for a batch run
+            # and must not fail the job; anything else is a real problem.
+            # shellcheck disable=SC2001 # indenting every line of multi-line output is sed's job, not parameter expansion's
+            echo "$out" | sed 's/^/     /'
+            if echo "$out" | grep -qiE 'merge conflict|not mergeable'; then
+              # MERGEABLE at list time can go stale by merge time. Dependabot
+              # rebases conflicted PRs; a later run picks it up.
+              echo "   → skip: merge conflict — Dependabot will rebase; picked up next run"
+            elif echo "$out" | grep -qi "without .workflows. permission"; then
+              echo "   → skip: touches a workflow file; GITHUB_TOKEN cannot merge these."
+              echo "     Run 'gt repo fleet merge-pending' locally to merge it."
+            else
+              echo "   → FAILED to merge #${number}; continuing with the rest"
+              failed=1
+            fi
+          done < <(jq -c '.[]' prs.json)
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo ""
+            echo "::error::one or more eligible PRs failed to merge — see log above"
+            exit 1
+          fi
