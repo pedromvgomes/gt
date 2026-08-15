@@ -26,8 +26,8 @@ a suite the repo already ran.
 **Subdirectories are not allowed.** `.github/workflows` may not contain
 subdirectories — [not for triggered workflows and not for reusable
 ones](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
-Grouping therefore comes from a filename prefix: every file in the pipeline
-family is `ci-*`, so they sort together and read as one set.
+Grouping therefore comes from a filename prefix: the pipeline families are
+`ci-*` and `cd-*`, so each sorts together and reads as one set.
 
 **Local `uses:` resolution is not reliably documented.** Whether `uses: ./…`
 inside a called workflow resolves against gt or against the consumer is
@@ -50,8 +50,15 @@ to assume now.
 | `.github/workflows/ci-build.yml` | repo | **scaffold** |
 | `.github/workflows/ci-test.yml` | repo | **scaffold** |
 | `.github/workflows/ci-end2end.yml` | repo | **scaffold** |
-| `.github/workflows/ci-publish.yml` | repo | **scaffold**, release-time — not called by the PR gate yet |
+| `.github/workflows/cd-orchestration.yml` | gt | **managed** |
+| `.github/workflows/cd-preflight.yml` | repo | **scaffold** |
+| `.github/workflows/cd-publish.yml` | repo | **scaffold** |
+| `.github/workflows/cd-deploy.yml` | repo | **scaffold** |
+| `.github/workflows/cd-verify.yml` | repo | **scaffold** |
 | `reusable-*.yml` in gt | gt | referenced by the pinned `@v0` tag |
+
+Publishing is a `cd-` stage, not a `ci-` one. An earlier draft scaffolded
+`ci-publish.yml` that nothing called, which was the tell.
 
 `ci-orchestration.yml` is deliberately not `ci.yml`: every repo already has a `ci.yml`
 with real jobs, and a managed file would overwrite it on the first sync, before
@@ -65,12 +72,21 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Fails immediately when the branch is behind its base, before anything
+  # expensive runs. See "Trusting the PR gate" — skipping revalidation on
+  # release depends on this holding.
+  freshness:
+    if: github.event_name == 'pull_request'
+    uses: pedromvgomes/gt/.github/workflows/reusable-freshness.yml@v0
+
   preflight:
+    needs: freshness
     uses: ./.github/workflows/ci-preflight.yml
     secrets: inherit
 
@@ -105,7 +121,7 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    needs: [preflight, build, test, end2end, bulwark, conventional-commits, governance]
+    needs: [freshness, preflight, build, test, end2end, bulwark, conventional-commits, governance]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -126,6 +142,94 @@ jobs:
 Fixed stages stay in gt's reusable workflows, so their logic still changes
 without touching any repo. Only the stage list lives in the rendered file, and
 that changes rarely.
+
+## Continuous delivery
+
+`cd-orchestration.yml` mirrors the CI shape, so there is one pipeline idea to
+learn rather than two:
+
+```yaml
+name: CD
+on:
+  push:
+    tags: ["v*.*.*"]        # from pipeline.cd.tags — repos ship on different patterns
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    uses: ./.github/workflows/cd-preflight.yml
+    secrets: inherit
+
+  publish:
+    needs: preflight
+    if: needs.preflight.outputs.run-publish != 'false'
+    uses: ./.github/workflows/cd-publish.yml
+    secrets: inherit
+
+  deploy:
+    needs: [preflight, publish]
+    if: needs.preflight.outputs.run-deploy != 'false'
+    uses: ./.github/workflows/cd-deploy.yml
+    secrets: inherit
+
+  verify:
+    needs: deploy
+    if: needs.preflight.outputs.run-verify != 'false'
+    uses: ./.github/workflows/cd-verify.yml
+    secrets: inherit
+
+  cd-gate:
+    name: cd-gate
+    needs: [preflight, publish, deploy, verify]
+    if: always()
+    runs-on: ubuntu-latest
+    steps: …same failure/cancelled check as ci-gate…
+```
+
+`cd-gate` is not a branch-protection check — nothing merges here. It exists so a
+release has one status that means "the whole delivery succeeded", rather than
+requiring someone to read four job results.
+
+Tag patterns are per repo (`pipeline.cd.tags`): gt ships on `v*.*.*`, while
+wardnet-cloud releases several independently-versioned components. Both
+orchestrations also carry `workflow_dispatch`, so either can be run against a
+chosen branch from the Actions UI.
+
+## Trusting the PR gate, and what makes that safe
+
+`cd-orchestration` deliberately does **not** re-run the CI gauntlet. wardnet's
+`release.yml` does, but that is insurance against a gap this design can close
+directly: the commit being tagged already passed `ci-gate`, so re-running it is
+duplicated cost — *provided* the commit was actually tested against the code it
+merged into.
+
+Two things make that hold, and gt owns both:
+
+1. **Branch protection requires branches to be up to date before merging**
+   (`required_status_checks.strict`, already `require_up_to_date: true` in the
+   spec). This is what guarantees the passing run happened against current
+   `main`.
+2. **`ci-orchestration` fails fast when the branch is behind.** A first
+   `freshness` job compares the PR's base SHA with the tip of the base branch
+   and fails immediately if they differ, before any build or test runs. Strict
+   mode can be turned off or bypassed by an admin; this makes the invariant
+   visible in CI rather than assumed.
+
+Because the two are load-bearing together, **gt validates the coupling**:
+enabling CD while `require_up_to_date` is false is a spec error, not a silent
+weakening. Skipping revalidation on release is only sound if the thing being
+trusted is actually enforced.
+
+The cost is real and worth stating: on a repo with concurrent PRs, every merge
+turns the other open PRs red until they are updated. That is what "require
+rebase" means — this design just surfaces it in seconds rather than after a
+full pipeline.
+
+`freshness` runs only for `pull_request` events; a `workflow_dispatch` run has
+no base to be behind.
 
 ## The preflight contract
 
@@ -209,8 +313,13 @@ detection ignores them.
 
 ```yaml
 pipeline:
-  enabled: true
-  stages: [preflight, build, test, end2end]   # publish is release-time
+  ci:
+    enabled: true
+    stages: [preflight, build, test, end2end]
+  cd:
+    enabled: true
+    stages: [preflight, publish, deploy, verify]
+    tags: ["v*.*.*"]        # wardnet-cloud ships several independent patterns
 ```
 
 `uses:` cannot be computed at runtime, so the stage list is baked into the
