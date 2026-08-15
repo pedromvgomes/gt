@@ -107,8 +107,10 @@ Keep repositories structurally consistent: Dependabot config, PR gating, convent
 - `gt repo init` — detect Dependabot ecosystems from the files on disk and seed `checks.required` from the check names your existing `pull_request` workflows already produce. Writes `.gt-repo.yaml` for you to review. `--dry-run` prints without writing.
 - `gt repo check` — render the spec, diff it against the working tree, and lint the workflow triggers the gate depends on. Non-zero exit on any problem, so it works as a PR check. `--json` for machine-readable output.
 - `gt repo sync` — write the files that have drifted. `--dry-run`, `--yes`, and `--skip-workflows`. A repository with no `.gt-repo.yaml` is not governed; sync says so and exits 0, which makes it safe to run from a post-clone setup template.
+- `gt repo config [--json]` — print the resolved spec with defaults applied. gt's own workflows consume this rather than re-parsing the YAML.
 - `gt repo settings diff|apply` — branch protection, merge methods, and the single required status check, through your existing `gh` credentials.
-- `gt repo fleet merge-pending --owner <name>` — list (or `--merge`) the Dependabot PRs the in-repo auto-merge cannot touch.
+- `gt repo fleet check|sync --owner <name>` — sweep every repository in an owner; `sync` opens a PR per repo. This is the escalation path for files `GITHUB_TOKEN` cannot write.
+- `gt repo fleet merge-pending --owner <name>` — list (or `--merge`) the Dependabot PRs the in-repo auto-merge cannot touch. Applies the same eligibility gates as the in-repo job.
 
 See [Repository governance](#repository-governance) for the full model.
 

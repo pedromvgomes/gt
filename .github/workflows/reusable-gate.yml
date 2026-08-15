@@ -46,19 +46,25 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Read .gt-repo.yaml
+      - name: Install gt
+        run: curl -fsSL https://raw.githubusercontent.com/pedromvgomes/gt/main/install.sh | sh
+
+      - name: Read config
         id: spec
         run: |
           set -euo pipefail
 
-          if [[ ! -f .gt-repo.yaml ]]; then
-            echo "::error::.gt-repo.yaml is missing; run 'gt repo init' in this repository"
-            exit 1
-          fi
+          # Config comes from gt, not from parsing the YAML here. Re-deriving
+          # gt's defaults in yq produced three separate bugs: `//` is the
+          # ALTERNATIVE operator, so an explicit `false` reads back as the
+          # default (silently re-enabling a check the repo turned off), and a
+          # key gt defaults in Go had no fallback in the workflow at all.
+          # `gt repo config --json` is the same parser, defaults and validation
+          # the local commands use.
+          gt repo config --json > "${RUNNER_TEMP}/spec.json"
 
-          # yq is preinstalled on GitHub-hosted runners.
-          scope=$(yq -r '.conventional_commits.scope // "pr_title"' .gt-repo.yaml)
-          enabled=$(yq -r '.conventional_commits.enabled // true' .gt-repo.yaml)
+          enabled=$(jq -r '.conventional_commits.enabled' "${RUNNER_TEMP}/spec.json")
+          scope=$(jq -r '.conventional_commits.scope' "${RUNNER_TEMP}/spec.json")
 
           title=false
           commits=false
@@ -75,19 +81,19 @@ jobs:
             echo "cc_enabled=$enabled"
             echo "cc_title=$title"
             echo "cc_commits=$commits"
-            echo "timeout_minutes=$(yq -r '.checks.timeout_minutes // 30' .gt-repo.yaml)"
+            echo "timeout_minutes=$(jq -r '.checks.timeout_minutes' "${RUNNER_TEMP}/spec.json")"
           } >> "$GITHUB_OUTPUT"
 
-          # types and scopes are newline-separated lists, which is the format
+          # types and scopes are newline-separated lists, the format
           # action-semantic-pull-request expects. A multiline value MUST use
           # the heredoc form: writing it as `key=value` fails the step with
           # "Invalid format", which would break the gate on every PR.
           {
             echo "cc_types<<GT_EOF"
-            yq -r '.conventional_commits.types[]? // empty' .gt-repo.yaml
+            jq -r '.conventional_commits.types[]?' "${RUNNER_TEMP}/spec.json"
             echo "GT_EOF"
             echo "cc_scopes<<GT_EOF"
-            yq -r '.conventional_commits.scopes[]? // empty' .gt-repo.yaml
+            jq -r '.conventional_commits.scopes[]?' "${RUNNER_TEMP}/spec.json"
             echo "GT_EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -224,6 +230,9 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install gt
+        run: curl -fsSL https://raw.githubusercontent.com/pedromvgomes/gt/main/install.sh | sh
+
       - name: Aggregate declared checks
         env:
           GH_TOKEN: ${{ github.token }}
@@ -234,8 +243,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t required < <(yq -r '.checks.required[]? // empty' .gt-repo.yaml)
-          mapfile -t optional < <(yq -r '.checks.optional[]? // empty' .gt-repo.yaml)
+          # Same reasoning as the config job: read gt's resolved spec rather
+          # than re-parsing the YAML with a different set of defaults.
+          gt repo config --json > "${RUNNER_TEMP}/spec.json"
+          mapfile -t required < <(jq -r '.checks.required[]?' "${RUNNER_TEMP}/spec.json")
+          mapfile -t optional < <(jq -r '.checks.optional[]?' "${RUNNER_TEMP}/spec.json")
 
           if [[ ${#required[@]} -eq 0 && ${#optional[@]} -eq 0 ]]; then
             echo "No checks declared in .gt-repo.yaml; nothing to aggregate."

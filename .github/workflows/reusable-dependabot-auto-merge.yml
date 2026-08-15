@@ -39,14 +39,23 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Read policy from .gt-repo.yaml
+      - name: Install gt
+        run: curl -fsSL https://raw.githubusercontent.com/pedromvgomes/gt/main/install.sh | sh
+
+      - name: Read policy
         id: policy
         run: |
           set -euo pipefail
+
+          # Via gt, not yq. `//` is the ALTERNATIVE operator, so it treats an
+          # explicit `false` exactly like an absent key: `delete_branch: false`
+          # read back as true and deleted branches the repo asked to keep, and
+          # `enabled: false` kept the job merging after it was turned off.
+          gt repo config --json > "${RUNNER_TEMP}/spec.json"
           {
-            echo "enabled=$(yq -r '.dependabot_auto_merge.enabled // true' .gt-repo.yaml)"
-            echo "max_bump=$(yq -r '.dependabot_auto_merge.max_bump // "minor"' .gt-repo.yaml)"
-            echo "delete_branch=$(yq -r '.dependabot_auto_merge.delete_branch // true' .gt-repo.yaml)"
+            echo "enabled=$(jq -r '.dependabot_auto_merge.enabled' "${RUNNER_TEMP}/spec.json")"
+            echo "max_bump=$(jq -r '.dependabot_auto_merge.max_bump' "${RUNNER_TEMP}/spec.json")"
+            echo "delete_branch=$(jq -r '.dependabot_auto_merge.delete_branch' "${RUNNER_TEMP}/spec.json")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Merge eligible Dependabot PRs

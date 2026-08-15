@@ -248,17 +248,91 @@ func TestTouchesWorkflows(t *testing.T) {
 func TestPendingWorkflowPRsSelectsOnlyWorkflowTouchingPRs(t *testing.T) {
 	gh := &fakeGH{responses: map[string]string{
 		"pr list": `[
-		  {"number":1,"title":"bump actions/checkout from 6 to 7","files":[{"path":".github/workflows/ci.yml"}],"isDraft":false},
-		  {"number":2,"title":"bump serde from 1.0.1 to 1.0.2","files":[{"path":"Cargo.toml"}],"isDraft":false},
-		  {"number":3,"title":"bump actions/setup-go","files":[{"path":".github/workflows/release.yml"}],"isDraft":true}
+		  {"number":1,"title":"bump actions/checkout from 6.0.0 to 6.1.0","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"},
+		  {"number":2,"title":"bump serde from 1.0.1 to 1.0.2","files":[{"path":"Cargo.toml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"},
+		  {"number":3,"title":"bump actions/setup-go from 5.0.0 to 5.0.1","files":[{"path":".github/workflows/release.yml"}],
+		   "isDraft":true,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}
 		]`,
 	}}
-	pending, err := repogov.PendingWorkflowPRs(context.Background(), gh, "pedromvgomes/demo")
+	pending, err := repogov.PendingWorkflowPRs(context.Background(), gh, "pedromvgomes/demo", repospec.BumpMinor)
 	if err != nil {
 		t.Fatalf("PendingWorkflowPRs() error = %v", err)
 	}
 	if len(pending) != 1 || pending[0].Number != 1 {
 		t.Fatalf("PendingWorkflowPRs() = %v, want only PR #1", pending)
+	}
+	if !pending[0].Eligible {
+		t.Errorf("PR #1 should be eligible: %s", pending[0].Reason)
+	}
+}
+
+// This path exists because GITHUB_TOKEN cannot merge workflow files — not
+// because the policy should be looser here. It must apply the same gates the
+// in-repo job applies, or the escalation route becomes a way around them.
+func TestPendingWorkflowPRsAppliesTheSameGatesAsTheInRepoJob(t *testing.T) {
+	gh := &fakeGH{responses: map[string]string{
+		"pr list": `[
+		  {"number":1,"title":"bump actions/checkout from 6.0.0 to 7.0.0","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"},
+		  {"number":2,"title":"bump actions/setup-go from 5.0.0 to 5.0.1","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"},
+		  {"number":3,"title":"bump actions/cache from 4.0.0 to 4.0.1","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"},
+		  {"number":4,"title":"bump some action","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}
+		]`,
+	}}
+	pending, err := repogov.PendingWorkflowPRs(context.Background(), gh, "pedromvgomes/demo", repospec.BumpMinor)
+	if err != nil {
+		t.Fatalf("PendingWorkflowPRs() error = %v", err)
+	}
+	if len(pending) != 4 {
+		t.Fatalf("got %d PRs, want all 4 listed", len(pending))
+	}
+
+	wantReason := map[int]string{
+		1: "exceeds max_bump", // major bump
+		2: "checks not green",
+		3: "not mergeable",
+		4: "could not parse versions",
+	}
+	for _, pr := range pending {
+		if pr.Eligible {
+			t.Errorf("PR #%d should not be eligible", pr.Number)
+			continue
+		}
+		if !strings.Contains(pr.Reason, wantReason[pr.Number]) {
+			t.Errorf("PR #%d reason = %q, want it to mention %q", pr.Number, pr.Reason, wantReason[pr.Number])
+		}
+		// Merging must refuse too, not just the listing.
+		if err := repogov.MergePending(context.Background(), gh, pr); err == nil {
+			t.Errorf("MergePending(#%d) = nil, want a refusal", pr.Number)
+		}
+	}
+}
+
+func TestParseBump(t *testing.T) {
+	tests := map[string]string{
+		"bump serde from 1.2.3 to 1.2.4":                    repospec.BumpPatch,
+		"bump serde from 1.2.3 to 1.3.0":                    repospec.BumpMinor,
+		"bump serde from 1.2.3 to 2.0.0":                    repospec.BumpMajor,
+		"bump serde from 1.2.3 to 1.2.4 in /source":         repospec.BumpPatch,
+		"chore(deps): bump x from 1.2.3-rc.1 to 1.2.4-rc.2": repospec.BumpPatch,
+		"bump the npm group with 3 updates":                 "",
+	}
+	for title, want := range tests {
+		got, ok := repogov.ParseBump(title)
+		if want == "" {
+			if ok {
+				t.Errorf("ParseBump(%q) = %q, want no match", title, got)
+			}
+			continue
+		}
+		if !ok || got != want {
+			t.Errorf("ParseBump(%q) = %q/%v, want %q", title, got, ok, want)
+		}
 	}
 }
 

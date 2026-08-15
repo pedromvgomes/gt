@@ -25,6 +25,7 @@ func newRepoCommand(opts *options) *cobra.Command {
 			"templates, so changing it for every repo is a single gt release.",
 	}
 	cmd.AddCommand(newRepoInitCommand(opts))
+	cmd.AddCommand(newRepoConfigCommand(opts))
 	cmd.AddCommand(newRepoCheckCommand(opts))
 	cmd.AddCommand(newRepoSyncCommand(opts))
 	cmd.AddCommand(newRepoSettingsCommand(opts))
@@ -98,6 +99,41 @@ func newRepoInitCommand(opts *options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing "+repospec.FileName)
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the detected spec without writing it")
+	return cmd
+}
+
+func newRepoConfigCommand(_ *options) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Print the resolved " + repospec.FileName + ", with defaults applied",
+		Long: "Emits the spec exactly as gt understands it, after defaults and validation.\n\n" +
+			"gt's workflows consume this rather than parsing " + repospec.FileName + " themselves.\n" +
+			"Re-implementing the defaults in yq had already produced three bugs: `//` is\n" +
+			"the alternative operator, so an explicit `false` reads back as the default,\n" +
+			"and a key gt defaults in Go had no fallback at all in the workflow.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			govOpts, err := repoOptions(false)
+			if err != nil {
+				return err
+			}
+			spec, err := repospec.Load(govOpts.WorkDir)
+			if err != nil {
+				return err
+			}
+			if !asJSON {
+				return repogov.WriteSpecTo(os.Stdout, spec)
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(spec); err != nil {
+				return fmt.Errorf("encode spec: %w", err)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of YAML")
 	return cmd
 }
 
@@ -309,7 +345,16 @@ func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
 func printDiff(printer *ui.UI, drifted []repogov.Result) {
 	for _, r := range drifted {
 		_, _ = fmt.Fprintf(printer.Out, "\n--- %s (%s)\n", r.Path, r.Status)
-		for _, line := range strings.Split(strings.TrimRight(string(r.Want), "\n"), "\n") {
+
+		// An orphan has no desired content — showing r.Want would print a
+		// single blank line and tell the user nothing about the deletion they
+		// are being asked to confirm. Show what is there instead.
+		body := r.Want
+		if r.Status == repogov.StatusOrphaned {
+			_, _ = fmt.Fprintln(printer.Out, "  this file will be REMOVED; its current contents are:")
+			body = r.Got
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
 			_, _ = fmt.Fprintf(printer.Out, "  %s\n", line)
 		}
 	}

@@ -88,7 +88,12 @@ func Lint(workdir string, spec repospec.Spec) ([]Finding, error) {
 	// remote reusable workflow. Those workflows cannot be read without fetching
 	// them, so any check under such a prefix might legitimately exist.
 	var unresolvedPrefixes []string
-	for _, wf := range workflows {
+	// Sorted, not map order: when two workflows expose the same check name,
+	// "first one wins" would otherwise pick a different workflow between runs.
+	// If only one of them carries a paths: filter, the lint would then flip
+	// red and green across identical CI runs.
+	for _, path := range sortedKeys(workflows) {
+		wf := workflows[path]
 		names, prefixes := checkNames(wf, workflows, "", 0)
 		unresolvedPrefixes = append(unresolvedPrefixes, prefixes...)
 		for _, n := range names {

@@ -25,14 +25,14 @@ const FileName = ".gt-repo.yaml"
 type Spec struct {
 	// GTVersion records the gt release that last rendered this repo. Written by
 	// sync; `check` warns when the running gt is newer.
-	GTVersion string `yaml:"gt_version,omitempty"`
+	GTVersion string `yaml:"gt_version,omitempty" json:"gt_version,omitempty"`
 
-	Dependabot          []DependabotEntry   `yaml:"dependabot"`
-	Checks              Checks              `yaml:"checks"`
-	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge"`
-	ConventionalCommits ConventionalCommits `yaml:"conventional_commits"`
-	Settings            Settings            `yaml:"settings"`
-	Files               []string            `yaml:"files"`
+	Dependabot          []DependabotEntry   `yaml:"dependabot" json:"dependabot"`
+	Checks              Checks              `yaml:"checks" json:"checks"`
+	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge" json:"dependabot_auto_merge"`
+	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
+	Settings            Settings            `yaml:"settings" json:"settings"`
+	Files               []string            `yaml:"files" json:"files"`
 }
 
 // DependabotEntry is one ecosystem/directory pair. Note carries the per-repo
@@ -40,49 +40,49 @@ type Spec struct {
 // comment above the rendered entry so this file stays the single source of
 // truth.
 type DependabotEntry struct {
-	Ecosystem string `yaml:"ecosystem"`
-	Directory string `yaml:"directory"`
-	Note      string `yaml:"note,omitempty"`
+	Ecosystem string `yaml:"ecosystem" json:"ecosystem"`
+	Directory string `yaml:"directory" json:"directory"`
+	Note      string `yaml:"note,omitempty" json:"note,omitempty"`
 }
 
 // Checks lists the check runs the gate aggregates. gt's own check is never
 // listed here — it is the aggregator, and listing it would deadlock.
 type Checks struct {
-	TimeoutMinutes int      `yaml:"timeout_minutes"`
-	Required       []string `yaml:"required"`
-	Optional       []string `yaml:"optional"`
+	TimeoutMinutes int      `yaml:"timeout_minutes" json:"timeout_minutes"`
+	Required       []string `yaml:"required" json:"required"`
+	Optional       []string `yaml:"optional" json:"optional"`
 }
 
 type DependabotAutoMerge struct {
-	Enabled      bool   `yaml:"enabled"`
-	Schedule     string `yaml:"schedule"`
-	MaxBump      string `yaml:"max_bump"`
-	DeleteBranch bool   `yaml:"delete_branch"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Schedule     string `yaml:"schedule" json:"schedule"`
+	MaxBump      string `yaml:"max_bump" json:"max_bump"`
+	DeleteBranch bool   `yaml:"delete_branch" json:"delete_branch"`
 }
 
 type ConventionalCommits struct {
-	Enabled bool     `yaml:"enabled"`
-	Scope   string   `yaml:"scope"`
-	Types   []string `yaml:"types"`
-	Scopes  []string `yaml:"scopes,omitempty"`
+	Enabled bool     `yaml:"enabled" json:"enabled"`
+	Scope   string   `yaml:"scope" json:"scope"`
+	Types   []string `yaml:"types" json:"types"`
+	Scopes  []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 }
 
 type Settings struct {
-	Merge            MergeSettings    `yaml:"merge"`
-	BranchProtection BranchProtection `yaml:"branch_protection"`
+	Merge            MergeSettings    `yaml:"merge" json:"merge"`
+	BranchProtection BranchProtection `yaml:"branch_protection" json:"branch_protection"`
 }
 
 type MergeSettings struct {
-	Squash              bool `yaml:"squash"`
-	MergeCommit         bool `yaml:"merge_commit"`
-	Rebase              bool `yaml:"rebase"`
-	DeleteBranchOnMerge bool `yaml:"delete_branch_on_merge"`
+	Squash              bool `yaml:"squash" json:"squash"`
+	MergeCommit         bool `yaml:"merge_commit" json:"merge_commit"`
+	Rebase              bool `yaml:"rebase" json:"rebase"`
+	DeleteBranchOnMerge bool `yaml:"delete_branch_on_merge" json:"delete_branch_on_merge"`
 }
 
 type BranchProtection struct {
-	Branch            string `yaml:"branch"`
-	RequiredApprovals int    `yaml:"required_approvals"`
-	RequireUpToDate   bool   `yaml:"require_up_to_date"`
+	Branch            string `yaml:"branch" json:"branch"`
+	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
+	RequireUpToDate   bool   `yaml:"require_up_to_date" json:"require_up_to_date"`
 }
 
 // Conventional-commit enforcement scopes.

@@ -89,7 +89,7 @@ jobs:
               echo
               for f in ${pending//,/ }; do echo "- \`$f\`"; done
               echo
-              echo "Run \`gt repo fleet sync\` locally to update them."
+              echo "Run \`gt repo fleet sync --owner <owner>\` locally to update them."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -107,14 +107,21 @@ jobs:
 
           # Force-push a single long-lived branch so consecutive weeks replace
           # the previous proposal instead of accumulating stale PRs.
+          #
+          # Plain --force, not --force-with-lease: actions/checkout makes a
+          # depth-1, single-ref clone, so there is no refs/remotes/origin/$BRANCH
+          # for the lease to compare against. Git would then expect the null OID
+          # and reject every push after the first week with "stale info",
+          # leaving the weekly sync permanently red — exactly the repeat case
+          # this branch strategy exists to handle.
           git switch -C "$BRANCH"
           git add -A
           git commit -m "chore(gt): sync repository governance"
-          git push --force-with-lease origin "$BRANCH"
+          git push --force origin "$BRANCH"
 
           body="Automated \`gt repo sync\`."
           if [[ -n "$PENDING" ]]; then
-            body="${body}"$'\n\n'"⚠️ These workflow files also drifted but could not be written by \`GITHUB_TOKEN\`: ${PENDING}."$'\n'"Run \`gt repo fleet sync\` locally to update them."
+            body="${body}"$'\n\n'"⚠️ These workflow files also drifted but could not be written by \`GITHUB_TOKEN\`: ${PENDING}."$'\n'"Run \`gt repo fleet sync --owner <owner>\` locally to update them."
           fi
 
           if existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number') && [[ -n "$existing" ]]; then

@@ -2,6 +2,7 @@ package repogov
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -150,11 +151,18 @@ func ExistingCheckNames(workdir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Deduplicated: two workflows can legitimately expose jobs with the same
+	// name (a `Test` job in both ci.yml and codeql.yml is unremarkable), and a
+	// duplicate in checks.required fails validation — so without this, init
+	// would abort with "generated spec is invalid" on an ordinary repo, with
+	// no flag to work around it.
+	seen := map[string]bool{}
 	var out []string
-	for path, wf := range workflows {
+	for _, path := range sortedKeys(workflows) {
 		if isGTManaged(path) {
 			continue
 		}
+		wf := workflows[path]
 		trigger := parsePRTrigger(wf.On)
 		if !trigger.Present || len(trigger.Paths) > 0 || len(trigger.PathsIgnore) > 0 {
 			continue
@@ -164,14 +172,26 @@ func ExistingCheckNames(workdir string) ([]string, error) {
 			// Matrix jobs report one check per matrix value with the
 			// expression expanded, so the template text is not a usable name.
 			// Seeding it would hand the user a spec that fails its own lint.
-			if IsTemplated(n) {
+			if IsTemplated(n) || seen[n] {
 				continue
 			}
+			seen[n] = true
 			out = append(out, n)
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// sortedKeys gives map iteration a stable order. Workflow maps are keyed by
+// path, and several results depend on which workflow is visited first.
+func sortedKeys(workflows map[string]*workflow) []string {
+	out := make([]string, 0, len(workflows))
+	for k := range workflows {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // isGTManaged reports whether a workflow path is one gt renders, so init never
@@ -191,16 +211,24 @@ func isGTManaged(path string) bool {
 func SaveSpec(workdir string, spec repospec.Spec) error {
 	var buf strings.Builder
 	buf.WriteString(specHeader)
-	enc := yaml.NewEncoder(&buf)
+	if err := WriteSpecTo(&buf, spec); err != nil {
+		return err
+	}
+	if err := os.WriteFile(repospec.Path(workdir), []byte(buf.String()), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", repospec.FileName, err)
+	}
+	return nil
+}
+
+// WriteSpecTo encodes a spec as YAML.
+func WriteSpecTo(w io.Writer, spec repospec.Spec) error {
+	enc := yaml.NewEncoder(w)
 	enc.SetIndent(2)
 	if err := enc.Encode(spec); err != nil {
 		return fmt.Errorf("encode %s: %w", repospec.FileName, err)
 	}
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("encode %s: %w", repospec.FileName, err)
-	}
-	if err := os.WriteFile(repospec.Path(workdir), []byte(buf.String()), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", repospec.FileName, err)
 	}
 	return nil
 }
