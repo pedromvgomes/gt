@@ -34,22 +34,33 @@ func newRepoCommand(opts *options) *cobra.Command {
 }
 
 // repoOptions resolves the repository context every `gt repo` subcommand needs.
-// It reuses setup.DetectFromCWD so governance works in a gt-managed bare layout
-// and in a plain clone alike — the same reach `gt setup` already has.
+//
+// setup.DetectFromCWD supplies the repo identity, which works in a gt-managed
+// bare layout and a plain clone alike. Its WorkDir is deliberately NOT used:
+// in a bare layout it always points at the default-branch worktree, because
+// that is what post-clone setup templates operate on. Governance has to act on
+// the worktree you are standing in, or `gt repo sync` run from a feature
+// worktree would silently write its changes into the main checkout.
 func repoOptions(skipWorkflows bool) (repogov.Options, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return repogov.Options{}, fmt.Errorf("resolve current directory: %w", err)
 	}
-	rcontext, err := setup.DetectFromCWD(context.Background(), git.ExecRunner{}, cwd)
+	ctx := context.Background()
+	runner := git.ExecRunner{}
+
+	rcontext, err := setup.DetectFromCWD(ctx, runner, cwd)
 	if err != nil {
 		return repogov.Options{}, err
 	}
-	if rcontext.WorkDir == "" {
-		return repogov.Options{}, ui.Errorf(ui.ExitUser, "could not resolve the repository working tree")
+
+	workdir, err := repogov.ResolveWorkDir(ctx, runner, cwd)
+	if err != nil {
+		return repogov.Options{}, ui.Errorf(ui.ExitUser, "%v", err)
 	}
+
 	return repogov.Options{
-		WorkDir:       rcontext.WorkDir,
+		WorkDir:       workdir,
 		RepoOwner:     rcontext.RepoOwner,
 		RepoName:      rcontext.RepoName,
 		GTVersion:     version,

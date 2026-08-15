@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
 	"gopkg.in/yaml.v3"
@@ -344,5 +345,58 @@ jobs:
 			t.Fatalf("run %d produced %d findings, first produced %d — lint is not deterministic",
 				i, len(next), len(first))
 		}
+	}
+}
+
+// In a gt-managed bare layout, setup.Context.WorkDir always points at the
+// default-branch checkout, because that is what post-clone setup templates
+// operate on. Governance must instead act on the worktree the user is standing
+// in — otherwise `gt repo sync` from a feature worktree writes its changes into
+// the main checkout, leaving the worktree untouched and dirtying a tree the
+// user was not working in.
+func TestResolveWorkDirUsesTheCurrentWorktree(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	runner := git.ExecRunner{}
+
+	mustGit := func(dir string, args ...string) {
+		t.Helper()
+		if _, err := runner.Run(ctx, dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+
+	mustGit(root, "init", "-q", "-b", "main", ".")
+	mustGit(root, "config", "user.email", "t@example.com")
+	mustGit(root, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	mustGit(root, "add", "-A")
+	mustGit(root, "commit", "-qm", "init")
+
+	linked := filepath.Join(t.TempDir(), "feature")
+	mustGit(root, "worktree", "add", "-q", "-b", "feature/x", linked)
+
+	for name, dir := range map[string]string{"main checkout": root, "linked worktree": linked} {
+		t.Run(name, func(t *testing.T) {
+			got, err := repogov.ResolveWorkDir(ctx, runner, dir)
+			if err != nil {
+				t.Fatalf("ResolveWorkDir() error = %v", err)
+			}
+			// macOS temp dirs are symlinked (/var -> /private/var), so compare
+			// resolved paths rather than the raw strings.
+			wantResolved, _ := filepath.EvalSymlinks(dir)
+			gotResolved, _ := filepath.EvalSymlinks(got)
+			if gotResolved != wantResolved {
+				t.Errorf("ResolveWorkDir() = %q, want %q", gotResolved, wantResolved)
+			}
+		})
+	}
+}
+
+func TestResolveWorkDirOutsideARepository(t *testing.T) {
+	if _, err := repogov.ResolveWorkDir(context.Background(), git.ExecRunner{}, t.TempDir()); err == nil {
+		t.Error("ResolveWorkDir() outside a repo = nil, want error")
 	}
 }

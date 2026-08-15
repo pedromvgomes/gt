@@ -1,15 +1,40 @@
 package repogov
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
 
+	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/repospec"
 	"gopkg.in/yaml.v3"
 )
+
+// ResolveWorkDir returns the working tree governance should act on.
+//
+// This is deliberately not setup.Context.WorkDir: in a gt-managed bare layout
+// that always points at the default-branch checkout, because that is what
+// post-clone setup templates operate on. Governance must act on the worktree
+// the user is standing in — otherwise `gt repo sync` run from a feature
+// worktree writes its changes into the main checkout instead, leaving the
+// worktree untouched and dirtying a tree the user was not working in.
+//
+// `rev-parse --show-toplevel` resolves correctly in every layout: a plain
+// clone, the default-branch checkout, and a linked worktree.
+func ResolveWorkDir(ctx context.Context, runner git.Runner, cwd string) (string, error) {
+	res, err := runner.Run(ctx, cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("not inside a git repository: %w", err)
+	}
+	workdir := strings.TrimSpace(res.Stdout)
+	if workdir == "" {
+		return "", fmt.Errorf("could not resolve the repository working tree")
+	}
+	return workdir, nil
+}
 
 // Options is the resolved repository context a governance run operates on.
 type Options struct {
