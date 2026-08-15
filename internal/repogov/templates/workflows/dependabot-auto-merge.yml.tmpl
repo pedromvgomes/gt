@@ -1,4 +1,4 @@
-# Managed by gt ({{ .GTVersion }}) — edit .gt-repo.yaml, then run `gt repo sync`.
+# Managed by gt — edit .gt-repo.yaml, then run `gt repo sync`.
 #
 # Daily batch window for merging Dependabot's eligible bumps. The Dependabot
 # cooldown (set in .github/dependabot.yml) is the supply-chain guard; this is
@@ -17,8 +17,11 @@ on:
     - cron: "{{ .AutoMergeSchedule }}"
   workflow_dispatch:
 
+# A called reusable workflow can only narrow the caller's token, never widen
+# it, so the writes the merge job needs have to be granted here.
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 jobs:
   auto-merge:

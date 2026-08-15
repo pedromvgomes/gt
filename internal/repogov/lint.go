@@ -84,10 +84,13 @@ func Lint(workdir string, spec repospec.Spec) ([]Finding, error) {
 
 	// producers maps a check name to the workflow that emits it.
 	producers := map[string]*workflow{}
-	unresolved := false
+	// unresolvedPrefixes holds the "<caller job> / " prefixes of jobs calling a
+	// remote reusable workflow. Those workflows cannot be read without fetching
+	// them, so any check under such a prefix might legitimately exist.
+	var unresolvedPrefixes []string
 	for _, wf := range workflows {
-		names, hadUnresolved := checkNames(wf, workflows, 0)
-		unresolved = unresolved || hadUnresolved
+		names, prefixes := checkNames(wf, workflows, "", 0)
+		unresolvedPrefixes = append(unresolvedPrefixes, prefixes...)
 		for _, n := range names {
 			if _, taken := producers[n]; !taken {
 				producers[n] = wf
@@ -111,10 +114,12 @@ func Lint(workdir string, spec repospec.Spec) ([]Finding, error) {
 		}
 		wf, ok := producers[name]
 		if !ok {
-			// A remote `uses:` we could not read might be the producer, so a
-			// missing name is only reported as certainly-wrong when every
-			// reference resolved.
-			if unresolved {
+			// A remote `uses:` might be the producer — but only of names under
+			// its own "<caller job> / " prefix. Scoping this matters: every
+			// governed repo contains gt's own gate caller, which is remote and
+			// unresolvable, so treating any remote reference as a repo-wide
+			// exemption would disable typo detection everywhere it is needed.
+			if hasAnyPrefix(name, unresolvedPrefixes) {
 				continue
 			}
 			findings = append(findings, Finding{
@@ -161,39 +166,50 @@ func IsTemplated(name string) bool {
 	return strings.Contains(name, "${{")
 }
 
-// checkNames returns the check-run names a workflow produces, and whether any
-// reference could not be resolved.
+// checkNames returns the check-run names a workflow produces, plus the name
+// prefixes whose contents could not be enumerated.
 //
 // A plain job reports under its own name — wardnet's required check is
 // "All checks passed", the name of the job, with no workflow prefix. A job
 // that `uses:` a reusable workflow instead reports one check per job in the
 // called workflow, named "<caller job> / <called job>".
-func checkNames(wf *workflow, all map[string]*workflow, depth int) ([]string, bool) {
-	var names []string
-	unresolved := false
+//
+// prefix carries the accumulated caller names for nested reusable workflows.
+func checkNames(wf *workflow, all map[string]*workflow, prefix string, depth int) (names, unresolvedPrefixes []string) {
 	for id, j := range wf.Jobs {
 		caller := j.Name
 		if caller == "" {
 			caller = id
 		}
+		full := prefix + caller
+
 		if j.Uses == "" {
-			names = append(names, caller)
+			names = append(names, full)
 			continue
 		}
+
 		called, ok := resolveLocalUses(j.Uses, all)
 		if !ok || depth >= maxUsesDepth {
-			// Remote or too-deep reference: we cannot enumerate its jobs.
-			unresolved = true
+			// Remote or too deep: its jobs are unknown, but whatever they are,
+			// they can only report under this prefix.
+			unresolvedPrefixes = append(unresolvedPrefixes, full+" / ")
 			continue
 		}
-		inner, innerUnresolved := checkNames(called, all, depth+1)
-		unresolved = unresolved || innerUnresolved
-		for _, n := range inner {
-			names = append(names, caller+" / "+n)
-		}
+		inner, innerPrefixes := checkNames(called, all, full+" / ", depth+1)
+		names = append(names, inner...)
+		unresolvedPrefixes = append(unresolvedPrefixes, innerPrefixes...)
 	}
 	sort.Strings(names)
-	return names, unresolved
+	return names, unresolvedPrefixes
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveLocalUses resolves a `uses:` value that points at a workflow in this

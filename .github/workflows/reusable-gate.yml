@@ -75,9 +75,20 @@ jobs:
             echo "cc_enabled=$enabled"
             echo "cc_title=$title"
             echo "cc_commits=$commits"
-            echo "cc_types=$(yq -r '.conventional_commits.types[]? // empty' .gt-repo.yaml | paste -sd '\n' -)"
-            echo "cc_scopes=$(yq -r '.conventional_commits.scopes[]? // empty' .gt-repo.yaml | paste -sd '\n' -)"
             echo "timeout_minutes=$(yq -r '.checks.timeout_minutes // 30' .gt-repo.yaml)"
+          } >> "$GITHUB_OUTPUT"
+
+          # types and scopes are newline-separated lists, which is the format
+          # action-semantic-pull-request expects. A multiline value MUST use
+          # the heredoc form: writing it as `key=value` fails the step with
+          # "Invalid format", which would break the gate on every PR.
+          {
+            echo "cc_types<<GT_EOF"
+            yq -r '.conventional_commits.types[]? // empty' .gt-repo.yaml
+            echo "GT_EOF"
+            echo "cc_scopes<<GT_EOF"
+            yq -r '.conventional_commits.scopes[]? // empty' .gt-repo.yaml
+            echo "GT_EOF"
           } >> "$GITHUB_OUTPUT"
 
   conventional-commits:
@@ -86,6 +97,9 @@ jobs:
     if: needs.config.outputs.cc_enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # action-semantic-pull-request reads the PR title
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -180,6 +194,11 @@ jobs:
     runs-on: ubuntu-latest
     # Bounded by the polling loop's own deadline; this is the outer backstop.
     timeout-minutes: 360
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read # `gh pr checks` needs this to see the PR's results
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -259,19 +278,31 @@ jobs:
                   elif ($m | map(select(.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS" or .state == "WAITING" or .state == "REQUESTED")) | length) > 0 then "PENDING"
                   else "SUCCESS" end')
 
+              # An optional check never blocks the merge, whatever it reports.
+              # "Optional" has to mean optional in every outcome, not only when
+              # the check is absent — the auto-merge job already treats
+              # UNSTABLE (required green, optional red) as mergeable, and the
+              # two must agree or a PR would auto-merge past a gate it failed.
+              if [[ "$optional_check" == "true" ]]; then
+                if is_failure "$state"; then
+                  echo "::warning::optional check ${name} reported ${state}; not blocking"
+                elif ! is_pass "$state" && [[ "$state" != "ABSENT" ]]; then
+                  # Still running: wait, so a slow optional check is observed
+                  # rather than silently ignored.
+                  pending+=("$name ($state, optional)")
+                fi
+                continue
+              fi
+
               if is_failure "$state"; then
                 failed+=("$name ($state)")
               elif is_pass "$state"; then
                 :
-              elif [[ "$state" == "ABSENT" ]]; then
-                # An optional check is allowed never to appear. A required one
-                # that is absent is indistinguishable from one that has not
-                # started, so it stays pending until the deadline — which is
-                # exactly what `gt repo check`'s trigger lint exists to prevent.
-                if [[ "$optional_check" == "false" ]]; then
-                  pending+=("$name (absent)")
-                fi
               else
+                # ABSENT is indistinguishable from "not started yet", so a
+                # required check stays pending until the deadline. That is
+                # exactly what `gt repo check`'s trigger lint exists to prevent.
+                [[ "$state" == "ABSENT" ]] && state="absent"
                 pending+=("$name ($state)")
               fi
             done

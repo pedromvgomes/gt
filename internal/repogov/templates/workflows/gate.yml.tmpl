@@ -1,4 +1,4 @@
-# Managed by gt ({{ .GTVersion }}) — edit .gt-repo.yaml, then run `gt repo sync`.
+# Managed by gt — edit .gt-repo.yaml, then run `gt repo sync`.
 #
 # Thin caller. All gate logic lives in gt's reusable workflow, pinned to the
 # moving {{ .MajorTag }} tag, so gate changes reach this repo without editing this file.
@@ -14,10 +14,14 @@ on:
   pull_request:
     branches: [{{ .Branch }}]
 
+# A called reusable workflow can only narrow these, never widen them.
+# pull-requests: read is what lets the gate read the PR's own check results;
+# without it the aggregation sees nothing and waits out the full timeout.
 permissions:
   contents: read
   checks: read
   statuses: read
+  pull-requests: read
 
 jobs:
   PR:

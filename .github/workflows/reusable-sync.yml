@@ -53,8 +53,13 @@ jobs:
           # describe the repo's own workflows, which a sync cannot fix, and
           # failing here would mean a permanently red weekly run.
           gt repo sync --yes --skip-workflows | tee sync.log || true
+          rm -f sync.log
 
-          if git diff --quiet; then
+          # `git status --porcelain`, not `git diff`: sync usually *creates*
+          # files (.github/dependabot.yml, CODEOWNERS, .editorconfig), and
+          # those are untracked, which `git diff` does not see. Using git diff
+          # here would report "no drift" for exactly the case that matters most.
+          if [[ -z "$(git status --porcelain)" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -68,9 +73,13 @@ jobs:
           # A full check (without --skip-workflows) reveals drift this job is
           # structurally unable to repair. Surfacing it is the whole point:
           # otherwise it would sit unnoticed until someone ran gt locally.
-          gt repo check --json > check.json || true
+          #
+          # Written outside the working tree: the PR step below stages with
+          # `git add -A`, which would otherwise commit this scratch file.
+          report="${RUNNER_TEMP}/gt-check.json"
+          gt repo check --json > "$report" || true
 
-          pending=$(jq -r '[.files[] | select(.workflow and .status != "ok") | .path] | join(", ")' check.json)
+          pending=$(jq -r '[.files[] | select(.workflow and .status != "ok") | .path] | join(", ")' "$report")
           echo "pending=$pending" >> "$GITHUB_OUTPUT"
           if [[ -n "$pending" ]]; then
             {

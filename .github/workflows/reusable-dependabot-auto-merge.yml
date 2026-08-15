@@ -73,9 +73,12 @@ jobs:
 
           # mergeStateStatus ∈ {BEHIND, BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS,
           # UNKNOWN, UNSTABLE}.
+          # --limit is required: gh defaults to 30, which silently drops the
+          # oldest bumps once a repo accumulates more open PRs than that.
           gh pr list --repo "$REPO" \
             --author app/dependabot \
             --state open \
+            --limit 200 \
             --json number,title,mergeable,mergeStateStatus,isDraft \
             > prs.json
 

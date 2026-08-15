@@ -177,7 +177,10 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 				return lintOnlyResult(report)
 			}
 			if dryRun {
-				return nil
+				// Lint findings still count. Returning nil here would make
+				// `sync --dry-run` pass on a repo with drift *and* lint
+				// problems while failing on a clean one with lint problems.
+				return lintOnlyResult(report)
 			}
 			if !yes {
 				ok, err := confirmSync(opts.ui, drifted)
@@ -219,6 +222,16 @@ func lintOnlyResult(report repogov.Report) error {
 
 func confirmSync(printer *ui.UI, drifted []repogov.Result) (bool, error) {
 	if !printer.Interactive {
+		// Writing and creating files is the whole point of sync, and the
+		// result is git-tracked and reviewable, so an unattended run proceeds.
+		// Removing an orphan is not reversible from the working tree alone, so
+		// that requires an explicit --yes rather than an assumed one.
+		for _, r := range drifted {
+			if r.Status == repogov.StatusOrphaned {
+				return false, ui.Errorf(ui.ExitUser,
+					"%s is no longer declared and would be removed; re-run with --yes to confirm", r.Path)
+			}
+		}
 		return true, nil
 	}
 	for {
@@ -266,9 +279,13 @@ func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
 	if len(drifted) == 0 {
 		printer.Info("All %d managed file(s) match.", len(report.Results))
 	} else {
-		_, _ = fmt.Fprintf(printer.Out, "%d of %d managed file(s) need writing:\n", len(drifted), len(report.Results))
+		_, _ = fmt.Fprintf(printer.Out, "%d of %d managed file(s) need changing:\n", len(drifted), len(report.Results))
 		for _, r := range drifted {
-			_, _ = fmt.Fprintf(printer.Out, "  %-9s %s\n", r.Status, r.Path)
+			note := ""
+			if r.Status == repogov.StatusOrphaned {
+				note = "  (no longer declared; will be removed)"
+			}
+			_, _ = fmt.Fprintf(printer.Out, "  %-9s %s%s\n", r.Status, r.Path, note)
 		}
 	}
 

@@ -59,15 +59,18 @@ type Input struct {
 	Spec      repospec.Spec
 	RepoOwner string
 	RepoName  string
-	// GTVersion is the running gt version, stamped into every rendered file so
-	// a file carries the policy version that produced it.
+	// GTVersion is the running gt version. It determines the major tag the
+	// callers pin, and is recorded in .gt-repo.yaml — deliberately NOT written
+	// into the rendered files themselves. Stamping it into file headers would
+	// make every gt release drift every workflow file in every repo, and CI
+	// cannot repair workflow files, so each release would turn the gate red
+	// everywhere until a human ran sync locally.
 	GTVersion string
 }
 
 // templateData is the flattened view handed to text/template. Templates stay
 // free of Go logic; everything they need is precomputed here.
 type templateData struct {
-	GTVersion            string
 	MajorTag             string
 	RepoOwner            string
 	RepoName             string
@@ -162,7 +165,6 @@ func buildData(in Input) templateData {
 		})
 	}
 	return templateData{
-		GTVersion:            in.GTVersion,
 		MajorTag:             major,
 		RepoOwner:            in.RepoOwner,
 		RepoName:             in.RepoName,
@@ -179,8 +181,14 @@ func buildData(in Input) templateData {
 	}
 }
 
+// workflowRef builds a `uses:` reference to one of gt's reusable workflows.
+//
+// gt's own definitions are named reusable-*.yml so they never collide with the
+// caller filenames rendered into consumer repos. Without that distinction, gt
+// governing itself would overwrite its own reusable workflows with thin callers
+// pointing at themselves.
 func workflowRef(file, majorTag string) string {
-	return fmt.Sprintf("%s/.github/workflows/%s@%s", Upstream, file, majorTag)
+	return fmt.Sprintf("%s/.github/workflows/reusable-%s@%s", Upstream, file, majorTag)
 }
 
 // MajorTag returns the moving tag callers pin, derived from a gt version.

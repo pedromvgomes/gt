@@ -69,8 +69,11 @@ func newRepoSettingsApplyCommand(opts *options) *cobra.Command {
 			}
 
 			// Branch protection is the safety net for a shared branch, so
-			// changing it is never silent.
-			if !yes && opts.ui.Interactive {
+			// changing it is never silent. No Interactive guard here on
+			// purpose: ui.Prompt already returns the default without a TTY,
+			// so a piped or scripted run declines rather than applying
+			// unattended. Automation must say --yes explicitly.
+			if !yes {
 				answer, err := opts.ui.Prompt("Apply these settings? [y/N]", "N", false, "")
 				if err != nil {
 					return err

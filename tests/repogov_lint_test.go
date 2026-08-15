@@ -210,25 +210,48 @@ jobs:
 	}
 }
 
-// A remote `uses:` cannot be enumerated without fetching it, so an unmatched
-// name might legitimately come from there. Reporting it as a typo would be a
-// false positive.
-func TestLintStaysSilentWhenRemoteUsesIsUnresolvable(t *testing.T) {
+// A remote `uses:` cannot be enumerated without fetching it, so names under
+// its own "<caller job> / " prefix must be given the benefit of the doubt.
+//
+// The exemption has to stop there. Every governed repo contains gt's own gate
+// caller, which is a remote reference; treating that as a repo-wide "something
+// unresolvable exists" switch would disable typo detection in exactly the
+// repos it is meant to protect.
+func TestLintScopesRemoteUsesExemptionToItsOwnPrefix(t *testing.T) {
 	root := t.TempDir()
-	writeWorkflow(t, root, "pr.yml", `
+	writeWorkflow(t, root, "gate.yml", `
 name: PR
 on: pull_request
 jobs:
-  gate:
-    name: PR
-    uses: pedromvgomes/gt/.github/workflows/gate.yml@v0
+  PR:
+    uses: pedromvgomes/gt/.github/workflows/reusable-gate.yml@v0
 `)
-	findings, err := repogov.Lint(root, specRequiring("Something From Upstream"))
+	writeWorkflow(t, root, "ci.yml", `
+name: CI
+on: pull_request
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+`)
+
+	// Under the unresolvable prefix: cannot be disproven, so stay quiet.
+	findings, err := repogov.Lint(root, specRequiring("PR / Something Upstream"))
 	if err != nil {
 		t.Fatalf("Lint() error = %v", err)
 	}
 	if len(findings) != 0 {
-		t.Fatalf("Lint() = %v, want no findings when a remote uses: is unresolvable", findings)
+		t.Fatalf("Lint() = %v, want no findings for a name under the remote prefix", findings)
+	}
+
+	// Outside it: still a typo, and still reported despite the remote
+	// reference elsewhere in the repo.
+	findings, err = repogov.Lint(root, specRequiring("Buidl"))
+	if err != nil {
+		t.Fatalf("Lint() error = %v", err)
+	}
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "no workflow produces") {
+		t.Fatalf("Lint() = %v, want the typo reported even though a remote uses: exists", findings)
 	}
 }
 

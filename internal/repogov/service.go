@@ -91,6 +91,14 @@ func apply(report Report, opts Options) ([]string, error) {
 	if err != nil {
 		return written, err
 	}
+	// A --skip-workflows run did not render the workflow files, so it has not
+	// brought the repo up to this gt version and must not claim it has.
+	// Stamping here would suppress the staleness warning that is the only
+	// remaining signal those files are behind.
+	if opts.SkipWorkflows {
+		return written, nil
+	}
+
 	// Stamp the version only once the files it describes are actually on disk,
 	// so an interrupted sync never claims to be newer than it is.
 	if report.Spec.GTVersion != opts.GTVersion {
@@ -151,7 +159,7 @@ func ExistingCheckNames(workdir string) ([]string, error) {
 		if !trigger.Present || len(trigger.Paths) > 0 || len(trigger.PathsIgnore) > 0 {
 			continue
 		}
-		names, _ := checkNames(wf, workflows, 0)
+		names, _ := checkNames(wf, workflows, "", 0)
 		for _, n := range names {
 			// Matrix jobs report one check per matrix value with the
 			// expression expanded, so the template text is not a usable name.

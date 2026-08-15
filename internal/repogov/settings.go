@@ -120,8 +120,14 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 	bp := spec.Settings.BranchProtection
 	protRaw, err := gh.Run(ctx, "api", fmt.Sprintf("repos/%s/%s/branches/%s/protection", owner, name, bp.Branch))
 	if err != nil {
-		// An unprotected branch is a 404, which is a state to converge from,
-		// not an error to abort on.
+		// Only a genuine 404 means "not protected", which is a state to
+		// converge from. Any other failure — auth, rate limit, a mistyped
+		// branch name — must surface: reporting it as "this branch has no
+		// protection" would be actively misleading about a shared branch, and
+		// returning early would silently skip the remaining diffs.
+		if !isBranchNotProtected(err) {
+			return nil, fmt.Errorf("read protection for branch %q: %w", bp.Branch, err)
+		}
 		changes = append(changes, SettingChange{
 			Field: "branch_protection", Want: "configured", Got: "absent",
 		})
@@ -218,6 +224,17 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		"--header", "Accept: application/vnd.github+json",
 	)
 	return err
+}
+
+// isBranchNotProtected distinguishes "this branch has no protection rule"
+// from every other reason the protection endpoint can fail. gh surfaces the
+// status line in its stderr, which is what ExecGH wraps into the error.
+func isBranchNotProtected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "http 404") || strings.Contains(msg, "branch not protected")
 }
 
 func sameStrings(a, b []string) bool {
