@@ -67,11 +67,13 @@ func TestRenderDependabotPolicy(t *testing.T) {
 				Interval string `yaml:"interval"`
 			} `yaml:"schedule"`
 			CommitMessage struct {
-				Prefix string `yaml:"prefix"`
+				Prefix  string `yaml:"prefix"`
+				Include string `yaml:"include"`
 			} `yaml:"commit-message"`
 			Cooldown struct {
 				DefaultDays int `yaml:"default-days"`
 			} `yaml:"cooldown"`
+			PRLimit int `yaml:"open-pull-requests-limit"`
 		} `yaml:"updates"`
 	}
 	if err := yaml.Unmarshal(got, &parsed); err != nil {
@@ -83,6 +85,12 @@ func TestRenderDependabotPolicy(t *testing.T) {
 	if len(parsed.Updates) != 2 {
 		t.Fatalf("updates = %d, want 2", len(parsed.Updates))
 	}
+
+	accepted := map[string]bool{}
+	for _, ty := range repospec.Default().ConventionalCommits.Types {
+		accepted[ty] = true
+	}
+
 	for _, u := range parsed.Updates {
 		if u.Cooldown.DefaultDays != repogov.CooldownDays {
 			t.Errorf("%s cooldown = %d, want %d", u.Ecosystem, u.Cooldown.DefaultDays, repogov.CooldownDays)
@@ -90,11 +98,19 @@ func TestRenderDependabotPolicy(t *testing.T) {
 		if u.Schedule.Interval != "weekly" {
 			t.Errorf("%s interval = %q, want weekly", u.Ecosystem, u.Schedule.Interval)
 		}
-		// Prefixes must be conventional so the squashed subject on the default
-		// branch passes the same gate every other commit does.
-		if !strings.HasPrefix(u.CommitMessage.Prefix, "chore(deps)") &&
-			!strings.HasPrefix(u.CommitMessage.Prefix, "ci(deps)") {
-			t.Errorf("%s prefix = %q, want a conventional deps prefix", u.Ecosystem, u.CommitMessage.Prefix)
+		if u.PRLimit != repogov.DependabotPRLimit {
+			t.Errorf("%s open-pull-requests-limit = %d, want %d", u.Ecosystem, u.PRLimit, repogov.DependabotPRLimit)
+		}
+		// `include: scope` is what turns the bare type into `build(deps):`.
+		if u.CommitMessage.Include != "scope" {
+			t.Errorf("%s commit-message.include = %q, want scope", u.Ecosystem, u.CommitMessage.Include)
+		}
+		// The real coupling: Dependabot's prefix becomes the PR title, which
+		// the gate then checks against conventional_commits.types. A prefix
+		// missing from that list would fail every dependency PR.
+		if !accepted[u.CommitMessage.Prefix] {
+			t.Errorf("%s prefix %q is not in conventional_commits.types %v — every dependency PR would fail the title check",
+				u.Ecosystem, u.CommitMessage.Prefix, repospec.Default().ConventionalCommits.Types)
 		}
 	}
 }

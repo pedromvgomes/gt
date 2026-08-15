@@ -84,10 +84,9 @@ jobs:
             echo "timeout_minutes=$(jq -r '.checks.timeout_minutes' "${RUNNER_TEMP}/spec.json")"
           } >> "$GITHUB_OUTPUT"
 
-          # types and scopes are newline-separated lists, the format
-          # action-semantic-pull-request expects. A multiline value MUST use
-          # the heredoc form: writing it as `key=value` fails the step with
-          # "Invalid format", which would break the gate on every PR.
+          # types and scopes are newline-separated lists. A multiline value
+          # MUST use the heredoc form: writing it as `key=value` fails the step
+          # with "Invalid format", which would break the gate on every PR.
           {
             echo "cc_types<<GT_EOF"
             jq -r '.conventional_commits.types[]?' "${RUNNER_TEMP}/spec.json"
@@ -105,7 +104,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read # action-semantic-pull-request reads the PR title
+      pull-requests: read
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -115,15 +114,76 @@ jobs:
       # With squash merge (which gt enforces) the PR title becomes the commit
       # subject on the default branch, so linting the title is what actually
       # keeps history conventional.
+      #
+      # Implemented here rather than with action-semantic-pull-request because
+      # of two behaviours that action does not offer, both adopted from
+      # tumika's pr-title.yml:
+      #
+      #   - Case-insensitive type matching. The spec says "The units of
+      #     information that make up Conventional Commits MUST NOT be treated
+      #     as case sensitive by implementors, with the exception of BREAKING
+      #     CHANGE". Rejecting `Feat:` is local house style, not the standard.
+      #   - Accepting GitHub's `Revert "…"` titles. A revert is usually urgent,
+      #     and making someone edit a title mid-incident is the wrong trade.
+      #
+      # Dropping the action also removes a third-party SHA pin to maintain.
       - name: Check PR title
         if: needs.config.outputs.cc_title == 'true'
-        uses: step-security/action-semantic-pull-request@75d2dd5deafa3e9fccc1626ecd58d076ed1d2c79 # v6.1.2
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          types: ${{ needs.config.outputs.cc_types }}
-          scopes: ${{ needs.config.outputs.cc_scopes }}
-          requireScope: false
+          # Through the environment, never interpolated into the script: a PR
+          # title is attacker-controlled text, and `${{ }}` inside `run:` would
+          # splice it straight into the shell.
+          TITLE: ${{ github.event.pull_request.title }}
+          TYPES: ${{ needs.config.outputs.cc_types }}
+          SCOPES: ${{ needs.config.outputs.cc_scopes }}
+        run: |
+          set -euo pipefail
+
+          types=$(printf '%s' "$TYPES" | tr '\n' '|' | sed 's/|$//')
+          if [[ -z "$types" ]]; then
+            echo "::error::conventional_commits.types is empty"
+            exit 1
+          fi
+
+          # GitHub's "Revert" button generates `Revert "<original title>"`.
+          if printf '%s' "$TITLE" | grep -Eqi '^Revert "'; then
+            echo "✅ revert PR title accepted: $TITLE"
+            exit 0
+          fi
+
+          # An empty scopes list means any scope is allowed.
+          scope_pattern='(\([a-zA-Z0-9][a-zA-Z0-9._/-]*\))?'
+          if [[ -n "${SCOPES//[$'\n']/}" ]]; then
+            scopes=$(printf '%s' "$SCOPES" | tr '\n' '|' | sed 's/|$//')
+            scope_pattern="(\((${scopes})\))?"
+          fi
+
+          # Conventional Commits 1.0.0: <type>[(scope)][!]: <description>
+          pattern="^(${types})${scope_pattern}!?: .+"
+
+          if printf '%s' "$TITLE" | grep -Eqi "$pattern"; then
+            echo "✅ $TITLE"
+            exit 0
+          fi
+
+          cat >&2 <<MSG
+          ❌ The pull request title is not a Conventional Commit.
+
+             Title: $TITLE
+
+          Pull requests here are squash-merged, so this title becomes the commit
+          message on the default branch — it is the history, not a label.
+
+             <type>[(scope)][!]: <description>
+
+          Types:  ${types//|/ }
+          Scope:  optional, the package or layer — fix(logging): …
+          Break:  feat(api)!: …  plus a BREAKING CHANGE: footer
+
+          Configured in .gt-repo.yaml under conventional_commits.
+          See https://www.conventionalcommits.org/en/v1.0.0/
+          MSG
+          exit 1
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.config.outputs.cc_commits == 'true'
@@ -141,12 +201,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          types=$(echo "$TYPES" | tr '\n' '|' | sed 's/|$//')
+          types=$(printf '%s' "$TYPES" | tr '\n' '|' | sed 's/|$//')
           if [[ -z "$types" ]]; then
             echo "::error::conventional_commits.types is empty"
             exit 1
           fi
-          # type(optional-scope)!: subject
+          # type(optional-scope)!: subject — matched case-insensitively below,
+          # for the same spec reason as the title check.
           pattern="^(${types})(\([^)]+\))?!?: .+"
 
           failed=0
@@ -159,7 +220,9 @@ jobs:
               echo "  skip (merge): $subject"
               continue
             fi
-            if [[ "$subject" =~ $pattern ]]; then
+            if printf '%s' "$subject" | grep -Eqi '^Revert "'; then
+              echo "  ok (revert): $subject"
+            elif printf '%s' "$subject" | grep -Eqi "$pattern"; then
               echo "  ok:   $subject"
             else
               echo "::error::not a conventional commit subject: $subject"

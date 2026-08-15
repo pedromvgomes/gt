@@ -141,7 +141,14 @@ func Default() Spec {
 		ConventionalCommits: ConventionalCommits{
 			Enabled: true,
 			Scope:   ScopePRTitle,
-			Types:   []string{"feat", "fix", "chore", "ci", "docs", "refactor", "test"},
+			// The full Conventional Commits 1.0.0 set. `build` and `ci` are
+			// not optional here: Dependabot is configured to prefix its PR
+			// titles with them, so dropping either would make every dependency
+			// PR fail the title check it is subject to.
+			Types: []string{
+				"feat", "fix", "docs", "style", "refactor",
+				"perf", "test", "build", "ci", "chore", "revert",
+			},
 		},
 		Settings: Settings{
 			Merge: MergeSettings{

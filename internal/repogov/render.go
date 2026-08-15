@@ -29,19 +29,32 @@ const Upstream = "pedromvgomes/gt"
 // Shared Dependabot policy. These live here, not in .gt-repo.yaml, so changing
 // them for every governed repo is a one-line edit in gt.
 const (
-	CooldownDays      = 3
-	DependabotInerval = "weekly"
+	// CooldownDays is the supply-chain guard: a freshly-cut version gets this
+	// long to be yanked or superseded before Dependabot opens a PR for it.
+	CooldownDays = 7
+	// DependabotInterval is how often Dependabot looks for updates.
+	DependabotInterval = "weekly"
+	// DependabotPRLimit raises Dependabot's default of 5. Across several
+	// ecosystems on a weekly schedule, 5 leaves the queue permanently full and
+	// silently starves the oldest updates.
+	DependabotPRLimit = 25
 )
 
-// dependabotPrefix maps an ecosystem to its conventional-commit prefix. All
-// dependency bumps are chore(deps) so the squashed subject on the default
-// branch is conventional without any extra tooling; github-actions is ci(deps)
-// because those bumps change the pipeline rather than the product.
+// dependabotPrefix maps an ecosystem to its conventional-commit type.
+//
+// `build` for dependencies, because that is what the type is for; `ci` for
+// github-actions, because those bumps only ever touch workflow files. Combined
+// with `include: scope` Dependabot produces e.g. `build(deps): bump …`, which
+// is a valid conventional subject on the default branch under squash merge —
+// so dependency PRs pass the same title check as everything else.
+//
+// This couples to conventional_commits.types: `build` and `ci` must both be
+// accepted there, or every Dependabot PR would fail its own gate.
 var dependabotPrefix = map[string]string{
-	"github-actions": "ci(deps):",
+	"github-actions": "ci",
 }
 
-const defaultDependabotPrefix = "chore(deps):"
+const defaultDependabotPrefix = "build"
 
 // File is one rendered governance file.
 type File struct {
@@ -84,6 +97,7 @@ type templateData struct {
 	MaxBump              string
 	PRTitleEnforced      bool
 	CooldownDays         int
+	PRLimit              int
 	Entries              []dependabotEntry
 }
 
@@ -161,7 +175,7 @@ func buildData(in Input) templateData {
 			Ecosystem: e.Ecosystem,
 			Directory: e.Directory,
 			Note:      e.Note,
-			Interval:  DependabotInerval,
+			Interval:  DependabotInterval,
 			Prefix:    prefix,
 		})
 	}
@@ -179,6 +193,7 @@ func buildData(in Input) templateData {
 		MaxBump:              in.Spec.DependabotAutoMerge.MaxBump,
 		PRTitleEnforced:      in.Spec.ConventionalCommits.EnforcesPRTitle(),
 		CooldownDays:         CooldownDays,
+		PRLimit:              DependabotPRLimit,
 		Entries:              entries,
 	}
 }
