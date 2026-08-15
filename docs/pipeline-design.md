@@ -45,7 +45,7 @@ to assume now.
 
 | File | Owner | Sync behaviour |
 |---|---|---|
-| `.github/workflows/ci-gate.yml` | gt | **managed** — always overwritten |
+| `.github/workflows/ci-orchestration.yml` | gt | **managed** — always overwritten |
 | `.github/workflows/ci-preflight.yml` | repo | **scaffold** — created once, never overwritten |
 | `.github/workflows/ci-build.yml` | repo | **scaffold** |
 | `.github/workflows/ci-test.yml` | repo | **scaffold** |
@@ -53,7 +53,7 @@ to assume now.
 | `.github/workflows/ci-publish.yml` | repo | **scaffold**, release-time — not called by the PR gate yet |
 | `reusable-*.yml` in gt | gt | referenced by the pinned `@v0` tag |
 
-`ci-gate.yml` is deliberately not `ci.yml`: every repo already has a `ci.yml`
+`ci-orchestration.yml` is deliberately not `ci.yml`: every repo already has a `ci.yml`
 with real jobs, and a managed file would overwrite it on the first sync, before
 anyone had moved those jobs into the stages.
 
@@ -144,6 +144,24 @@ nothing — runs everything. A repo opts into change detection by filling in
 Skipped stages pass the gate, matching wardnet's `all-checks-passed`. That is
 the point of change detection: a skipped leaf is a legitimate outcome, not a
 missing one.
+
+## The gate is a job, not a file
+
+It is tempting to give the gate its own `ci-gate.yml`, since it serves a
+different purpose from the stages: it is the one check branch protection names.
+It cannot be a separate file, because **`needs:` does not cross workflows.** A
+standalone gate workflow could only learn the stages' results by polling the
+Checks API — reintroducing the timeout, the ambiguity and the lint this design
+exists to delete.
+
+This is what wardnet already does: `all-checks-passed` is a job at
+`pr.yml:220`, alongside `preflight` and the build leaves, not a workflow of its
+own.
+
+So `ci-orchestration.yml` holds the stages *and* the `Gate` job. That still
+gives a single gt-managed required check that accounts for which stages ran —
+the `if: always()` job fails only on `failure` or `cancelled`, so a stage
+preflight skipped passes. Only the file boundary is different.
 
 ## The required check becomes `Gate`
 
