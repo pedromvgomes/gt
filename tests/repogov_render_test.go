@@ -257,6 +257,73 @@ func TestRenderCallersPinMovingMajorTag(t *testing.T) {
 //
 // The aggregator is a plain job in a repo-owned workflow, so its check name is
 // simply the job name — no "<caller> / " prefix.
+// Rendered files must not vary with the gt version that produced them, beyond
+// the pinned major in a `uses:` line. Input.GTVersion's own doc comment says
+// so — stamping a version into file contents makes every gt release drift
+// every workflow in every repo, and CI cannot repair workflow files, so each
+// release would turn the gate red everywhere until someone ran sync locally.
+//
+// Nothing enforced it, and gt-sync.yml interpolated the major tag into a
+// comment. Self-onboarding caught it the hard way: CI builds gt unstamped, so
+// it rendered "v0" where the committed file said "v1", and gt's own governance
+// job failed on a one-word difference inside a comment.
+func TestRenderedContentDoesNotVaryWithGTVersion(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	spec.Files = repospec.FileKeys
+
+	render := func(version string) map[string]string {
+		in := repogov.Input{Spec: spec, RepoOwner: "acme", RepoName: "widgets", GTVersion: version}
+		files, err := repogov.Render(in)
+		if err != nil {
+			t.Fatalf("Render(%s) error = %v", version, err)
+		}
+		out := map[string]string{}
+		for _, f := range files {
+			out[f.Path] = string(f.Content)
+		}
+		return out
+	}
+
+	// Same major, different patch: identical output, no exceptions.
+	for path, a := range render("v1.0.0") {
+		if b := render("v1.9.3")[path]; a != b {
+			t.Errorf("%s differs between v1.0.0 and v1.9.3 — a patch release would drift every repo", path)
+		}
+	}
+
+	// Across majors only the pinned `uses:` ref may move. Any other difference
+	// is a version stamped into content.
+	v1, v2 := render("v1.0.0"), render("v2.0.0")
+	for path, a := range v1 {
+		b := v2[path]
+		if a == b {
+			continue
+		}
+		for _, line := range diffLines(a, b) {
+			if !strings.Contains(line, "uses:") {
+				t.Errorf("%s: non-`uses:` line varies with the gt major:\n  %s", path, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// diffLines returns the lines of a and b that differ positionally.
+func diffLines(a, b string) []string {
+	la, lb := strings.Split(a, "\n"), strings.Split(b, "\n")
+	var out []string
+	for i := range la {
+		if i >= len(lb) {
+			out = append(out, la[i])
+			continue
+		}
+		if la[i] != lb[i] {
+			out = append(out, la[i])
+		}
+	}
+	return out
+}
+
 // The orchestrators must not claim a display name a repository already uses.
 // Every repo in the fleet but one has a workflow called CI, and the stages move
 // into gt's orchestrator a few at a time, so the two coexist for a long while —

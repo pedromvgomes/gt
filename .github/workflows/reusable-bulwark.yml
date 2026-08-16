@@ -22,8 +22,14 @@ on:
           Subdirectory to scan, for repos whose source is not at the root. Stays
           an input rather than moving into .bulwark.yml because that file lives
           at the scan root, so bulwark must know the root to find it.
+
+          Defaults to "." rather than "". bulwark's own `dir` input defaults to
+          ".", but a value passed explicitly overrides a default even when it is
+          empty — so forwarding "" handed bulwark `--dir ""` and it died on
+          `open : no such file or directory`, on every repository that did not
+          set bulwark.dir.
         type: string
-        default: ""
+        default: "."
 
 permissions:
   contents: read
