@@ -445,3 +445,59 @@ func TestBranchProtectionOnlyRequiresTheGateWhenCIIsEnabled(t *testing.T) {
 		}
 	}
 }
+
+// The `uses:` major is derived from whichever binary runs sync, so a stale gt
+// would silently repoint every caller at an older major. That is the one way
+// this design regresses without anyone noticing.
+func TestSyncRefusesToDowngradeThePin(t *testing.T) {
+	root := t.TempDir()
+	spec := repospec.Default()
+	spec.GTVersion = "v1.0.0"
+	if err := repogov.SaveSpec(root, spec); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+
+	opts := testOptions(root) // stamped v0.6.0
+	_, _, err := repogov.Sync(opts)
+	if err == nil {
+		t.Fatal("Sync() = nil, want a refusal to downgrade v1 -> v0")
+	}
+	for _, want := range []string{"v1.0.0", "gt update", repospec.FileName} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+
+	// And nothing was written.
+	if _, statErr := os.Stat(filepath.Join(root, ".github", "workflows", "ci-orchestration.yml")); !os.IsNotExist(statErr) {
+		t.Error("sync wrote files despite refusing")
+	}
+}
+
+// Same major is fine however far apart the minors: the pin is unaffected.
+func TestSyncAllowsOlderMinorWithinTheSameMajor(t *testing.T) {
+	root := t.TempDir()
+	spec := repospec.Default()
+	spec.GTVersion = "v0.9.0"
+	if err := repogov.SaveSpec(root, spec); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+	if _, _, err := repogov.Sync(testOptions(root)); err != nil {
+		t.Fatalf("Sync() error = %v, want it permitted within the same major", err)
+	}
+}
+
+// A newer gt adopting an older repo is the normal upgrade path.
+func TestSyncAllowsUpgrade(t *testing.T) {
+	root := t.TempDir()
+	spec := repospec.Default()
+	spec.GTVersion = "v0.6.0"
+	if err := repogov.SaveSpec(root, spec); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+	opts := testOptions(root)
+	opts.GTVersion = "v1.0.0"
+	if _, _, err := repogov.Sync(opts); err != nil {
+		t.Fatalf("Sync() error = %v, want an upgrade to be permitted", err)
+	}
+}

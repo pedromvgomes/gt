@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/git"
@@ -101,6 +102,9 @@ func Sync(opts Options) (Report, []string, error) {
 	if err != nil {
 		return Report{}, nil, err
 	}
+	if err := refuseDowngrade(report.Spec.GTVersion, opts.GTVersion); err != nil {
+		return Report{}, nil, err
+	}
 	written, err := apply(report, opts)
 	return report, written, err
 }
@@ -129,6 +133,68 @@ func apply(report Report, opts Options) ([]string, error) {
 		written = append(written, repospec.FileName)
 	}
 	return written, nil
+}
+
+// refuseDowngrade stops an older gt from rewriting a repository's workflow pins
+// backwards.
+//
+// The `uses:` major tag is derived from whichever binary runs sync, so a stale
+// gt would silently repoint every caller at an older major — leaving the repo
+// on logic nobody intended, with nothing but a version warning to show for it.
+// The comparison is on the major alone, because that is exactly what the pin
+// carries: a v0 binary against a v0 spec is fine, however far apart the minors.
+//
+// There is deliberately no --force. Rolling back is still possible, but it
+// takes editing gt_version in .gt-repo.yaml first, which is a considered act
+// rather than an accident.
+func refuseDowngrade(specVersion, running string) error {
+	if specVersion == "" {
+		return nil
+	}
+	specMajor, ok := majorNumber(specVersion)
+	if !ok {
+		return nil
+	}
+	runMajor, ok := majorNumber(running)
+	if !ok {
+		// A dev build reports no usable version. Treat it as v0, which is what
+		// it would actually render.
+		runMajor = 0
+	}
+	if runMajor >= specMajor {
+		return nil
+	}
+	return fmt.Errorf(
+		"this repository was rendered by gt %s, but %s is running: syncing would repoint its "+
+			"workflows from %s to %s.\n"+
+			"Upgrade with 'gt update', or edit gt_version in %s if you mean to roll back",
+		specVersion, displayVersion(running),
+		MajorTag(specVersion), MajorTag(running), repospec.FileName)
+}
+
+func majorNumber(version string) (int, bool) {
+	tag := strings.TrimPrefix(MajorTag(version), "v")
+	n, err := strconv.Atoi(tag)
+	if err != nil {
+		return 0, false
+	}
+	// MajorTag falls back to v0 for anything unparseable, so an unrecognised
+	// version is reported as such rather than silently passing as major 0.
+	if version == "" || !startsWithDigit(strings.TrimPrefix(version, "v")) {
+		return n, false
+	}
+	return n, true
+}
+
+func startsWithDigit(s string) bool {
+	return s != "" && s[0] >= '0' && s[0] <= '9'
+}
+
+func displayVersion(v string) string {
+	if !startsWithDigit(strings.TrimPrefix(v, "v")) {
+		return "an unversioned build"
+	}
+	return v
 }
 
 // Init seeds a .gt-repo.yaml for a repository that does not have one, using
