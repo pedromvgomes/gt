@@ -12,16 +12,16 @@
 #           WRONG until something actually produces one — bulwark exits with
 #           an error when told to read a report that is not there.
 #
-# It starts as `run` because that is what is true the moment this file is
-# created: ci-test is a scaffolded no-op, so nothing uploads coverage yet.
+# `report` since ci-test began uploading gt-coverage, which the bulwark stage
+# extracts before bulwark runs.
 #
-# Change it to `report` in the same commit that makes ci-test produce coverage
-# and upload it as the `gt-coverage` artifact, which the bulwark stage extracts
-# before bulwark runs. Flipping it earlier trades a double test run for a
-# failing security gate.
+# `run` was not merely slower here, it was wrong: bulwark's fallback runs the
+# suite without -coverpkg, and every test in this repository lives in ./tests
+# while the code lives in ./internal — so coverage landed on the test package
+# and reported ~0%, failing patch coverage on a fully covered change.
 #
 # Everything else bulwark supports — per-language enablement, coverage
 # tolerances, patch-coverage opt-outs, toolchain overrides — belongs here too.
 # See bulwark's README.
 coverage:
-  source: run
+  source: report
