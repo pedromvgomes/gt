@@ -171,7 +171,22 @@ func hasAnyFile(dir string, names []string) bool {
 	return false
 }
 
+// hasNPMWorkspaces reports whether this package.json's directory is a workspace
+// root, by either of the two conventions in use.
+//
+// npm and yarn declare members in package.json's "workspaces" field. pnpm does
+// not: it uses a sibling pnpm-workspace.yaml and leaves package.json without
+// the field entirely. Checking only the manifest therefore misses every pnpm
+// monorepo, which is the case that matters most — pnpm's single root lockfile
+// is exactly what a per-member Dependabot entry would leave stale, and the
+// resulting PRs fail `pnpm install --frozen-lockfile`.
+//
+// The file's mere presence is enough. Its contents list which members exist,
+// but the question here is only whether this directory is a root.
 func hasNPMWorkspaces(packageJSON string) bool {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(packageJSON), "pnpm-workspace.yaml")); err == nil {
+		return true
+	}
 	data, err := os.ReadFile(packageJSON)
 	if err != nil {
 		return false

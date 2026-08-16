@@ -111,6 +111,25 @@ func TestDetectCollapsesNPMWorkspaceMembers(t *testing.T) {
 		[]string{"npm@/source/web", "npm@/source/sdk"})
 }
 
+// pnpm is the case that checking package.json alone misses entirely: members
+// are declared in a sibling pnpm-workspace.yaml and the root manifest carries
+// no "workspaces" field at all. wardnet-status is exactly this shape, and
+// without collapsing, Dependabot would bump page/ and worker/ individually
+// while the single root pnpm-lock.yaml went stale — every resulting PR failing
+// `pnpm install --frozen-lockfile`.
+func TestDetectCollapsesPNPMWorkspaceMembers(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "package.json", `{"name":"root","packageManager":"pnpm@10.12.1"}`)
+	writeFile(t, root, "pnpm-workspace.yaml", "packages:\n  - worker\n  - page\n")
+	writeFile(t, root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+	writeFile(t, root, "page/package.json", `{"name":"page"}`)
+	writeFile(t, root, "worker/package.json", `{"name":"worker"}`)
+
+	assertDetected(t, detected(t, root),
+		[]string{"npm@/"},
+		[]string{"npm@/page", "npm@/worker"})
+}
+
 // The other half of wardnet's real config: a nested package with its OWN
 // lockfile is standalone, not a workspace member, and needs its own entry.
 // Collapsing it would silently stop updating it.
