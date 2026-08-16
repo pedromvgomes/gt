@@ -144,10 +144,29 @@ type MergeSettings struct {
 	DeleteBranchOnMerge bool `yaml:"delete_branch_on_merge" json:"delete_branch_on_merge"`
 }
 
+// BranchProtection is the pull-request and history policy gt renders into its
+// ruleset. Every field has an opinionated default, so a repository states only
+// where it disagrees — and an explicit `false` still overrides, because Parse
+// unmarshals over Default() rather than over a zero value.
 type BranchProtection struct {
 	Branch            string `yaml:"branch" json:"branch"`
 	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
 	RequireUpToDate   bool   `yaml:"require_up_to_date" json:"require_up_to_date"`
+	// DismissStaleReviews drops approvals when new commits land. Default true:
+	// an approval is of a diff, and a review of code that has since changed is
+	// a rubber stamp wearing a reviewer's name.
+	DismissStaleReviews bool `yaml:"dismiss_stale_reviews" json:"dismiss_stale_reviews"`
+	// RequireThreadResolution blocks merge on unresolved review threads.
+	// Default true: an unresolved thread is a question nobody answered, and
+	// merging over it silently decides the answer is "no".
+	RequireThreadResolution bool `yaml:"require_thread_resolution" json:"require_thread_resolution"`
+	// RequireCodeOwnerReview needs a CODEOWNERS file to mean anything, and gt
+	// does not require repositories to have one. Default false.
+	RequireCodeOwnerReview bool `yaml:"require_code_owner_review" json:"require_code_owner_review"`
+	// RequireLastPushApproval demands someone other than the last pusher
+	// approve. Default false: with required_approvals at 0 it has nothing to
+	// act on, and turning it on without approvals would block every PR.
+	RequireLastPushApproval bool `yaml:"require_last_push_approval" json:"require_last_push_approval"`
 }
 
 // Conventional-commit enforcement scopes.
@@ -233,6 +252,14 @@ func Default() Spec {
 				// attestation proves the same property after the fact, without
 				// anyone having to rebase.
 				RequireUpToDate: false,
+				// The two opinions worth holding: an approval is of a diff, and
+				// an unresolved thread is an unanswered question.
+				DismissStaleReviews:     true,
+				RequireThreadResolution: true,
+				// Off, because both need something gt does not require: a
+				// CODEOWNERS file, and a nonzero approval count.
+				RequireCodeOwnerReview:  false,
+				RequireLastPushApproval: false,
 			},
 		},
 		Bulwark: Bulwark{Enabled: true},
