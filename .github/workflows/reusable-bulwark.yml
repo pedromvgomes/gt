@@ -30,6 +30,24 @@ on:
           set bulwark.dir.
         type: string
         default: "."
+    secrets:
+      # Declared explicitly rather than relying on the caller's `secrets:
+      # inherit`. GitHub documents inherit as working for "reusable workflows in
+      # the same organization or enterprise", and gt lives under pedromvgomes
+      # while its consumers live under the wardnet and tumika orgs — so their
+      # organization secrets did not reach this workflow at all. bulwark then
+      # skipped its Codecov upload (`if: inputs.codecov-token != ''`) and fell
+      # back to token-less semgrep, silently: nothing failed, coverage simply
+      # stopped being recorded over time.
+      #
+      # Declaring them makes the caller resolve each value in its own context
+      # and pass it in, which works across owners.
+      CODECOV_TOKEN:
+        description: Enables the Codecov upload, and so coverage history.
+        required: false
+      SEMGREP_APP_TOKEN:
+        description: Switches semgrep to diff-aware `semgrep ci` and AppSec reporting.
+        required: false
 
 permissions:
   contents: read
