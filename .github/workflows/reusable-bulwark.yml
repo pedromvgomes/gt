@@ -1,0 +1,122 @@
+name: gt bulwark
+
+# Reusable code-quality and security gate. Every governed repo carries it by
+# default; it is the quality gate, and ci-gate waits on it.
+#
+# Coverage arrives by convention rather than configuration: ci-test uploads an
+# artifact named `gt-coverage`, and this workflow consumes it instead of running
+# the suite a second time. That is the entire double-run fix. With no artifact
+# it falls back to running the tests itself, which is correct but slower.
+#
+# Which side produces coverage is bulwark's own setting now — `coverage.source`
+# in .bulwark.yml, which gt scaffolds as `run` and the repository flips to
+# `report` once ci-test actually uploads one. This workflow no longer tells
+# bulwark anything about it; it only lands the artifact where bulwark already
+# searches.
+
+on:
+  workflow_call:
+    inputs:
+      dir:
+        description: >-
+          Subdirectory to scan, for repos whose source is not at the root. Stays
+          an input rather than moving into .bulwark.yml because that file lives
+          at the scan root, so bulwark must know the root to find it.
+
+          Defaults to "." rather than "". bulwark's own `dir` input defaults to
+          ".", but a value passed explicitly overrides a default even when it is
+          empty — so forwarding "" handed bulwark `--dir ""` and it died on
+          `open : no such file or directory`, on every repository that did not
+          set bulwark.dir.
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # bulwark caches coverage baselines on the bulwark-state branch and posts
+      # a summary comment on the PR.
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # bulwark resolves the PR's base commit to scan the diff, which needs
+          # full history rather than a shallow clone.
+          fetch-depth: 0
+
+      - name: Download coverage from the test stage
+        id: coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: gt-coverage
+          path: ${{ runner.temp }}/gt-coverage
+
+      - name: Place the coverage report where bulwark looks
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/gt-coverage
+          DIR: ${{ inputs.dir }}
+        run: |
+          set -euo pipefail
+
+          # bulwark decides who produces coverage from `coverage.source` in
+          # .bulwark.yml, not from an action input — the tests-mode/go-report
+          # inputs were removed once that setting moved into the file. So this
+          # step no longer tells bulwark anything; it just puts the artifact
+          # where bulwark already searches.
+          #
+          # coverage.out and lcov.info are the first conventional candidates
+          # bulwark checks per module, so landing them at the scan root needs no
+          # matching configuration.
+          if [[ ! -d "$COVERAGE_DIR" ]]; then
+            echo "no gt-coverage artifact — bulwark will find no report for this run"
+            echo "(a stage skipped by ci-preflight produces none, which is not an error)"
+            exit 0
+          fi
+
+          dest="${DIR:-.}"
+          copied=0
+          for name in coverage.out lcov.info; do
+            if [[ -f "${COVERAGE_DIR}/${name}" ]]; then
+              cp "${COVERAGE_DIR}/${name}" "${dest}/${name}"
+              echo "placed ${name} at ${dest}/"
+              copied=$((copied + 1))
+            fi
+          done
+
+          if [[ "$copied" -eq 0 ]]; then
+            echo "::warning::gt-coverage exists but holds neither coverage.out nor lcov.info"
+            ls -la "$COVERAGE_DIR"
+          fi
+
+      # Every third-party action above is SHA-pinned, because a tag its owner
+      # controls can be silently repointed at code we never reviewed. bulwark is
+      # ours: the floating v1 alias is its intended delivery channel, moved
+      # deliberately on each release so consumers pick up scanner fixes without
+      # a bump PR each time.
+      # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+      - uses: wardnet/bulwark@v1
+        with:
+          dir: ${{ inputs.dir }}
+          # No coverage inputs: bulwark reads coverage.source from .bulwark.yml
+          # at its scan root. gt scaffolds that file with `source: run`, which
+          # is what is true while ci-test is still a stub. A repository flips it
+          # to `report` when ci-test starts uploading gt-coverage; doing so
+          # earlier makes bulwark exit on a report that was never produced.
+          #
+          # GitHub withholds secrets from Dependabot events, so those runs fall
+          # back to bulwark's token-less path automatically.
+          semgrep-app-token: ${{ secrets.SEMGREP_APP_TOKEN }}
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}

@@ -25,6 +25,10 @@ type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, dir string, args ...string) (Result, error) {
 	slog.Debug("running git", "dir", dir, "args", args)
+	// The binary is the literal "git" and args are passed as a slice, so no
+	// shell parses them and nothing here can become a second command. The
+	// arguments come from gt's own call sites; running git is the entire job.
+	// #nosec G204 -- fixed binary, argv passed directly, no shell involved.
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir

@@ -1,0 +1,114 @@
+name: gt attest
+
+# Answers "has this exact tree already passed the gate?"
+#
+# GitHub tests refs/pull/N/merge for pull_request events — the merged result of
+# the PR into its base — and a squash merge produces a commit with that same
+# tree. So the tree ci-gate validated and the tree that lands on the default
+# branch are directly comparable, which turns "was this tested against what it
+# merged into?" from a policy into a fact.
+#
+# This workflow only reads. ci-gate is what writes the attestation, on success,
+# for whatever tree it just validated.
+#
+# It fails safe in every direction: a missing attestation, an unreadable one, or
+# a mismatch all report validated=false, which runs the pipeline. The only way
+# to skip work is a positive match.
+
+on:
+  workflow_call:
+    inputs:
+      require:
+        description: >-
+          Fail when the tree carries no passing attestation. Delivery sets this:
+          refusing to publish an unvalidated tree is the point.
+        type: boolean
+        default: false
+    outputs:
+      validated:
+        description: '"true" when this tree already carries a passing attestation.'
+        value: ${{ jobs.attest.outputs.validated }}
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    name: attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: read
+      pull-requests: read
+    outputs:
+      validated: ${{ steps.check.outputs.validated }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Look for a passing attestation
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REQUIRE: ${{ inputs.require }}
+        run: |
+          set -euo pipefail
+
+          # A pull_request run is the thing being validated; there is nothing
+          # to have been attested yet. Say so plainly rather than looking.
+          if [[ "$EVENT" == "pull_request" ]]; then
+            echo "validated=false" >> "$GITHUB_OUTPUT"
+            echo "pull request: this run produces the attestation, it does not consume one"
+            exit 0
+          fi
+
+          tree=$(git rev-parse "HEAD^{tree}")
+          echo "tree in hand: ${tree}"
+
+          # Collect every tree any attestation vouches for. Two places carry
+          # them: the commit itself, once a previous default-branch run
+          # recorded one, and the head of the PR that produced this commit,
+          # where ci-gate recorded it first.
+          attested=$(gh api "repos/${REPO}/commits/${GITHUB_SHA}/statuses" --paginate \
+            --jq '.[] | select(.context == "gt/validated-tree" and .state == "success") | .description' || true)
+
+          prs=$(gh api "repos/${REPO}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[].head.sha' 2>/dev/null || true)
+          for head in $prs; do
+            more=$(gh api "repos/${REPO}/commits/${head}/statuses" --paginate \
+              --jq '.[] | select(.context == "gt/validated-tree" and .state == "success") | .description' || true)
+            attested="${attested}"$'\n'"${more}"
+          done
+
+          validated=false
+          while read -r candidate; do
+            [[ -z "$candidate" ]] && continue
+            if [[ "$candidate" == "$tree" ]]; then
+              validated=true
+              break
+            fi
+          done <<< "$attested"
+
+          echo "validated=${validated}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$validated" == "true" ]]; then
+            echo "✅ this tree already passed the gate"
+            exit 0
+          fi
+
+          if [[ "$REQUIRE" == "true" ]]; then
+            echo "::error::no passing gt/validated-tree attestation for tree ${tree}"
+            echo "Nothing may be published from a tree that has not passed the gate."
+            echo "Either the tag points at a commit CI never validated, or the tree"
+            echo "changed after it was validated. Push the commit through CI first."
+            exit 1
+          fi
+
+          echo "no attestation for this tree — the pipeline will run"

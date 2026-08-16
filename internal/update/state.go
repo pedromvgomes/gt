@@ -27,6 +27,7 @@ func StatePath() (string, error) {
 
 func LoadState(path string) (State, error) {
 	var s State
+	// #nosec G304 -- reads gt's own update-state file from the user's data directory.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -44,14 +45,16 @@ func LoadState(path string) (State, error) {
 }
 
 func SaveState(path string, s State) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0700/0600: update state is gt's own bookkeeping in the user's home
+	// directory, not something another user or process has business reading.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil

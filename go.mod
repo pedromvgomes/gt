@@ -1,6 +1,8 @@
 module github.com/pedromvgomes/gt
 
-go 1.26
+go 1.26.0
+
+toolchain go1.26.6
 
 require (
 	github.com/spf13/cobra v1.10.2

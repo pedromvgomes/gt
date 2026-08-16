@@ -37,6 +37,10 @@ func (ExecRunner) LookPath(file string) (string, error) {
 
 func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
 	slog.Debug("running command", "dir", dir, "name", name, "args", args)
+	// `name` is variable, but never from user input: every caller passes a
+	// literal — direnv, brew, gh, or the login shell from $SHELL. argv goes
+	// through as a slice, so no shell splits it.
+	// #nosec G204 -- callers pass literal binary names; argv is not shell-parsed.
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -166,12 +170,17 @@ func determineUser(ctx context.Context, runner Runner, printer *ui.UI, explicit 
 }
 
 func writeEnvrc(printer *ui.UI, path, expected string) (bool, error) {
+	// #nosec G304 -- reads the .envrc gt manages, to compare before overwriting.
 	current, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return false, fmt.Errorf("read .envrc: %w", err)
 		}
-		if err := os.WriteFile(path, []byte(expected), 0o644); err != nil {
+		// 0600: .envrc is direnv input evaluated as this user and nobody else.
+		// It holds no token today — GH_TOKEN is a `gh auth token` call resolved
+		// at load time — but it is the file that decides which GitHub identity a
+		// checkout authenticates as, and that is not other users' business.
+		if err := os.WriteFile(path, []byte(expected), 0o600); err != nil {
 			return false, fmt.Errorf("write .envrc: %w", err)
 		}
 		return true, nil
@@ -187,7 +196,7 @@ func writeEnvrc(printer *ui.UI, path, expected string) (bool, error) {
 	if !isYes(answer) {
 		return false, ui.Errorf(ui.ExitGeneral, ".envrc differs; not overwriting")
 	}
-	if err := os.WriteFile(path, []byte(expected), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(expected), 0o600); err != nil {
 		return false, fmt.Errorf("write .envrc: %w", err)
 	}
 	return true, nil

@@ -33,6 +33,7 @@ func findSSHAliasesFor(target string) ([]SSHHostEntry, error) {
 	if SSHConfigPath == "" {
 		return nil, nil
 	}
+	// #nosec G304 -- reads the user's ~/.ssh/config, at a path gt does not take from input.
 	f, err := os.Open(SSHConfigPath)
 	if err != nil {
 		if os.IsNotExist(err) {

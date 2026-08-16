@@ -19,7 +19,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          # From go.mod's `toolchain` line, not restated here. The old
+          # `go-version: "1.26"` resolved to 1.26.0 and stayed there, so the
+          # build silently kept a toolchain with 18 stdlib advisories open
+          # against it.
+          go-version-file: go.mod
       - name: Detect release notes file
         id: notes
         run: |
@@ -37,3 +41,39 @@ jobs:
           args: release --clean ${{ steps.notes.outputs.file && format('--release-notes={0}', steps.notes.outputs.file) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Governed repositories pin gt's reusable workflows to a moving major tag
+      # (v0, v1, ...) rather than a SHA, so gate and sync logic reaches them
+      # without editing any file — which matters because GITHUB_TOKEN cannot
+      # write .github/workflows/**.
+      #
+      # This step is load-bearing. If it is ever skipped, every governed repo
+      # silently freezes on the old logic with NO drift signal: their caller
+      # files are still byte-identical, so `gt repo check` reports compliant.
+      # That is why it verifies the move rather than assuming it worked.
+      - name: Move the major version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          major="${TAG%%.*}"   # v1.2.3 -> v1
+          if [[ ! "$major" =~ ^v[0-9]+$ ]]; then
+            echo "::error::could not derive a major tag from ${TAG}"
+            exit 1
+          fi
+
+          echo "Moving ${major} -> ${TAG} ($(git rev-parse --short "$TAG"))"
+          git tag -f "$major" "$TAG"
+          git push --force origin "refs/tags/${major}"
+
+          # Confirm the remote actually advanced; a silent no-op here is the
+          # failure mode this whole step exists to prevent.
+          remote_sha=$(git ls-remote origin "refs/tags/${major}" | cut -f1)
+          expected_sha=$(git rev-parse "${major}")
+          if [[ "$remote_sha" != "$expected_sha" ]]; then
+            echo "::error::${major} did not advance on the remote (got ${remote_sha}, want ${expected_sha})"
+            exit 1
+          fi
+          echo "${major} now points at ${TAG}." >> "$GITHUB_STEP_SUMMARY"

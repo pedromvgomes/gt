@@ -1,0 +1,196 @@
+name: gt sync
+
+# Reusable weekly drift repair for repositories governed by `gt repo`.
+#
+# Runs `gt repo sync` and opens a PR only when something changed. It never
+# pushes to the default branch, so gt's own updates are reviewed by the gate
+# like any other change — a bad gt release cannot land unreviewed across every
+# governed repo at once.
+#
+# Workflow files are excluded deliberately: GITHUB_TOKEN cannot create or
+# update anything under .github/workflows/**. When one has drifted this job
+# reports it and asks for a local `gt repo fleet sync` rather than failing
+# opaquely. Because the callers gt renders pin the moving major tag, gate logic
+# changes need no file change at all, so this stays rare.
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: Branch the sync PR is opened from.
+        type: string
+        default: gt/repo-sync
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # In the gt repository itself, build from the checkout instead of
+      # installing the released binary — the same reason the orchestrator there
+      # references ./.github/workflows/reusable-*.yml rather than the pinned
+      # tag: a PR must exercise the gt in that PR, not the last release.
+      #
+      # It is also the only way gt can govern itself before the first release
+      # carrying `gt repo` exists: install.sh would fetch a gt that has no such
+      # command, and every governance job would fail on a bootstrap problem
+      # rather than on anything real.
+      - name: Set up Go
+        if: github.repository == 'pedromvgomes/gt'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gt from this checkout
+        if: github.repository == 'pedromvgomes/gt'
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/gt" ./cmd/gt
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      # Deliberately not `curl .../install.sh | sh`. install.sh verifies the
+      # checksum of the binary it downloads, but the script doing the verifying
+      # was itself fetched unpinned from main and piped straight into a shell —
+      # and this runs in every governed repository's CI, holding a token with
+      # write access. A compromise of main would execute there before anyone
+      # could notice. semgrep's gha-curl-pipe-shell rule was right.
+      #
+      # `gh release download` fetches the same release assets goreleaser
+      # publishes, and the checksum is verified here rather than by code the
+      # release also supplies. Runners are linux/amd64, hence the fixed asset.
+      #
+      # Still the *latest* release rather than the tag this workflow was called
+      # at, which is what install.sh did too — a reusable workflow cannot see
+      # its own tag. Worth revisiting once a v2 exists and the two can disagree.
+      - name: Install gt
+        if: github.repository != 'pedromvgomes/gt'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: gt_linux_amd64.tar.gz
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download --repo pedromvgomes/gt \
+            --pattern "$ASSET" --pattern checksums.txt --dir "$tmp"
+          (cd "$tmp" && grep " ${ASSET}\$" checksums.txt | sha256sum -c -)
+          tar -xzf "${tmp}/${ASSET}" -C "$tmp"
+          sudo install -m 0755 "${tmp}/gt" /usr/local/bin/gt
+          gt --version
+
+      - name: Sync governance files
+        id: sync
+        run: |
+          set -euo pipefail
+
+          # --skip-workflows keeps the run to files this token can actually
+          # write. No `|| true` here: swallowing a failure meant an invalid
+          # .gt-repo.yaml produced no changes, an empty `git status`, and a
+          # cheerful "No governance drift" — green exactly when governance was
+          # broken.
+          gt repo sync --yes --skip-workflows
+
+          # `git status --porcelain`, not `git diff`: sync usually *creates*
+          # files (.github/dependabot.yml, CODEOWNERS, .editorconfig), and
+          # those are untracked, which `git diff` does not see. Using git diff
+          # here would report "no drift" for exactly the case that matters most.
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect workflow drift needing local escalation
+        id: workflows
+        run: |
+          set -euo pipefail
+
+          # A full check (without --skip-workflows) reveals drift this job is
+          # structurally unable to repair. Surfacing it is the whole point:
+          # otherwise it would sit unnoticed until someone ran gt locally.
+          #
+          # Written outside the working tree: the PR step below stages with
+          # `git add -A`, which would otherwise commit this scratch file.
+          report="${RUNNER_TEMP}/gt-check.json"
+          # check exits non-zero on drift, which is the normal case here, so the
+          # status is not meaningful — but the report must still be readable.
+          # An empty file would make jq yield "" and hide the very drift this
+          # step exists to surface.
+          gt repo check --json > "$report" || true
+          if ! jq -e . "$report" >/dev/null 2>&1; then
+            echo "::error::gt repo check produced no usable report"
+            exit 1
+          fi
+
+          pending=$(jq -r '[.files[] | select(.workflow and .status != "ok") | .path] | join(", ")' "$report")
+          echo "pending=$pending" >> "$GITHUB_OUTPUT"
+          if [[ -n "$pending" ]]; then
+            {
+              echo "### Workflow files need a local sync"
+              echo
+              echo "GITHUB_TOKEN cannot write \`.github/workflows/**\`, so these were left alone:"
+              echo
+              for f in ${pending//,/ }; do echo "- \`$f\`"; done
+              echo
+              echo "Run \`gt repo fleet sync --owner <owner>\` locally to update them."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open sync PR
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ inputs.branch }}
+          PENDING: ${{ steps.workflows.outputs.pending }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Force-push a single long-lived branch so consecutive weeks replace
+          # the previous proposal instead of accumulating stale PRs.
+          #
+          # Plain --force, not --force-with-lease: actions/checkout makes a
+          # depth-1, single-ref clone, so there is no refs/remotes/origin/$BRANCH
+          # for the lease to compare against. Git would then expect the null OID
+          # and reject every push after the first week with "stale info",
+          # leaving the weekly sync permanently red — exactly the repeat case
+          # this branch strategy exists to handle.
+          git switch -C "$BRANCH"
+          git add -A
+          git commit -m "chore(gt): sync repository governance"
+          git push --force origin "$BRANCH"
+
+          body="Automated \`gt repo sync\`."
+          if [[ -n "$PENDING" ]]; then
+            body="${body}"$'\n\n'"⚠️ These workflow files also drifted but could not be written by \`GITHUB_TOKEN\`: ${PENDING}."$'\n'"Run \`gt repo fleet sync --owner <owner>\` locally to update them."
+          fi
+
+          if existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number') && [[ -n "$existing" ]]; then
+            gh pr edit "$existing" --body "$body"
+            echo "Updated existing PR #${existing}."
+          else
+            gh pr create \
+              --title "chore(gt): sync repository governance" \
+              --body "$body" \
+              --head "$BRANCH"
+          fi
+
+      - name: Report clean
+        if: steps.sync.outputs.changed == 'false'
+        run: echo "No governance drift." >> "$GITHUB_STEP_SUMMARY"

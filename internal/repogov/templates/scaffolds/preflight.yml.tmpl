@@ -1,0 +1,42 @@
+# {{ .Name }} — this file is yours.
+#
+# gt created it once and will never modify or delete it again.
+#
+# This stage decides which later stages run. Emit `false` for a stage to skip
+# it; anything else — including nothing at all, as below — runs it. That is why
+# the stub is a no-op: out of the box every stage runs, and change detection is
+# something you opt into rather than out of.
+#
+# A typical implementation sets these from a paths filter, so an untouched area
+# is not rebuilt. A skipped stage still passes the gate.
+name: {{ .Name }}
+
+on:
+  workflow_call:
+{{- if .Gated }}
+    outputs:
+{{- range .Gated }}
+      run-{{ . }}:
+        description: Set to "false" to skip the {{ . }} stage.
+        value: ${{ "{{" }} jobs.preflight.outputs.run-{{ . }} {{ "}}" }}
+{{- end }}
+{{- end }}
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+{{- if .Gated }}
+    outputs:
+{{- range .Gated }}
+      run-{{ . }}: ${{ "{{" }} steps.decide.outputs.run-{{ . }} {{ "}}" }}
+{{- end }}
+{{- end }}
+    steps:
+      - name: Decide which stages to run
+        id: decide
+        # Emitting nothing runs everything. Replace with change detection.
+        run: echo "every stage runs by default"

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,6 +67,7 @@ func download(ctx context.Context, client HTTPClient, url, dest string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
+	// #nosec G304 -- writes the download to a path gt built under its own temp directory.
 	f, err := os.Create(dest)
 	if err != nil {
 		return err
@@ -78,6 +80,7 @@ func download(ctx context.Context, client HTTPClient, url, dest string) error {
 }
 
 func sha256File(path string) (string, error) {
+	// #nosec G304 -- reads back that same temp file to checksum it.
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -91,6 +94,7 @@ func sha256File(path string) (string, error) {
 }
 
 func lookupChecksum(path, asset string) (string, error) {
+	// #nosec G304 -- reads the checksums.txt gt just downloaded to its temp directory.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read checksums: %w", err)
@@ -107,7 +111,13 @@ func lookupChecksum(path, asset string) (string, error) {
 	return "", fmt.Errorf("checksum for %s not found", asset)
 }
 
+// maxBinaryBytes caps what extractBinary will write. gt's own binary is a few
+// tens of megabytes; 512 MiB leaves room for it to grow by an order of
+// magnitude while still bounding a hostile archive.
+const maxBinaryBytes = 512 << 20
+
 func extractBinary(archive, dest string) error {
+	// #nosec G304 -- opens the verified archive from gt's temp directory.
 	f, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -130,13 +140,31 @@ func extractBinary(archive, dest string) error {
 		if filepath.Base(hdr.Name) != binaryName || hdr.Typeflag != tar.TypeReg {
 			continue
 		}
+		// 0755 because this is the gt binary and it has to be executable, and
+		// dest is gt's own install path resolved from the running binary.
+		// #nosec G302,G304 -- an executable that is not executable is not a binary.
 		out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(out, tr); err != nil {
+		// Bounded copy rather than io.Copy. The archive's checksum is verified
+		// before this runs, so a decompression bomb needs a release that is
+		// both malicious and correctly checksummed — but "we checked earlier"
+		// is a weaker guarantee than a limit that cannot be argued with, and
+		// the cost of the limit is one call.
+		//
+		// io.CopyN rather than io.Copy over an io.LimitReader: the two are
+		// equivalent here, but only the former is legible to the decompression
+		// scanners as a bound, and a mitigation a reader cannot see is half a
+		// mitigation. Short input returns io.EOF, which is the success case.
+		written, err := io.CopyN(out, tr, maxBinaryBytes+1)
+		if err != nil && !errors.Is(err, io.EOF) {
 			_ = out.Close()
 			return err
+		}
+		if written > maxBinaryBytes {
+			_ = out.Close()
+			return fmt.Errorf("%s exceeds the %d byte limit; refusing to install", binaryName, maxBinaryBytes)
 		}
 		return out.Close()
 	}
@@ -172,11 +200,13 @@ func swapBinary(src, dest string) error {
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
+	// #nosec G304 -- copies the extracted binary from gt's temp directory.
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
+	// #nosec G304 -- destination is gt's own install path.
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err

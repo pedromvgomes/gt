@@ -1,0 +1,249 @@
+name: gt conventional commits
+
+# Enforces Conventional Commits on the PR title, the commit subjects, or both,
+# as .gt-repo.yaml declares.
+#
+# With squash merge — which gt enforces — the PR title becomes the commit
+# subject on the default branch, so linting the title is what actually keeps
+# history conventional. Commit-subject linting only matters for repos that
+# preserve individual commits.
+#
+# Implemented here rather than with action-semantic-pull-request because of two
+# behaviours that action does not offer, both adopted from tumika's
+# pr-title.yml: case-insensitive type matching, which the spec requires, and
+# accepting GitHub's `Revert "…"` titles, since a revert is usually urgent and
+# editing a title mid-incident is the wrong trade. Dropping the action also
+# removes a third-party SHA pin to maintain.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-commits:
+    name: conventional-commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Commit-subject linting walks base..head, which a shallow clone
+          # cannot do. Cheap enough to always fetch.
+          fetch-depth: 0
+
+      # In the gt repository itself, build from the checkout instead of
+      # installing the released binary — the same reason the orchestrator there
+      # references ./.github/workflows/reusable-*.yml rather than the pinned
+      # tag: a PR must exercise the gt in that PR, not the last release.
+      #
+      # It is also the only way gt can govern itself before the first release
+      # carrying `gt repo` exists: install.sh would fetch a gt that has no such
+      # command, and every governance job would fail on a bootstrap problem
+      # rather than on anything real.
+      - name: Set up Go
+        if: github.repository == 'pedromvgomes/gt'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gt from this checkout
+        if: github.repository == 'pedromvgomes/gt'
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/gt" ./cmd/gt
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      # Deliberately not `curl .../install.sh | sh`. install.sh verifies the
+      # checksum of the binary it downloads, but the script doing the verifying
+      # was itself fetched unpinned from main and piped straight into a shell —
+      # and this runs in every governed repository's CI, holding a token with
+      # write access. A compromise of main would execute there before anyone
+      # could notice. semgrep's gha-curl-pipe-shell rule was right.
+      #
+      # `gh release download` fetches the same release assets goreleaser
+      # publishes, and the checksum is verified here rather than by code the
+      # release also supplies. Runners are linux/amd64, hence the fixed asset.
+      #
+      # Still the *latest* release rather than the tag this workflow was called
+      # at, which is what install.sh did too — a reusable workflow cannot see
+      # its own tag. Worth revisiting once a v2 exists and the two can disagree.
+      - name: Install gt
+        if: github.repository != 'pedromvgomes/gt'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: gt_linux_amd64.tar.gz
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download --repo pedromvgomes/gt \
+            --pattern "$ASSET" --pattern checksums.txt --dir "$tmp"
+          (cd "$tmp" && grep " ${ASSET}\$" checksums.txt | sha256sum -c -)
+          tar -xzf "${tmp}/${ASSET}" -C "$tmp"
+          sudo install -m 0755 "${tmp}/gt" /usr/local/bin/gt
+          gt --version
+
+      - name: Read config
+        id: spec
+        run: |
+          set -euo pipefail
+
+          # Config comes from gt, not from parsing the YAML here. `//` in yq is
+          # the ALTERNATIVE operator, so an explicit `false` reads back as the
+          # default — which silently re-enabled checks a repo had turned off.
+          gt repo config --json > "${RUNNER_TEMP}/spec.json"
+
+          enabled=$(jq -r '.conventional_commits.enabled' "${RUNNER_TEMP}/spec.json")
+          scope=$(jq -r '.conventional_commits.scope' "${RUNNER_TEMP}/spec.json")
+
+          title=false
+          commits=false
+          if [[ "$enabled" == "true" ]]; then
+            case "$scope" in
+              pr_title) title=true ;;
+              commits)  commits=true ;;
+              both)     title=true; commits=true ;;
+              *) echo "::error::conventional_commits.scope=$scope is not one of pr_title, commits, both"; exit 1 ;;
+            esac
+          fi
+
+          # Only ever meaningful for a pull_request event; a push has no title.
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            title=false
+            commits=false
+          fi
+
+          {
+            echo "cc_title=$title"
+            echo "cc_commits=$commits"
+          } >> "$GITHUB_OUTPUT"
+
+          # types and scopes are newline-separated lists. A multiline value MUST
+          # use the heredoc form: `key=value` fails the step with "Invalid
+          # format", which would break the gate on every PR.
+          {
+            echo "cc_types<<GT_EOF"
+            jq -r '.conventional_commits.types[]?' "${RUNNER_TEMP}/spec.json"
+            echo "GT_EOF"
+            echo "cc_scopes<<GT_EOF"
+            jq -r '.conventional_commits.scopes[]?' "${RUNNER_TEMP}/spec.json"
+            echo "GT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check PR title
+        if: steps.spec.outputs.cc_title == 'true'
+        env:
+          # Through the environment, never interpolated into the script: a PR
+          # title is attacker-controlled text, and `${{ }}` inside `run:` would
+          # splice it straight into the shell.
+          TITLE: ${{ github.event.pull_request.title }}
+          TYPES: ${{ steps.spec.outputs.cc_types }}
+          SCOPES: ${{ steps.spec.outputs.cc_scopes }}
+        run: |
+          set -euo pipefail
+
+          types=$(printf '%s' "$TYPES" | tr '\n' '|' | sed 's/|$//')
+          if [[ -z "$types" ]]; then
+            echo "::error::conventional_commits.types is empty"
+            exit 1
+          fi
+
+          # GitHub's "Revert" button generates `Revert "<original title>"`.
+          if printf '%s' "$TITLE" | grep -Eqi '^Revert "'; then
+            echo "✅ revert PR title accepted: $TITLE"
+            exit 0
+          fi
+
+          # An empty scopes list means any scope is allowed.
+          scope_pattern='(\([a-zA-Z0-9][a-zA-Z0-9._/-]*\))?'
+          if [[ -n "${SCOPES//[$'\n']/}" ]]; then
+            scopes=$(printf '%s' "$SCOPES" | tr '\n' '|' | sed 's/|$//')
+            scope_pattern="(\((${scopes})\))?"
+          fi
+
+          # Conventional Commits 1.0.0: <type>[(scope)][!]: <description>
+          pattern="^(${types})${scope_pattern}!?: .+"
+
+          if printf '%s' "$TITLE" | grep -Eqi "$pattern"; then
+            echo "✅ $TITLE"
+            exit 0
+          fi
+
+          cat >&2 <<MSG
+          ❌ The pull request title is not a Conventional Commit.
+
+             Title: $TITLE
+
+          Pull requests here are squash-merged, so this title becomes the commit
+          message on the default branch — it is the history, not a label.
+
+             <type>[(scope)][!]: <description>
+
+          Types:  ${types//|/ }
+          Scope:  optional, the package or layer — fix(logging): …
+          Break:  feat(api)!: …  plus a BREAKING CHANGE: footer
+
+          Configured in .gt-repo.yaml under conventional_commits.
+          See https://www.conventionalcommits.org/en/v1.0.0/
+          MSG
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.spec.outputs.cc_commits == 'true'
+        with:
+          fetch-depth: 0
+
+      # Only meaningful for repos that preserve individual commits. Under
+      # squash merge the subjects never reach the default branch.
+      - name: Check commit subjects
+        if: steps.spec.outputs.cc_commits == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TYPES: ${{ steps.spec.outputs.cc_types }}
+        run: |
+          set -euo pipefail
+
+          types=$(printf '%s' "$TYPES" | tr '\n' '|' | sed 's/|$//')
+          if [[ -z "$types" ]]; then
+            echo "::error::conventional_commits.types is empty"
+            exit 1
+          fi
+          # type(optional-scope)!: subject — matched case-insensitively below,
+          # for the same spec reason as the title check.
+          pattern="^(${types})(\([^)]+\))?!?: .+"
+
+          failed=0
+          while read -r sha; do
+            [[ -z "$sha" ]] && continue
+            subject=$(git log -1 --format=%s "$sha")
+            # Merge commits are generated by GitHub, not authored, so holding
+            # them to the convention would fail PRs for updating their branch.
+            if [[ $(git rev-list --parents -n 1 "$sha" | wc -w) -gt 2 ]]; then
+              echo "  skip (merge): $subject"
+              continue
+            fi
+            if printf '%s' "$subject" | grep -Eqi '^Revert "'; then
+              echo "  ok (revert): $subject"
+            elif printf '%s' "$subject" | grep -Eqi "$pattern"; then
+              echo "  ok:   $subject"
+            else
+              echo "::error::not a conventional commit subject: $subject"
+              failed=1
+            fi
+          done < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo "Expected: <type>(<scope>): <subject>, with type one of: ${types//|/, }"
+            exit 1
+          fi

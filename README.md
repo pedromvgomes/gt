@@ -100,6 +100,20 @@ Write an idempotent `.envrc` at the gt-managed root that exports `GH_TOKEN` from
 
 Run the configured setup templates against the current repository. Works inside any git repository (gt-managed or plain). Reads the `origin` remote URL and matches it against each template's `match` patterns; every matching template runs in config-file order. With `--setup`, runs exactly those templates in the given order. `--from <name>` resumes a previously-failed run from that template. `--show` jumps straight to the detailed plan; `--dry-run` prints the plan without running anything.
 
+### `gt repo <init|check|sync|settings|fleet>`
+
+Keep repositories structurally consistent: the CI/CD pipeline, Dependabot config, conventional commits, and Dependabot auto-merge, all declared in one committed `.gt-repo.yaml`.
+
+- `gt repo init` — detect Dependabot ecosystems from the files on disk and write `.gt-repo.yaml` with gt's defaults, for you to review. `--dry-run` prints without writing.
+- `gt repo check` — render the spec and diff it against the working tree. Non-zero exit on drift, so it works as a PR check. `--json` for machine-readable output.
+- `gt repo sync` — write the files that have drifted. `--dry-run`, `--yes`, and `--skip-workflows`. A repository with no `.gt-repo.yaml` is not governed; sync says so and exits 0, which makes it safe to run from a post-clone setup template.
+- `gt repo config [--json]` — print the resolved spec with defaults applied. gt's own workflows consume this rather than re-parsing the YAML.
+- `gt repo settings diff|apply` — branch protection, merge methods, and the single required status check, through your existing `gh` credentials.
+- `gt repo fleet check|sync --owner <name>` — sweep every repository in an owner; `sync` opens a PR per repo. This is the escalation path for files `GITHUB_TOKEN` cannot write.
+- `gt repo fleet merge-pending --owner <name>` — list (or `--merge`) the Dependabot PRs the in-repo auto-merge cannot touch. Applies the same eligibility gates as the in-repo job.
+
+See [Repository governance](#repository-governance) for the full model.
+
 ### `gt config <path|show|validate|edit>`
 
 - `gt config path` — print the absolute path of the global config file.
@@ -155,6 +169,145 @@ Templates run after `gt clone` and on demand via `gt setup`. They are simple she
 ### Security model
 
 Templates in your global config and in a per-repo `<gt-managed-root>/.gt.yaml` run as you with your environment. Both files live on your machine where you put them, so treat editing them the same way you treat editing your shell profile. Templates a repository ships in its own committed `.gt.yaml` are different: they are untrusted, gated behind an explicit confirmation, and never auto-run without a TTY unless you pass `--yes`. `gt setup` will not silently run anything you have not added to a config you control.
+
+## Repository governance
+
+Keeping many repositories structurally consistent is the problem `gt repo`
+solves. A GitHub template repo cannot: templates copy once and never
+propagate, so a change to shared policy means editing every repository by hand.
+
+A repository opts in by committing a **`.gt-repo.yaml`**. That one file drives
+three propagation mechanisms:
+
+| Layer | How it reaches the repo |
+|---|---|
+| Stage logic (attestation, conventional commits, bulwark, governance) | gt's reusable workflows, pinned to a moving major tag — changes need **no file edit at all** |
+| Files that must exist in-repo (orchestrators, `dependabot.yml`, CODEOWNERS) | `gt repo sync`, locally or from the weekly in-repo job |
+| GitHub API state (branch protection, merge methods) | `gt repo settings apply`, using your `gh` credentials |
+
+```yaml
+# .gt-repo.yaml
+dependabot:
+  - ecosystem: gomod
+    directory: /
+
+pipeline:
+  ci:
+    enabled: true
+    stages: [preflight, build, test, end2end]
+    merge_queue: false      # organization-owned repositories only
+  cd:
+    enabled: true
+    stages: [preflight, publish, deploy, verify]
+    tags: ["v*.*.*"]
+
+conventional_commits:
+  enabled: true
+  scope: pr_title # pr_title | commits | both
+
+bulwark:
+  enabled: true
+```
+
+Shared policy — Dependabot cooldown, commit-message prefixes, the sync
+schedule — deliberately lives in gt's templates rather than this file, so
+changing it everywhere is one gt release.
+
+### The pipeline, and which files are yours
+
+gt owns `ci-orchestration.yml` and `cd-orchestration.yml`. They wire the stages
+together and nothing else:
+
+```
+attest
+  └─ ci-preflight
+       └─ ci-build
+            ├─ ci-test ─── bulwark
+            └─ ci-end2end
+conventional-commits, governance
+  └─ ci-gate     ← the one required check
+```
+
+The `ci-*` and `cd-*` stage files are **yours**. gt writes each one once as an
+empty stub and then never touches it again — not to update it, and not to
+delete it when you drop the stage. That is where your build, tests and
+deployment go.
+
+`ci-preflight` decides what runs: emit `run-build`, `run-test` or `run-end2end`
+as `"false"` to skip a stage. The stub emits nothing, so everything runs until
+you say otherwise. A skipped stage passes the gate.
+
+### One required check, forever
+
+Branch protection requires exactly one check: **`ci-gate`**. It is a plain job
+in a workflow your repository owns, so its check name is just the job name.
+Because every stage is a job in that same workflow, it aggregates them with
+`needs:` — no polling, no timeout, and no way to confuse "absent" with "not
+started yet".
+
+Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
+
+### Skipping work that was already validated
+
+For a `pull_request` event GitHub tests `refs/pull/N/merge` — the merged result
+of the PR into its base — and a squash merge produces a commit with that same
+tree. So `ci-gate` records the tree it validated as a `gt/validated-tree`
+commit status, and later runs compare against it:
+
+- **push to the default branch** — if the tree already carries a passing
+  attestation, every stage skips. The identical tree passed; re-running proves
+  nothing.
+- **tag push** — `cd-orchestration` refuses to publish a tree that carries no
+  passing attestation. That is a stronger guarantee than re-running CI, which
+  only tells you the code passes now, again.
+
+This replaces "require branches to be up to date": nobody has to rebase, so a
+merge never turns other open PRs red. It fails safe in every direction — a
+missing, unreadable or mismatched attestation means run the pipeline.
+
+### What CI cannot do, and why
+
+GitHub blocks `GITHUB_TOKEN` from creating or updating anything under
+`.github/workflows/`, so a compromised action cannot rewrite a repository's own
+automation. Three consequences, all handled the same way:
+
+- The weekly sync repairs everything *except* workflow files, and reports the
+  ones it had to leave.
+- Dependabot PRs touching `.github/workflows/**` can never self-merge — every
+  repo with the `github-actions` ecosystem produces these routinely.
+- Updating an orchestrator itself needs the same escalation.
+
+In each case the in-repo job does what its token allows, and the rest escalates
+to a local `gt repo fleet …` run using your own credentials. No long-lived
+token is stored anywhere.
+
+### Getting started
+
+```sh
+gt repo init          # detect ecosystems, write .gt-repo.yaml
+$EDITOR .gt-repo.yaml # prune what detection over-found, add notes
+gt repo sync          # render the orchestrators and stage stubs
+# move your build and test jobs into ci-build.yml / ci-test.yml
+gt repo settings diff # preview branch protection changes
+gt repo settings apply
+```
+
+Have `ci-test.yml` upload its coverage as an artifact named `gt-coverage`, and
+the bulwark stage consumes it instead of running your suite a second time.
+
+Then add a setup template so new clones are governed automatically:
+
+```yaml
+setup:
+  templates:
+    - name: repo-governance
+      match: ["github.com:pedromvgomes/*", "github.com/pedromvgomes/*"]
+      run: gt repo sync --yes
+```
+
+See [docs/pipeline-design.md](docs/pipeline-design.md) for why it is shaped
+this way.
+
 
 ## Coding-agent integration
 

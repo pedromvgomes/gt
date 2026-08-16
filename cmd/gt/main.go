@@ -71,6 +71,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSetSSHRemoteCommand(opts))
 	root.AddCommand(newConfigCommand(opts))
 	root.AddCommand(newSetupCommand(opts))
+	root.AddCommand(newRepoCommand(opts))
 	root.AddCommand(newUpdateCommand(opts))
 	return root
 }
@@ -570,6 +571,7 @@ func newConfigShowCommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// #nosec G304 -- reads the config file gt was told to use, which is the whole point of the command.
 			data, err := os.ReadFile(path)
 			if err != nil {
 				if os.IsNotExist(err) {
@@ -633,6 +635,7 @@ func runConfigEdit(opts *options) error {
 		return ui.Errorf(ui.ExitUser, "no editor configured; set $VISUAL or $EDITOR")
 	}
 
+	// #nosec G304 -- same config path, read to seed the editor buffer.
 	original, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read config %s: %w", path, err)
@@ -655,12 +658,22 @@ func runConfigEdit(opts *options) error {
 		if err := runEditor(editor, tmpPath); err != nil {
 			return err
 		}
+		// #nosec G304 -- reads back the temp file gt itself just created.
 		data, err := os.ReadFile(tmpPath)
 		if err != nil {
 			return fmt.Errorf("read edited file: %w", err)
 		}
 		if validateConfigBytes(data) == nil {
-			if err := os.WriteFile(path, data, 0o644); err != nil {
+			// 0600 to match config.ensure(): the edit path must not widen
+			// permissions the create path deliberately narrowed.
+			//
+			// gosec traces `path` back to a flag and calls it path traversal.
+			// It is the config file the user asked to edit, resolved the same
+			// way every other config command resolves it, and writing back to
+			// it is what `gt config edit` is for. A user choosing which of
+			// their own files to edit is not traversal.
+			// #nosec G703 -- destination is the config path the user named.
+			if err := os.WriteFile(path, data, 0o600); err != nil {
 				return fmt.Errorf("write config: %w", err)
 			}
 			opts.ui.Success("config saved")
@@ -688,6 +701,7 @@ func pickEditor() string {
 }
 
 func runEditor(editor, path string) error {
+	// #nosec G204 -- runs the user's own $EDITOR on their own config; the path is shell-quoted.
 	cmd := exec.Command("sh", "-c", editor+" "+shellQuote(path))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

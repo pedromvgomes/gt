@@ -130,6 +130,7 @@ func printDetailed(printer *ui.UI, templates []config.Template, vars map[string]
 		}
 		resolved := substituteVars(t.Script, vars)
 		_, _ = fmt.Fprintf(printer.Out, "   script: %s\n", resolved)
+		// #nosec G304 -- reads a setup script the user configured gt to run.
 		if data, err := os.ReadFile(resolved); err == nil {
 			for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 				_, _ = fmt.Fprintf(printer.Out, "     %s\n", line)
@@ -166,6 +167,7 @@ func runTemplate(ctx context.Context, printer *ui.UI, t config.Template, c Conte
 	var cmd *exec.Cmd
 	switch {
 	case strings.TrimSpace(t.Run) != "":
+		// #nosec G204 -- runs the setup template the user wrote in their own gt config; that is the feature.
 		cmd = exec.CommandContext(ctx, "sh", "-c", t.Run)
 	case strings.TrimSpace(t.Script) != "":
 		path := substituteVars(t.Script, c.Vars())
@@ -175,6 +177,7 @@ func runTemplate(ctx context.Context, printer *ui.UI, t config.Template, c Conte
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("stat script %s: %w", path, err)
 		}
+		// #nosec G204 -- runs a setup script from the user's own repository, by their own configuration.
 		cmd = exec.CommandContext(ctx, "sh", path)
 	default:
 		return fmt.Errorf("template has neither run nor script")

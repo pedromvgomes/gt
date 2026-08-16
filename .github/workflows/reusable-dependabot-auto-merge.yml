@@ -1,0 +1,236 @@
+name: gt dependabot auto-merge
+
+# Reusable Dependabot auto-merge for repositories governed by `gt repo`.
+#
+# Adapted from wardnet's dependabot-auto-merge.yml, which is the version that
+# got the details right: process substitution so per-PR state survives the
+# loop, failure tracking so one rejected merge does not abort the batch, and
+# classification of benign rejections as skips rather than errors.
+#
+# The Dependabot cooldown (set in .github/dependabot.yml) is the supply-chain
+# guard: by the time a PR exists, the upstream release has been in the wild
+# long enough to surface yanks and compromised publishers. This workflow is
+# only the merge executor on top of that.
+#
+# Known gap, not a bug: PRs touching .github/workflows/** can never be merged
+# here. No `permissions:` key grants GITHUB_TOKEN the `workflow` scope, so the
+# github-actions ecosystem always needs `gt repo fleet merge-pending`, which
+# runs with your own credentials.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Auto-merge eligible Dependabot PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # squash-merge PRs and delete their branches
+      pull-requests: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # In the gt repository itself, build from the checkout instead of
+      # installing the released binary — the same reason the orchestrator there
+      # references ./.github/workflows/reusable-*.yml rather than the pinned
+      # tag: a PR must exercise the gt in that PR, not the last release.
+      #
+      # It is also the only way gt can govern itself before the first release
+      # carrying `gt repo` exists: install.sh would fetch a gt that has no such
+      # command, and every governance job would fail on a bootstrap problem
+      # rather than on anything real.
+      - name: Set up Go
+        if: github.repository == 'pedromvgomes/gt'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gt from this checkout
+        if: github.repository == 'pedromvgomes/gt'
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/gt" ./cmd/gt
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      # Deliberately not `curl .../install.sh | sh`. install.sh verifies the
+      # checksum of the binary it downloads, but the script doing the verifying
+      # was itself fetched unpinned from main and piped straight into a shell —
+      # and this runs in every governed repository's CI, holding a token with
+      # write access. A compromise of main would execute there before anyone
+      # could notice. semgrep's gha-curl-pipe-shell rule was right.
+      #
+      # `gh release download` fetches the same release assets goreleaser
+      # publishes, and the checksum is verified here rather than by code the
+      # release also supplies. Runners are linux/amd64, hence the fixed asset.
+      #
+      # Still the *latest* release rather than the tag this workflow was called
+      # at, which is what install.sh did too — a reusable workflow cannot see
+      # its own tag. Worth revisiting once a v2 exists and the two can disagree.
+      - name: Install gt
+        if: github.repository != 'pedromvgomes/gt'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: gt_linux_amd64.tar.gz
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download --repo pedromvgomes/gt \
+            --pattern "$ASSET" --pattern checksums.txt --dir "$tmp"
+          (cd "$tmp" && grep " ${ASSET}\$" checksums.txt | sha256sum -c -)
+          tar -xzf "${tmp}/${ASSET}" -C "$tmp"
+          sudo install -m 0755 "${tmp}/gt" /usr/local/bin/gt
+          gt --version
+
+      - name: Read policy
+        id: policy
+        run: |
+          set -euo pipefail
+
+          # Via gt, not yq. `//` is the ALTERNATIVE operator, so it treats an
+          # explicit `false` exactly like an absent key: `delete_branch: false`
+          # read back as true and deleted branches the repo asked to keep, and
+          # `enabled: false` kept the job merging after it was turned off.
+          gt repo config --json > "${RUNNER_TEMP}/spec.json"
+          {
+            echo "enabled=$(jq -r '.dependabot_auto_merge.enabled' "${RUNNER_TEMP}/spec.json")"
+            echo "max_bump=$(jq -r '.dependabot_auto_merge.max_bump' "${RUNNER_TEMP}/spec.json")"
+            echo "delete_branch=$(jq -r '.dependabot_auto_merge.delete_branch' "${RUNNER_TEMP}/spec.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Merge eligible Dependabot PRs
+        if: steps.policy.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MAX_BUMP: ${{ steps.policy.outputs.max_bump }}
+          DELETE_BRANCH: ${{ steps.policy.outputs.delete_branch }}
+        run: |
+          set -euo pipefail
+
+          case "$MAX_BUMP" in
+            patch) max_rank=1 ;;
+            minor) max_rank=2 ;;
+            major) max_rank=3 ;;
+            *) echo "::error::dependabot_auto_merge.max_bump=$MAX_BUMP is not one of patch, minor, major"; exit 1 ;;
+          esac
+
+          merge_args=(--squash)
+          if [[ "$DELETE_BRANCH" == "true" ]]; then
+            merge_args+=(--delete-branch)
+          fi
+
+          # mergeStateStatus ∈ {BEHIND, BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS,
+          # UNKNOWN, UNSTABLE}.
+          # --limit is required: gh defaults to 30, which silently drops the
+          # oldest bumps once a repo accumulates more open PRs than that.
+          gh pr list --repo "$REPO" \
+            --author app/dependabot \
+            --state open \
+            --limit 200 \
+            --json number,title,mergeable,mergeStateStatus,isDraft \
+            > prs.json
+
+          echo "Found $(jq 'length' prs.json) open Dependabot PR(s); max bump: ${MAX_BUMP}."
+
+          # Track failures so one bad PR does not abort the batch under `set -e`.
+          # Fed via process substitution, NOT a pipe, so the loop runs in this
+          # shell and `failed` survives past `done`.
+          failed=0
+
+          while read -r pr; do
+            number=$(jq -r '.number' <<<"$pr")
+            title=$(jq -r '.title' <<<"$pr")
+            mergeable=$(jq -r '.mergeable' <<<"$pr")
+            state=$(jq -r '.mergeStateStatus' <<<"$pr")
+            draft=$(jq -r '.isDraft' <<<"$pr")
+
+            echo ""
+            echo "── PR #${number}: ${title}"
+            echo "   mergeable=${mergeable} state=${state} draft=${draft}"
+
+            if [[ "$draft" == "true" ]]; then
+              echo "   → skip: draft"
+              continue
+            fi
+            if [[ "$mergeable" != "MERGEABLE" ]]; then
+              echo "   → skip: not mergeable (conflicts?)"
+              continue
+            fi
+            # UNSTABLE = required checks passed but optional ones failed.
+            # Branch protection already enforces the required set, so this is
+            # eligible.
+            if [[ "$state" != "CLEAN" && "$state" != "HAS_HOOKS" && "$state" != "UNSTABLE" ]]; then
+              echo "   → skip: mergeStateStatus=${state} (checks not green)"
+              continue
+            fi
+
+            # Dependabot's title format is stable: "bump <pkg> from <old> to <new>",
+            # optionally suffixed with " in /path".
+            #
+            # Minor and patch are optional. github-actions bumps read
+            # "from 4 to 5" when the action is pinned to a moving major tag,
+            # and requiring a full semver would silently skip every one of them.
+            if [[ ! "$title" =~ from\ v?([0-9]+(\.[0-9]+)*)(-[A-Za-z0-9\.\-]+)?\ to\ v?([0-9]+(\.[0-9]+)*)(-[A-Za-z0-9\.\-]+)? ]]; then
+              echo "   → skip: couldn't parse versions from title"
+              continue
+            fi
+            old="${BASH_REMATCH[1]}"
+            new="${BASH_REMATCH[4]}"
+            # An omitted component counts as zero, so 4 -> 5 is major.
+            old_major="${old%%.*}"; new_major="${new%%.*}"
+            old_minor=0; new_minor=0
+            [[ "$old" == *.* ]] && { old_rest="${old#*.}"; old_minor="${old_rest%%.*}"; }
+            [[ "$new" == *.* ]] && { new_rest="${new#*.}"; new_minor="${new_rest%%.*}"; }
+
+            if [[ "$old_major" != "$new_major" ]]; then
+              bump="major"; rank=3
+            elif [[ "$old_minor" != "$new_minor" ]]; then
+              bump="minor"; rank=2
+            else
+              bump="patch"; rank=1
+            fi
+            echo "   bump: ${old} → ${new} (${bump})"
+
+            if [[ "$rank" -gt "$max_rank" ]]; then
+              echo "   → skip: ${bump} exceeds max_bump=${MAX_BUMP}; needs human review"
+              continue
+            fi
+
+            echo "   → merging (squash)"
+            if out=$(gh pr merge "$number" --repo "$REPO" "${merge_args[@]}" 2>&1); then
+              echo "   → merged"
+              continue
+            fi
+
+            # Classify the rejection: some reasons are expected for a batch run
+            # and must not fail the job; anything else is a real problem.
+            # shellcheck disable=SC2001 # indenting every line of multi-line output is sed's job, not parameter expansion's
+            echo "$out" | sed 's/^/     /'
+            if echo "$out" | grep -qiE 'merge conflict|not mergeable'; then
+              # MERGEABLE at list time can go stale by merge time. Dependabot
+              # rebases conflicted PRs; a later run picks it up.
+              echo "   → skip: merge conflict — Dependabot will rebase; picked up next run"
+            elif echo "$out" | grep -qi "without .workflows. permission"; then
+              echo "   → skip: touches a workflow file; GITHUB_TOKEN cannot merge these."
+              echo "     Run 'gt repo fleet merge-pending' locally to merge it."
+            else
+              echo "   → FAILED to merge #${number}; continuing with the rest"
+              failed=1
+            fi
+          done < <(jq -c '.[]' prs.json)
+
+          if [[ "$failed" -ne 0 ]]; then
+            echo ""
+            echo "::error::one or more eligible PRs failed to merge — see log above"
+            exit 1
+          fi
