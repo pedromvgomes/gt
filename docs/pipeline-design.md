@@ -67,7 +67,7 @@ anyone had moved those jobs into the stages.
 ## The orchestrator
 
 ```yaml
-name: PR
+name: gt CI
 on:
   # No `branches:` filter, so PRs stacked onto a feature branch run too.
   pull_request:
@@ -154,7 +154,7 @@ that changes rarely.
 learn rather than two:
 
 ```yaml
-name: CD
+name: gt CD
 on:
   push:
     tags: ["v*.*.*"]        # from pipeline.cd.tags — repos ship on different patterns

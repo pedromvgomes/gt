@@ -237,6 +237,36 @@ func TestRenderCallersPinMovingMajorTag(t *testing.T) {
 //
 // The aggregator is a plain job in a repo-owned workflow, so its check name is
 // simply the job name — no "<caller> / " prefix.
+// The orchestrators must not claim a display name a repository already uses.
+// Every repo in the fleet but one has a workflow called CI, and the stages move
+// into gt's orchestrator a few at a time, so the two coexist for a long while —
+// long enough that two entries called "CI" in the Actions list, and checks
+// reading "CI / …" from either of them, is a real cost rather than a moment's
+// confusion.
+func TestOrchestratorsDoNotClaimACommonWorkflowName(t *testing.T) {
+	spec := repospec.Default()
+	files := renderMap(t, testInput(spec))
+
+	for path, want := range map[string]string{
+		".github/workflows/ci-orchestration.yml": "gt CI",
+		".github/workflows/cd-orchestration.yml": "gt CD",
+	} {
+		content, ok := files[path]
+		if !ok {
+			t.Fatalf("%s was not rendered", path)
+		}
+		var wf struct {
+			Name string `yaml:"name"`
+		}
+		if err := yaml.Unmarshal(content, &wf); err != nil {
+			t.Fatalf("unmarshal %s: %v", path, err)
+		}
+		if wf.Name != want {
+			t.Errorf("%s name = %q, want %q", path, wf.Name, want)
+		}
+	}
+}
+
 func TestRenderedGateProducesTheExpectedCheckName(t *testing.T) {
 	content := renderMap(t, testInput(repospec.Default()))[".github/workflows/ci-orchestration.yml"]
 

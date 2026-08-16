@@ -6,7 +6,10 @@
 # `cd-gate` is not a branch-protection check — nothing merges here. It exists so
 # a release has one status meaning "the whole delivery succeeded" rather than
 # four job results to read.
-name: CD
+#
+# "gt CD" for symmetry with gt CI, and for the same coexistence reason: the
+# repository's own release workflows keep running until their stages migrate.
+name: gt CD
 
 on:
   push:
