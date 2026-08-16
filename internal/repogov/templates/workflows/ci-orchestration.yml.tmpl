@@ -59,6 +59,14 @@ jobs:
 {{- end }}
     uses: ./.github/workflows/ci-{{ .Name }}.yml
     secrets: inherit
+    # packages: read because several repositories resolve private @scope
+    # dependencies from GitHub Packages during install, and a called workflow
+    # can only narrow what the caller grants — a stage cannot ask for it back.
+    # Read-only, so granting it where it is unused costs nothing. A stage
+    # needing more than this is a gt change.
+    permissions:
+      contents: read
+      packages: read
 {{- end }}
 
   conventional-commits:
