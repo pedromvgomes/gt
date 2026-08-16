@@ -59,6 +59,13 @@ jobs:
     if: {{ .If }}
 {{- end }}
     uses: ./.github/workflows/cd-{{ .Name }}.yml
+    # `inherit` rather than an enumerated `secrets:` block, and semgrep's
+    # secrets-inherit rule is answered rather than silenced: gt renders this
+    # orchestrator for every repository and cannot know their secret names, so
+    # there is no list to write. The callee is this same repository's own
+    # workflow, so no secret crosses a trust boundary that `inherit` did not
+    # already sit inside.
+    # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit
     secrets: inherit
     # Delivery writes: a publish stage creates a release, a deploy stage moves
     # artifacts. A called workflow can only narrow this, so a stage needing
