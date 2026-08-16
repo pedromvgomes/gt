@@ -57,6 +57,10 @@ jobs:
     # has asked for one yet.
     permissions:
       contents: write
+      # Same reason as the CI stages: private @scope dependencies resolve from
+      # GitHub Packages during install, and a called workflow cannot ask for a
+      # permission its caller withheld.
+      packages: read
 {{- end }}
 
   cd-gate:
