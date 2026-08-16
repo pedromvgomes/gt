@@ -273,19 +273,20 @@ func TestSkipWorkflowsDoesNotStampVersion(t *testing.T) {
 	}
 }
 
-// Reporting a transient auth or network failure as "this branch has no
-// protection" would be actively misleading about a shared branch.
-func TestSettingsDiffSurfacesNonNotFoundProtectionErrors(t *testing.T) {
+// Reporting a transient auth or network failure as "this branch is not
+// governed" would be actively misleading about a shared branch, so a failure
+// reading the rulesets must surface rather than read as "no ruleset yet".
+func TestSettingsDiffSurfacesRulesetReadErrors(t *testing.T) {
 	gh := &fakeGH{
 		responses: map[string]string{"repos/pedromvgomes/demo": compliantRepoJSON},
-		errors:    map[string]error{"protection": errForbidden{}},
+		errors:    map[string]error{"rulesets": errForbidden{}},
 	}
 	_, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err == nil {
-		t.Fatal("SettingsDiff() = nil, want the 403 surfaced rather than read as 'not protected'")
+		t.Fatal("SettingsDiff() = nil, want the 403 surfaced rather than read as 'no ruleset'")
 	}
-	if !strings.Contains(err.Error(), "protection") {
-		t.Errorf("error %q does not mention branch protection", err)
+	if !strings.Contains(err.Error(), "ruleset") {
+		t.Errorf("error %q does not mention rulesets", err)
 	}
 }
 

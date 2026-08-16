@@ -430,10 +430,7 @@ func TestBulwarkSurvivesASkippedTestStage(t *testing.T) {
 // With CI disabled nothing renders ci-orchestration.yml, so requiring the gate
 // context would block every PR on a check that can never report.
 func TestBranchProtectionOnlyRequiresTheGateWhenCIIsEnabled(t *testing.T) {
-	gh := &fakeGH{responses: map[string]string{
-		"branches/main/protection": `{"required_status_checks":{"strict":false,"contexts":[]}}`,
-		"repos/pedromvgomes/demo":  compliantRepoJSON,
-	}}
+	gh := alignedGH(t)
 	spec := repospec.Default()
 	spec.Pipeline.CI.Enabled = false
 
@@ -441,8 +438,9 @@ func TestBranchProtectionOnlyRequiresTheGateWhenCIIsEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
+	// Removing the rule is right; asking for the gate is not.
 	for _, c := range changes {
-		if strings.Contains(c.Field, "contexts") {
+		if strings.Contains(c.Want, repospec.GateCheckJob) {
 			t.Errorf("would require %q with CI disabled — no workflow can report it", c.Want)
 		}
 	}
