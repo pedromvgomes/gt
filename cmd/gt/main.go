@@ -701,7 +701,13 @@ func pickEditor() string {
 }
 
 func runEditor(editor, path string) error {
+	// Through `sh -c` on purpose: $EDITOR is routinely a command line rather
+	// than a bare binary — `code -w`, `emacsclient -nw` — and honouring that is
+	// the whole contract of the variable. The path gt appends is shell-quoted;
+	// the rest is a command the user chose for themselves and their shell would
+	// run identically.
 	// #nosec G204 -- runs the user's own $EDITOR on their own config; the path is shell-quoted.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 	cmd := exec.Command("sh", "-c", editor+" "+shellQuote(path))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
