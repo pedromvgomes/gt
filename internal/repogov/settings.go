@@ -64,10 +64,26 @@ func (c SettingChange) String() string {
 
 // repoSettings is the subset of the repository API gt manages.
 type repoSettings struct {
-	AllowSquashMerge    bool `json:"allow_squash_merge"`
-	AllowMergeCommit    bool `json:"allow_merge_commit"`
-	AllowRebaseMerge    bool `json:"allow_rebase_merge"`
-	DeleteBranchOnMerge bool `json:"delete_branch_on_merge"`
+	AllowSquashMerge         bool   `json:"allow_squash_merge"`
+	AllowMergeCommit         bool   `json:"allow_merge_commit"`
+	AllowRebaseMerge         bool   `json:"allow_rebase_merge"`
+	DeleteBranchOnMerge      bool   `json:"delete_branch_on_merge"`
+	SquashMergeCommitTitle   string `json:"squash_merge_commit_title"`
+	SquashMergeCommitMessage string `json:"squash_merge_commit_message"`
+}
+
+// githubSquashTitle and githubSquashMessage translate the spec's lowercase
+// vocabulary into the API's. Keeping the spec in its own words means a GitHub
+// rename does not become a breaking change to every .gt-repo.yaml.
+var githubSquashTitle = map[string]string{
+	repospec.SquashTitlePR:       "PR_TITLE",
+	repospec.SquashTitleCommitPR: "COMMIT_OR_PR_TITLE",
+}
+
+var githubSquashMessage = map[string]string{
+	repospec.SquashMessageBlank:   "BLANK",
+	repospec.SquashMessagePRBody:  "PR_BODY",
+	repospec.SquashMessageCommits: "COMMIT_MESSAGES",
 }
 
 // RulesetName is the ruleset gt owns. Everything gt enforces on the default
@@ -413,6 +429,18 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		}
 	}
 
+	// What the squashed commit actually says. Drift here is the quiet kind: the
+	// PR-title gate keeps passing while a non-conforming subject lands on the
+	// default branch, because GitHub took it from the single commit instead.
+	for _, c := range []struct{ field, want, got string }{
+		{"squash_merge_commit_title", githubSquashTitle[m.SquashTitle], live.SquashMergeCommitTitle},
+		{"squash_merge_commit_message", githubSquashMessage[m.SquashMessage], live.SquashMergeCommitMessage},
+	} {
+		if c.want != c.got {
+			changes = append(changes, SettingChange{Field: c.field, Want: c.want, Got: c.got})
+		}
+	}
+
 	bp := spec.Settings.BranchProtection
 	mine, others, err := findRuleset(ctx, gh, owner, name, bp.Branch)
 	if err != nil {
@@ -467,6 +495,8 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		"-F", fmt.Sprintf("allow_merge_commit=%t", m.MergeCommit),
 		"-F", fmt.Sprintf("allow_rebase_merge=%t", m.Rebase),
 		"-F", fmt.Sprintf("delete_branch_on_merge=%t", m.DeleteBranchOnMerge),
+		"-f", fmt.Sprintf("squash_merge_commit_title=%s", githubSquashTitle[m.SquashTitle]),
+		"-f", fmt.Sprintf("squash_merge_commit_message=%s", githubSquashMessage[m.SquashMessage]),
 	}
 	if _, err := gh.Run(ctx, repoArgs...); err != nil {
 		return err

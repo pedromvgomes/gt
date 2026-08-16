@@ -142,6 +142,18 @@ type MergeSettings struct {
 	MergeCommit         bool `yaml:"merge_commit" json:"merge_commit"`
 	Rebase              bool `yaml:"rebase" json:"rebase"`
 	DeleteBranchOnMerge bool `yaml:"delete_branch_on_merge" json:"delete_branch_on_merge"`
+	// SquashTitle decides what the squashed commit's subject line is.
+	//
+	// Default pr_title, and this is load-bearing rather than cosmetic. GitHub's
+	// own default, commit_or_pr_title, uses the COMMIT subject when a PR has
+	// exactly one commit — so a repository can enforce Conventional Commits on
+	// PR titles and still land a non-conforming subject on the default branch,
+	// which is the one place the convention was for.
+	SquashTitle string `yaml:"squash_title" json:"squash_title"`
+	// SquashMessage decides the squashed commit's body. Default blank: the
+	// alternative, commit_messages, concatenates every WIP subject from the
+	// branch into the permanent history of the default branch.
+	SquashMessage string `yaml:"squash_message" json:"squash_message"`
 }
 
 // BranchProtection is the pull-request and history policy gt renders into its
@@ -168,6 +180,20 @@ type BranchProtection struct {
 	// act on, and turning it on without approvals would block every PR.
 	RequireLastPushApproval bool `yaml:"require_last_push_approval" json:"require_last_push_approval"`
 }
+
+// Squash commit title sources. The GitHub values these map to are an
+// implementation detail of settings.go.
+const (
+	SquashTitlePR       = "pr_title"
+	SquashTitleCommitPR = "commit_or_pr_title"
+)
+
+// Squash commit body sources.
+const (
+	SquashMessageBlank   = "blank"
+	SquashMessagePRBody  = "pr_body"
+	SquashMessageCommits = "commit_messages"
+)
 
 // Conventional-commit enforcement scopes.
 const (
@@ -244,6 +270,8 @@ func Default() Spec {
 				MergeCommit:         false,
 				Rebase:              false,
 				DeleteBranchOnMerge: true,
+				SquashTitle:         SquashTitlePR,
+				SquashMessage:       SquashMessageBlank,
 			},
 			BranchProtection: BranchProtection{
 				Branch: "main",
@@ -481,6 +509,18 @@ func validateSettings(s Settings) error {
 	}
 	if s.BranchProtection.RequiredApprovals < 0 {
 		return fmt.Errorf("settings.branch_protection.required_approvals cannot be negative")
+	}
+	switch m.SquashTitle {
+	case SquashTitlePR, SquashTitleCommitPR:
+	default:
+		return fmt.Errorf("settings.merge.squash_title %q is not one of %s, %s",
+			m.SquashTitle, SquashTitlePR, SquashTitleCommitPR)
+	}
+	switch m.SquashMessage {
+	case SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits:
+	default:
+		return fmt.Errorf("settings.merge.squash_message %q is not one of %s, %s, %s",
+			m.SquashMessage, SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits)
 	}
 	return nil
 }
