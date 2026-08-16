@@ -147,9 +147,10 @@ func TestRenderDependabotGroups(t *testing.T) {
 		Ecosystem: "github-actions",
 		Directory: "/",
 		Groups: []repospec.DependabotGroup{{
-			Name:     "codeql-action",
-			Patterns: []string{"github/codeql-action*"},
-			Note:     "init and analyze must move in lockstep.",
+			Name:      "codeql-action",
+			Patterns:  []string{"github/codeql-action*"},
+			Note:      "init and analyze must move in lockstep.",
+			AppliesTo: repospec.AppliesToVersion,
 		}},
 	}}
 	got := renderMap(t, testInput(spec))[".github/dependabot.yml"]
@@ -157,7 +158,8 @@ func TestRenderDependabotGroups(t *testing.T) {
 	var parsed struct {
 		Updates []struct {
 			Groups map[string]struct {
-				Patterns []string `yaml:"patterns"`
+				Patterns  []string `yaml:"patterns"`
+				AppliesTo string   `yaml:"applies-to"`
 			} `yaml:"groups"`
 		} `yaml:"updates"`
 	}
@@ -176,6 +178,24 @@ func TestRenderDependabotGroups(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "# init and analyze must move in lockstep.") {
 		t.Errorf("group note not carried into the rendered file:\n%s", got)
+	}
+	// Dropping applies-to would silently fold security advisories on a grouped
+	// dependency into the routine batch instead of raising them immediately.
+	if g.AppliesTo != repospec.AppliesToVersion {
+		t.Errorf("applies-to = %q, want %q", g.AppliesTo, repospec.AppliesToVersion)
+	}
+}
+
+// applies-to is optional, and an empty one must render nothing rather than an
+// empty key Dependabot would reject.
+func TestRenderOmitsAppliesToWhenUnset(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{
+		Ecosystem: "gomod", Directory: "/",
+		Groups: []repospec.DependabotGroup{{Name: "g", Patterns: []string{"a*"}}},
+	}}
+	if got := string(renderMap(t, testInput(spec))[".github/dependabot.yml"]); strings.Contains(got, "applies-to") {
+		t.Errorf("rendered an applies-to key that was never set:\n%s", got)
 	}
 }
 

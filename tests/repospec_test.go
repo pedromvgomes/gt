@@ -95,6 +95,18 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			wantSub: "duplicate group name",
 		},
 		{
+			name: "invalid applies_to",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{
+					Ecosystem: "gomod", Directory: "/",
+					Groups: []repospec.DependabotGroup{{
+						Name: "g", Patterns: []string{"a*"}, AppliesTo: "everything",
+					}},
+				}}
+			},
+			wantSub: "applies_to",
+		},
+		{
 			name:    "invalid conventional-commit scope",
 			mutate:  func(s *repospec.Spec) { s.ConventionalCommits.Scope = "title" },
 			wantSub: "conventional_commits.scope",

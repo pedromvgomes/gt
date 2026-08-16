@@ -61,7 +61,20 @@ type DependabotGroup struct {
 	Name     string   `yaml:"name" json:"name"`
 	Patterns []string `yaml:"patterns" json:"patterns"`
 	Note     string   `yaml:"note,omitempty" json:"note,omitempty"`
+	// AppliesTo narrows a group to one kind of update. Dependabot's own default
+	// is version-updates, which is the setting worth stating explicitly: it
+	// keeps a security advisory on a grouped dependency arriving as its own
+	// immediate PR rather than waiting to be batched with routine bumps.
+	//
+	// Empty renders nothing and leaves Dependabot on its default.
+	AppliesTo string `yaml:"applies_to,omitempty" json:"applies_to,omitempty"`
 }
+
+// Dependabot group scopes.
+const (
+	AppliesToVersion  = "version-updates"
+	AppliesToSecurity = "security-updates"
+)
 
 type DependabotAutoMerge struct {
 	Enabled      bool   `yaml:"enabled" json:"enabled"`
@@ -350,6 +363,12 @@ func validateGroups(entry int, groups []DependabotGroup) error {
 			if strings.TrimSpace(p) == "" {
 				return fmt.Errorf("dependabot[%d].groups[%d] (%s): pattern[%d] is empty", entry, j, name, k)
 			}
+		}
+		switch g.AppliesTo {
+		case "", AppliesToVersion, AppliesToSecurity:
+		default:
+			return fmt.Errorf("dependabot[%d].groups[%d] (%s): applies_to %q is not one of %s, %s",
+				entry, j, name, g.AppliesTo, AppliesToVersion, AppliesToSecurity)
 		}
 	}
 	return nil

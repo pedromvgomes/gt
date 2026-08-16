@@ -38,6 +38,9 @@ updates:
 {{ .Note | comment "      " }}
 {{- end }}
       {{ .Name }}:
+{{- if .AppliesTo }}
+        applies-to: {{ .AppliesTo }}
+{{- end }}
         patterns:
 {{- range .Patterns }}
           - "{{ . }}"
