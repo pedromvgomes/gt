@@ -27,4 +27,21 @@ updates:
     cooldown:
       default-days: {{ $.CooldownDays }}
     open-pull-requests-limit: {{ $.PRLimit }}
+{{- if .Groups }}
+    # Grouped dependencies share a single PR. A group exists when its members
+    # must move together: landing one alone breaks the default branch, and the
+    # sibling PR then fails that same broken check — so auto-merge cannot
+    # recover on its own.
+    groups:
+{{- range .Groups }}
+{{- if .Note }}
+{{ .Note | comment "      " }}
+{{- end }}
+      {{ .Name }}:
+        patterns:
+{{- range .Patterns }}
+          - "{{ . }}"
+{{- end }}
+{{- end }}
+{{- end }}
 {{ end -}}

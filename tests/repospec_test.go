@@ -59,6 +59,42 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			wantSub: "duplicate entry",
 		},
 		{
+			name: "group without a name",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{
+					Ecosystem: "gomod", Directory: "/",
+					Groups: []repospec.DependabotGroup{{Patterns: []string{"x*"}}},
+				}}
+			},
+			wantSub: "name is required",
+		},
+		{
+			// A patternless group is not inert: Dependabot matches every
+			// dependency in the ecosystem into it, collapsing all updates into
+			// a single PR. Failing loudly beats doing that on a typo.
+			name: "group without patterns",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{
+					Ecosystem: "gomod", Directory: "/",
+					Groups: []repospec.DependabotGroup{{Name: "everything"}},
+				}}
+			},
+			wantSub: "at least one pattern is required",
+		},
+		{
+			name: "duplicate group name",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{
+					Ecosystem: "gomod", Directory: "/",
+					Groups: []repospec.DependabotGroup{
+						{Name: "dup", Patterns: []string{"a*"}},
+						{Name: "dup", Patterns: []string{"b*"}},
+					},
+				}}
+			},
+			wantSub: "duplicate group name",
+		},
+		{
 			name:    "invalid conventional-commit scope",
 			mutate:  func(s *repospec.Spec) { s.ConventionalCommits.Scope = "title" },
 			wantSub: "conventional_commits.scope",

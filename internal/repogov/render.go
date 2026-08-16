@@ -213,6 +213,7 @@ type dependabotEntry struct {
 	Note      string
 	Interval  string
 	Prefix    string
+	Groups    []repospec.DependabotGroup
 }
 
 // SyncSchedule is the weekly cron for the drift-repair workflow. Unlike the
@@ -267,6 +268,7 @@ func buildData(in Input) templateData {
 			Note:      e.Note,
 			Interval:  DependabotInterval,
 			Prefix:    prefix,
+			Groups:    e.Groups,
 		})
 	}
 	return templateData{

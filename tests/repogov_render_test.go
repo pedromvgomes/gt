@@ -136,6 +136,59 @@ func TestRenderPreservesNotesAsComments(t *testing.T) {
 	}
 }
 
+// Grouping exists because some dependencies break the default branch unless
+// they move together — wardnet's codeql-action pair is the canonical case, and
+// three separate red-main incidents there are the evidence. Rendering must
+// carry the group through, or migrating a repo onto gt silently removes the
+// protection its config was written to provide.
+func TestRenderDependabotGroups(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{
+		Ecosystem: "github-actions",
+		Directory: "/",
+		Groups: []repospec.DependabotGroup{{
+			Name:     "codeql-action",
+			Patterns: []string{"github/codeql-action*"},
+			Note:     "init and analyze must move in lockstep.",
+		}},
+	}}
+	got := renderMap(t, testInput(spec))[".github/dependabot.yml"]
+
+	var parsed struct {
+		Updates []struct {
+			Groups map[string]struct {
+				Patterns []string `yaml:"patterns"`
+			} `yaml:"groups"`
+		} `yaml:"updates"`
+	}
+	if err := yaml.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("unmarshal rendered dependabot.yml: %v\n%s", err, got)
+	}
+	if len(parsed.Updates) != 1 {
+		t.Fatalf("updates = %d, want 1", len(parsed.Updates))
+	}
+	g, ok := parsed.Updates[0].Groups["codeql-action"]
+	if !ok {
+		t.Fatalf("group codeql-action missing:\n%s", got)
+	}
+	if len(g.Patterns) != 1 || g.Patterns[0] != "github/codeql-action*" {
+		t.Errorf("patterns = %v, want [github/codeql-action*]", g.Patterns)
+	}
+	if !strings.Contains(string(got), "# init and analyze must move in lockstep.") {
+		t.Errorf("group note not carried into the rendered file:\n%s", got)
+	}
+}
+
+// An entry that declares no groups must not emit a bare `groups:` key, which
+// Dependabot rejects outright.
+func TestRenderOmitsGroupsWhenUnset(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	if got := string(renderMap(t, testInput(spec))[".github/dependabot.yml"]); strings.Contains(got, "groups:") {
+		t.Errorf("rendered an empty groups key:\n%s", got)
+	}
+}
+
 // The moving major tag is what lets gate logic change without editing a single
 // repo, so it must track gt's major rather than being pinned to a literal.
 func TestMajorTag(t *testing.T) {

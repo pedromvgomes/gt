@@ -44,6 +44,23 @@ type DependabotEntry struct {
 	Ecosystem string `yaml:"ecosystem" json:"ecosystem"`
 	Directory string `yaml:"directory" json:"directory"`
 	Note      string `yaml:"note,omitempty" json:"note,omitempty"`
+	// Groups collapses several dependencies into a single PR. It is per-entry
+	// rather than shared policy because a group states which dependencies must
+	// move in lockstep, and only the repository knows that.
+	//
+	// Lockstep dependencies left ungrouped are not a cosmetic problem. Auto-merge
+	// lands one half of the pair alone, the default branch breaks, and the sibling
+	// PR then fails that same broken check — so auto-merge will not land it
+	// either. Recovering takes a human.
+	Groups []DependabotGroup `yaml:"groups,omitempty" json:"groups,omitempty"`
+}
+
+// DependabotGroup is one named group inside an ecosystem entry. Note carries
+// the rationale, re-emitted as a comment above the rendered group.
+type DependabotGroup struct {
+	Name     string   `yaml:"name" json:"name"`
+	Patterns []string `yaml:"patterns" json:"patterns"`
+	Note     string   `yaml:"note,omitempty" json:"note,omitempty"`
 }
 
 type DependabotAutoMerge struct {
@@ -305,6 +322,35 @@ func validateDependabot(entries []DependabotEntry) error {
 			return fmt.Errorf("dependabot[%d]: duplicate entry for %s at %s", i, e.Ecosystem, e.Directory)
 		}
 		seen[key] = true
+		if err := validateGroups(i, e.Groups); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGroups(entry int, groups []DependabotGroup) error {
+	seen := map[string]bool{}
+	for j, g := range groups {
+		name := strings.TrimSpace(g.Name)
+		if name == "" {
+			return fmt.Errorf("dependabot[%d].groups[%d]: name is required", entry, j)
+		}
+		if seen[name] {
+			return fmt.Errorf("dependabot[%d].groups[%d]: duplicate group name %q", entry, j, name)
+		}
+		seen[name] = true
+		// A group with no patterns is not inert — Dependabot would match every
+		// dependency in the ecosystem into it, collapsing all updates into one
+		// PR. Silently doing that on a typo is worse than refusing.
+		if len(g.Patterns) == 0 {
+			return fmt.Errorf("dependabot[%d].groups[%d] (%s): at least one pattern is required", entry, j, name)
+		}
+		for k, p := range g.Patterns {
+			if strings.TrimSpace(p) == "" {
+				return fmt.Errorf("dependabot[%d].groups[%d] (%s): pattern[%d] is empty", entry, j, name, k)
+			}
+		}
 	}
 	return nil
 }
