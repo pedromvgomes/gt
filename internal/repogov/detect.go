@@ -187,6 +187,7 @@ func hasNPMWorkspaces(packageJSON string) bool {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(packageJSON), "pnpm-workspace.yaml")); err == nil {
 		return true
 	}
+	// #nosec G304 -- reads a package.json found by walking the repository being governed.
 	data, err := os.ReadFile(packageJSON)
 	if err != nil {
 		return false
@@ -206,6 +207,7 @@ func hasNPMWorkspaces(packageJSON string) bool {
 // it. A false negative only means a member keeps its own entry, which the
 // human editing .gt-repo.yaml will notice.
 func hasCargoWorkspace(cargoToml string) bool {
+	// #nosec G304 -- reads a Cargo.toml found by walking the repository being governed.
 	data, err := os.ReadFile(cargoToml)
 	if err != nil {
 		return false

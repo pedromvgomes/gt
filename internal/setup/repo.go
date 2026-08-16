@@ -21,6 +21,7 @@ const RepoConfigName = ".gt.yaml"
 // callers. Returns nil with no error when the file does not exist.
 func LoadRepoTemplates(dir string) ([]config.Template, error) {
 	path := filepath.Join(dir, RepoConfigName)
+	// #nosec G304 -- reads the repository's own .gt.yaml.
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil

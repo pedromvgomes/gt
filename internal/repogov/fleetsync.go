@@ -110,6 +110,7 @@ func ensureClone(ctx context.Context, runner git.Runner, repo, cacheDir string) 
 	dir := filepath.Join(cacheDir, strings.ReplaceAll(repo, "/", "__"))
 
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		// #nosec G301 -- a clone cache directory holding public repositories.
 		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 			return "", fmt.Errorf("create cache directory: %w", err)
 		}

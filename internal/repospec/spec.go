@@ -269,6 +269,7 @@ func Exists(workdir string) bool {
 
 // Read reads and validates a manifest at an explicit path.
 func Read(path string) (Spec, error) {
+	// #nosec G304 -- reads .gt-repo.yaml from the repository root gt was pointed at.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

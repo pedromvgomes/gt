@@ -224,6 +224,7 @@ func SaveSpec(workdir string, spec repospec.Spec) error {
 	if err := WriteSpecTo(&buf, spec); err != nil {
 		return err
 	}
+	// #nosec G306 -- .gt-repo.yaml is committed and read by CI; it is repository content, not a secret.
 	if err := os.WriteFile(repospec.Path(workdir), []byte(buf.String()), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", repospec.FileName, err)
 	}

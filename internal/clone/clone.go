@@ -68,6 +68,7 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		return err
 	}
 
+	// #nosec G306 -- the .git pointer file must be readable by git and any tool that follows it.
 	if err := os.WriteFile(filepath.Join(folder, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
 		return fmt.Errorf("write .git pointer: %w", err)
 	}
@@ -108,6 +109,7 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 	}
 
 	for _, typ := range cfg.WorktreeTypes {
+		// #nosec G301 -- worktree directories hold checked-out source; 0750 would break tooling run under another account.
 		if err := os.MkdirAll(filepath.Join(folder, typ), 0o755); err != nil {
 			return fmt.Errorf("create %s worktree directory: %w", typ, err)
 		}

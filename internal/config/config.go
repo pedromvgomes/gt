@@ -232,16 +232,19 @@ func ensureGlobal(path string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat global config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0700/0600: this is the user's own config under their home directory.
+	// Nothing else needs to read it, so nothing else should be able to.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
 		return fmt.Errorf("write default config: %w", err)
 	}
 	return nil
 }
 
 func read(path string) (Config, error) {
+	// #nosec G304 -- reads gt's own config from the resolved config path.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config %s: %w", path, err)

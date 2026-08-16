@@ -65,6 +65,7 @@ func Add(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 	if err := fetchOrigin(ctx, runner, root); err != nil {
 		return err
 	}
+	// #nosec G301 -- worktree type directories hold checked-out source and must stay traversable by other tooling.
 	if err := os.MkdirAll(filepath.Join(root, typ), 0o755); err != nil {
 		return fmt.Errorf("create worktree type directory: %w", err)
 	}

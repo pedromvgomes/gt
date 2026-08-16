@@ -70,6 +70,7 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 			continue
 		}
 		abs := filepath.Join(workdir, filepath.FromSlash(f.Path))
+		// #nosec G304 -- reads a governance file gt itself renders, at a path from its own registry.
 		got, err := os.ReadFile(abs)
 		switch {
 		case os.IsNotExist(err):
@@ -123,6 +124,7 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 		if skipWorkflows && isWorkflow {
 			continue
 		}
+		// #nosec G304 -- same, for orphan detection over gt's own managed paths.
 		got, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(p)))
 		if os.IsNotExist(err) {
 			continue
@@ -197,9 +199,11 @@ func Write(workdir string, results []Result) ([]string, error) {
 			continue
 		}
 
+		// #nosec G301 -- creates .github/ and friends inside a repository; these are committed and read by CI.
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 			return written, fmt.Errorf("create directory for %s: %w", r.Path, err)
 		}
+		// #nosec G306 -- governance files are committed and read by GitHub, editors and other tools; 0600 would be wrong.
 		if err := os.WriteFile(abs, r.Want, 0o644); err != nil {
 			return written, fmt.Errorf("write %s: %w", r.Path, err)
 		}
