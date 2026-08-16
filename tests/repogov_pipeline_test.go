@@ -14,11 +14,13 @@ import (
 
 // workflowJobs parses the jobs of a rendered workflow.
 type renderedJob struct {
-	Name    string   `yaml:"name"`
-	Needs   []string `yaml:"needs"`
-	If      string   `yaml:"if"`
-	Uses    string   `yaml:"uses"`
-	Secrets string   `yaml:"secrets"`
+	Name  string   `yaml:"name"`
+	Needs []string `yaml:"needs"`
+	If    string   `yaml:"if"`
+	Uses  string   `yaml:"uses"`
+	// `secrets:` is either the string "inherit" or a map of named secrets, so it
+	// has to be decoded loosely and inspected by the tests that care.
+	Secrets any `yaml:"secrets"`
 }
 
 func workflowJobs(t *testing.T, content []byte) map[string]renderedJob {
@@ -567,5 +569,51 @@ func TestBulwarkConfigFollowsTheScanDir(t *testing.T) {
 	spec.Bulwark.Dir = "source"
 	if _, ok := pipelineFiles(t, spec)["source/.bulwark.yml"]; !ok {
 		t.Error("expected source/.bulwark.yml for a repo scanning a subdirectory")
+	}
+}
+
+// The bulwark stage must name its secrets rather than inherit them.
+//
+// GitHub documents `secrets: inherit` as working for reusable workflows "in the
+// same organization or enterprise", and gt lives under a different owner than
+// most repositories that call it. With inherit, an organization secret never
+// arrived: bulwark skipped its Codecov upload, because that step is guarded on
+// a non-empty token, and fell back to token-less semgrep. Nothing failed — the
+// gate stayed green while coverage history quietly stopped being recorded,
+// which is the worst shape a regression can take.
+//
+// The repo-owned stages keep `inherit`, and correctly: those are local `./…`
+// calls inside the same repository, where inherit is the whole point.
+func TestBulwarkNamesItsSecretsInsteadOfInheriting(t *testing.T) {
+	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+
+	bulwark, ok := jobs["bulwark"]
+	if !ok {
+		t.Fatal("no bulwark job rendered")
+	}
+	if bulwark.Secrets == "inherit" {
+		t.Fatal("bulwark inherits secrets; an org secret will not reach gt across owners")
+	}
+	named, ok := bulwark.Secrets.(map[string]any)
+	if !ok {
+		t.Fatalf("bulwark secrets = %#v, want a map of named secrets", bulwark.Secrets)
+	}
+	for _, want := range []string{"CODECOV_TOKEN", "SEMGREP_APP_TOKEN"} {
+		v, present := named[want]
+		if !present {
+			t.Errorf("bulwark does not pass %s; the feature it enables silently stops working", want)
+			continue
+		}
+		// It must forward the caller's value, not a literal.
+		if s, _ := v.(string); !strings.Contains(s, "secrets."+want) {
+			t.Errorf("%s = %q, want it to forward ${{ secrets.%s }}", want, s, want)
+		}
+	}
+
+	// A local stage is a different case and must keep inheriting.
+	if build, ok := jobs["build"]; ok {
+		if build.Secrets != "inherit" {
+			t.Errorf("build stage secrets = %#v, want inherit for a same-repo call", build.Secrets)
+		}
 	}
 }
