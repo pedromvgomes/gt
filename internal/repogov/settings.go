@@ -30,6 +30,9 @@ func (e ExecGH) Run(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 func (ExecGH) RunWithInput(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	// Fixed binary, argv as a slice, no shell. gh is how gt reads and writes
+	// the GitHub settings it manages.
+	// #nosec G204 -- fixed binary, argv passed directly, no shell involved.
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)

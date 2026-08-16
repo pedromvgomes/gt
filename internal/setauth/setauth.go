@@ -37,6 +37,10 @@ func (ExecRunner) LookPath(file string) (string, error) {
 
 func (ExecRunner) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
 	slog.Debug("running command", "dir", dir, "name", name, "args", args)
+	// `name` is variable, but never from user input: every caller passes a
+	// literal — direnv, brew, gh, or the login shell from $SHELL. argv goes
+	// through as a slice, so no shell splits it.
+	// #nosec G204 -- callers pass literal binary names; argv is not shell-parsed.
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir

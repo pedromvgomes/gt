@@ -666,6 +666,13 @@ func runConfigEdit(opts *options) error {
 		if validateConfigBytes(data) == nil {
 			// 0600 to match config.ensure(): the edit path must not widen
 			// permissions the create path deliberately narrowed.
+			//
+			// gosec traces `path` back to a flag and calls it path traversal.
+			// It is the config file the user asked to edit, resolved the same
+			// way every other config command resolves it, and writing back to
+			// it is what `gt config edit` is for. A user choosing which of
+			// their own files to edit is not traversal.
+			// #nosec G703 -- destination is the config path the user named.
 			if err := os.WriteFile(path, data, 0o600); err != nil {
 				return fmt.Errorf("write config: %w", err)
 			}

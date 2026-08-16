@@ -14,6 +14,11 @@ import (
 	"path"
 	"sort"
 	"strings"
+	// text/template, not html/template. These render YAML workflow and config
+	// files; HTML-escaping them would corrupt the output — `&` in a shell
+	// pipeline or `>` in a YAML block scalar would become an entity. There is
+	// no browser and no HTML context anywhere downstream.
+	// nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template
 	"text/template"
 
 	"github.com/pedromvgomes/gt/internal/repospec"

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -150,9 +151,14 @@ func extractBinary(archive, dest string) error {
 		// before this runs, so a decompression bomb needs a release that is
 		// both malicious and correctly checksummed — but "we checked earlier"
 		// is a weaker guarantee than a limit that cannot be argued with, and
-		// the cost of the limit is one wrapper.
-		written, err := io.Copy(out, io.LimitReader(tr, maxBinaryBytes+1))
-		if err != nil {
+		// the cost of the limit is one call.
+		//
+		// io.CopyN rather than io.Copy over an io.LimitReader: the two are
+		// equivalent here, but only the former is legible to the decompression
+		// scanners as a bound, and a mitigation a reader cannot see is half a
+		// mitigation. Short input returns io.EOF, which is the success case.
+		written, err := io.CopyN(out, tr, maxBinaryBytes+1)
+		if err != nil && !errors.Is(err, io.EOF) {
 			_ = out.Close()
 			return err
 		}
