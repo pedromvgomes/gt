@@ -42,6 +42,13 @@ jobs:
 {{- end }}
     uses: ./.github/workflows/cd-{{ .Name }}.yml
     secrets: inherit
+    # Delivery writes: a publish stage creates a release, a deploy stage moves
+    # artifacts. A called workflow can only narrow this, so a stage needing
+    # less should say so in its own permissions block. A stage needing *more*
+    # — OIDC id-token, package registries — is a gt change today; no consumer
+    # has asked for one yet.
+    permissions:
+      contents: write
 {{- end }}
 
   cd-gate:
