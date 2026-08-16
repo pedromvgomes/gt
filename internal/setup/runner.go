@@ -167,7 +167,12 @@ func runTemplate(ctx context.Context, printer *ui.UI, t config.Template, c Conte
 	var cmd *exec.Cmd
 	switch {
 	case strings.TrimSpace(t.Run) != "":
-		// #nosec G204 -- runs the setup template the user wrote in their own gt config; that is the feature.
+		// `run:` is a shell snippet by definition — that is what the user wrote
+		// in their own gt config, and running it is the feature. There is no
+		// safer form: refusing a shell here would mean setup templates could not
+		// pipe, test or conditionally install anything.
+		// #nosec G204 -- runs the setup template the user wrote in their own gt config.
+		// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
 		cmd = exec.CommandContext(ctx, "sh", "-c", t.Run)
 	case strings.TrimSpace(t.Script) != "":
 		path := substituteVars(t.Script, c.Vars())
