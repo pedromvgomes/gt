@@ -63,6 +63,25 @@ func (r Report) Clean() bool {
 	return len(Drifted(r.Results)) == 0
 }
 
+// versionStale reports whether the spec was rendered by a different gt than the
+// one running, ignoring a leading "v".
+//
+// The prefix is not cosmetic drift between two conventions we control: goreleaser
+// stamps main.version from {{.Version}}, which is "1.0.0", while tags, docs and
+// hand-built binaries all say "v1.0.0". A raw string compare therefore called
+// every repository stale the moment it was rendered by anything but a release
+// build, and told its owner to re-sync a repository that was already identical.
+//
+// Warning wrongly is worse here than not warning: the whole point of the signal
+// is that it means something when it fires.
+func versionStale(specVersion, running string) bool {
+	norm := func(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "v") }
+	if norm(specVersion) == "" {
+		return false
+	}
+	return norm(specVersion) != norm(running)
+}
+
 // Check renders the spec, diffs it against the working tree, and lints the
 // workflow triggers the gate depends on.
 func Check(opts Options) (Report, error) {
@@ -90,7 +109,7 @@ func checkSpec(spec repospec.Spec, opts Options) (Report, error) {
 	return Report{
 		Spec:         spec,
 		Results:      results,
-		VersionStale: spec.GTVersion != "" && spec.GTVersion != opts.GTVersion,
+		VersionStale: versionStale(spec.GTVersion, opts.GTVersion),
 	}, nil
 }
 

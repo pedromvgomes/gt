@@ -175,3 +175,48 @@ func TestSyncSkipWorkflowsLeavesWorkflowFilesAlone(t *testing.T) {
 		t.Errorf("dependabot.yml should still be written: %v", err)
 	}
 }
+
+// The "v" prefix is not drift between two conventions we control: goreleaser
+// stamps main.version as "1.0.0" while tags, docs and hand-built binaries all
+// say "v1.0.0". Comparing raw strings called every repository stale the moment
+// a release binary looked at it, and told its owner to re-sync something that
+// was already byte-identical.
+//
+// Warning wrongly is worse than not warning — the signal only means something
+// if it fires when something is actually true.
+func TestVersionStaleIgnoresTheVPrefix(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec, run string
+		wantStale bool
+	}{
+		{"release binary against a v-prefixed spec", "v1.0.0", "1.0.0", false},
+		{"v-prefixed binary against a bare spec", "1.0.0", "v1.0.0", false},
+		{"identical", "v1.0.0", "v1.0.0", false},
+		{"surrounding whitespace", " v1.0.0 ", "1.0.0", false},
+		{"genuinely older", "v1.0.0", "1.1.0", true},
+		{"genuinely newer", "v1.2.0", "1.1.0", true},
+		{"unrendered spec never warns", "", "1.0.0", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			spec := repospec.Default()
+			spec.GTVersion = tt.spec
+			spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+			if err := repogov.SaveSpec(root, spec); err != nil {
+				t.Fatalf("SaveSpec() error = %v", err)
+			}
+			opts := testOptions(root)
+			opts.GTVersion = tt.run
+			report, err := repogov.Check(opts)
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			if report.VersionStale != tt.wantStale {
+				t.Errorf("VersionStale = %v for spec %q vs running %q, want %v",
+					report.VersionStale, tt.spec, tt.run, tt.wantStale)
+			}
+		})
+	}
+}

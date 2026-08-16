@@ -1,16 +1,14 @@
 # ci-test — this file is yours.
 #
-# gt created it once and will never modify or delete it again. Put this
-# repository's test suite here; the orchestration around it stays gt's.
+# gt created it once and will never modify or delete it again.
 #
-# Upload coverage as an artifact named `gt-coverage` and the bulwark
-# stage will consume it instead of running the suite a second time. Without it
-# bulwark falls back to running the tests itself, which is correct but slower.
-#
-#   - uses: actions/upload-artifact@<sha>
-#     with:
-#       name: gt-coverage
-#       path: coverage.out
+# The bulwark stage downloads the `gt-coverage` artifact this uploads and hands
+# it to bulwark rather than letting it run the suite again. That is not only a
+# speed question here: bulwark's fallback runs the suite without -coverpkg,
+# which for this repository measures almost nothing — every test lives in
+# ./tests and exercises ./internal, so the coverage lands on the test package
+# itself and reports ~0%. That is what failed patch coverage on a change whose
+# new lines were fully covered.
 name: ci-test
 
 on:
@@ -23,7 +21,27 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      # A no-op so the stage is green from the first run. Replace it.
-      - name: Nothing to do yet
-        run: echo "No test steps defined. Add them in .github/workflows/ci-test.yml"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # From go.mod's `toolchain` line, so there is one place to bump.
+          go-version-file: go.mod
+
+      # -coverpkg is load-bearing, for the reason in the header comment.
+      - name: Test
+        run: go test ./tests/... -coverpkg=./internal/... -coverprofile=coverage.out
+
+      # Named `gt-coverage` because that is the name the bulwark stage looks
+      # for. Renaming it silently sends bulwark back to running the suite
+      # itself, with the miscount above.
+      - name: Upload coverage for the bulwark stage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gt-coverage
+          path: coverage.out
+          if-no-files-found: error
