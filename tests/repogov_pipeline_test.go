@@ -501,3 +501,59 @@ func TestSyncAllowsUpgrade(t *testing.T) {
 		t.Fatalf("Sync() error = %v, want an upgrade to be permitted", err)
 	}
 }
+
+// bulwark decides who produces coverage from .bulwark.yml, not from an action
+// input — those were removed when the setting moved into the file. The default
+// is `run`, so a repository without the file has bulwark silently re-execute
+// the suite ci-test already ran. Scaffolding it is what stops that being the
+// quiet default.
+func TestBulwarkConfigScaffoldedWhenTestsProduceCoverage(t *testing.T) {
+	files, err := repogov.Render(testInput(repospec.Default()))
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	var found *repogov.File
+	for i := range files {
+		if files[i].Path == ".bulwark.yml" {
+			found = &files[i]
+		}
+	}
+	if found == nil {
+		t.Fatal(".bulwark.yml was not scaffolded")
+	}
+	if found.Mode != repogov.ModeScaffold {
+		t.Errorf("mode = %q, want scaffold — its contents are bulwark's, not gt's", found.Mode)
+	}
+	if !strings.Contains(string(found.Content), "source: report") {
+		t.Errorf("scaffold does not set coverage.source: report:\n%s", found.Content)
+	}
+}
+
+// With no test stage nothing produces a report, so declaring `report` would
+// tell bulwark to look for something that is never made.
+func TestBulwarkConfigNotScaffoldedWithoutATestStage(t *testing.T) {
+	for name, mutate := range map[string]func(*repospec.Spec){
+		"no test stage":    func(s *repospec.Spec) { s.Pipeline.CI.Stages = []string{"preflight", "build"} },
+		"bulwark disabled": func(s *repospec.Spec) { s.Bulwark.Enabled = false },
+		"ci disabled":      func(s *repospec.Spec) { s.Pipeline.CI.Enabled = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := repospec.Default()
+			mutate(&spec)
+			if _, ok := pipelineFiles(t, spec)[".bulwark.yml"]; ok {
+				t.Error(".bulwark.yml was scaffolded when nothing produces a report")
+			}
+		})
+	}
+}
+
+// bulwark reads the file from its scan root, so a repo scanning a subdirectory
+// needs it there rather than at the repository root.
+func TestBulwarkConfigFollowsTheScanDir(t *testing.T) {
+	spec := repospec.Default()
+	spec.Bulwark.Dir = "source"
+	if _, ok := pipelineFiles(t, spec)["source/.bulwark.yml"]; !ok {
+		t.Error("expected source/.bulwark.yml for a repo scanning a subdirectory")
+	}
+}

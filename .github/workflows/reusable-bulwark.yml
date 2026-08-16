@@ -8,11 +8,10 @@ name: gt bulwark
 # the suite a second time. That is the entire double-run fix. With no artifact
 # it falls back to running the tests itself, which is correct but slower.
 #
-# The mapping from artifact contents to bulwark's per-language report inputs is
-# deliberately narrow for now — Go's coverage profile and an lcov file. Anything
-# richer, and particularly a multi-language monorepo, is what the deferred
-# `.bulwark.yml` coverage.source change is for; guessing more here would be
-# reimplementing that badly.
+# Which side produces coverage is bulwark's own setting now — `coverage.source`
+# in .bulwark.yml, which gt scaffolds as `report`. This workflow no longer tells
+# bulwark anything about it; it only lands the artifact where bulwark already
+# searches.
 
 on:
   workflow_call:
@@ -58,42 +57,42 @@ jobs:
           name: gt-coverage
           path: ${{ runner.temp }}/gt-coverage
 
-      - name: Decide whether bulwark runs the tests
-        id: mode
+      - name: Place the coverage report where bulwark looks
         env:
           COVERAGE_DIR: ${{ runner.temp }}/gt-coverage
+          DIR: ${{ inputs.dir }}
         run: |
           set -euo pipefail
 
-          go_report=""
-          lcov_report=""
-
-          if [[ -d "$COVERAGE_DIR" ]]; then
-            # Resolve to repo-relative paths: bulwark reads them relative to
-            # its scan directory, not the runner temp.
-            if [[ -f "${COVERAGE_DIR}/coverage.out" ]]; then
-              cp "${COVERAGE_DIR}/coverage.out" ./gt-coverage.out
-              go_report="gt-coverage.out"
-            fi
-            if [[ -f "${COVERAGE_DIR}/lcov.info" ]]; then
-              cp "${COVERAGE_DIR}/lcov.info" ./gt-lcov.info
-              lcov_report="gt-lcov.info"
-            fi
+          # bulwark decides who produces coverage from `coverage.source` in
+          # .bulwark.yml, not from an action input — the tests-mode/go-report
+          # inputs were removed once that setting moved into the file. So this
+          # step no longer tells bulwark anything; it just puts the artifact
+          # where bulwark already searches.
+          #
+          # coverage.out and lcov.info are the first conventional candidates
+          # bulwark checks per module, so landing them at the scan root needs no
+          # matching configuration.
+          if [[ ! -d "$COVERAGE_DIR" ]]; then
+            echo "no gt-coverage artifact — bulwark will find no report for this run"
+            echo "(a stage skipped by ci-preflight produces none, which is not an error)"
+            exit 0
           fi
 
-          if [[ -n "$go_report" || -n "$lcov_report" ]]; then
-            mode=skip
-            echo "consuming coverage from the test stage; not re-running the suite"
-          else
-            mode=run
-            echo "no gt-coverage artifact; bulwark will run the tests itself"
-          fi
+          dest="${DIR:-.}"
+          copied=0
+          for name in coverage.out lcov.info; do
+            if [[ -f "${COVERAGE_DIR}/${name}" ]]; then
+              cp "${COVERAGE_DIR}/${name}" "${dest}/${name}"
+              echo "placed ${name} at ${dest}/"
+              copied=$((copied + 1))
+            fi
+          done
 
-          {
-            echo "tests-mode=$mode"
-            echo "go-report=$go_report"
-            echo "lcov-report=$lcov_report"
-          } >> "$GITHUB_OUTPUT"
+          if [[ "$copied" -eq 0 ]]; then
+            echo "::warning::gt-coverage exists but holds neither coverage.out nor lcov.info"
+            ls -la "$COVERAGE_DIR"
+          fi
 
       # Every third-party action above is SHA-pinned, because a tag its owner
       # controls can be silently repointed at code we never reviewed. bulwark is
@@ -104,8 +103,11 @@ jobs:
       - uses: wardnet/bulwark@v1
         with:
           dir: ${{ inputs.dir }}
-          tests-mode: ${{ steps.mode.outputs.tests-mode }}
-          go-report: ${{ steps.mode.outputs.go-report }}
+          # No coverage inputs: bulwark reads coverage.source from .bulwark.yml
+          # at its scan root. gt scaffolds that file with `source: report`,
+          # because the default is `run` and would re-execute the suite ci-test
+          # already ran.
+          #
           # GitHub withholds secrets from Dependabot events, so those runs fall
           # back to bulwark's token-less path automatically.
           semgrep-app-token: ${{ secrets.SEMGREP_APP_TOKEN }}

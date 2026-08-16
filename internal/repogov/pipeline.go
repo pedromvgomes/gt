@@ -154,6 +154,26 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 			add("ci", st, gated)
 		}
 	}
+	// bulwark reads .bulwark.yml from its scan root. Scaffolded rather than
+	// managed: its contents are bulwark's business, but coverage.source has to
+	// say `report` or bulwark re-runs the suite ci-test already ran — and the
+	// default is `run`, so forgetting the file is silently expensive rather
+	// than loudly broken.
+	if spec.Bulwark.Enabled && spec.Pipeline.CI.Enabled && contains(spec.Pipeline.CI.Stages, "test") {
+		path := ".bulwark.yml"
+		if spec.Bulwark.Dir != "" {
+			path = spec.Bulwark.Dir + "/.bulwark.yml"
+		}
+		out = append(out, fileSpec{
+			key:    "bulwark-config",
+			tmpl:   "templates/scaffolds/bulwark-config.yml.tmpl",
+			path:   path,
+			mode:   ModeScaffold,
+			wanted: func(repospec.Spec) bool { return true },
+			data:   func(Input, templateData) (any, error) { return struct{}{}, nil },
+		})
+	}
+
 	if spec.Pipeline.CD.Enabled {
 		gated := gatedStages(spec.Pipeline.CD.Stages, cdWiring)
 		for _, st := range spec.Pipeline.CD.Stages {
@@ -161,6 +181,15 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 		}
 	}
 	return out
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // gatedStages lists the enabled stages preflight can skip, which is what its
