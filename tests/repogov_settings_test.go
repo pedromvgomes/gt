@@ -61,7 +61,9 @@ const compliantRepoJSON = `{
   "allow_squash_merge": true,
   "allow_merge_commit": false,
   "allow_rebase_merge": false,
-  "delete_branch_on_merge": true
+  "delete_branch_on_merge": true,
+  "squash_merge_commit_title": "PR_TITLE",
+  "squash_merge_commit_message": "BLANK"
 }`
 
 // rulesetListJSON is the summary list endpoint. gt finds its own ruleset by
@@ -148,7 +150,9 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	  "allow_squash_merge": true,
 	  "allow_merge_commit": true,
 	  "allow_rebase_merge": false,
-	  "delete_branch_on_merge": true
+	  "delete_branch_on_merge": true,
+	  "squash_merge_commit_title": "PR_TITLE",
+	  "squash_merge_commit_message": "BLANK"
 	}`
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
@@ -634,5 +638,58 @@ func TestSettingsRemovesDisabledRulesetsWithoutCarryingTheirRules(t *testing.T) 
 	}
 	if !deleted {
 		t.Error("disabled ruleset was left behind")
+	}
+}
+
+// The PR-title gate only governs what lands on the default branch if the
+// squashed commit actually takes its subject from the PR. GitHub's default,
+// COMMIT_OR_PR_TITLE, uses the commit subject when a PR has exactly one commit
+// — so a repository can enforce Conventional Commits and still land a
+// non-conforming message, with every check green.
+func TestSettingsDiffDetectsSquashCommitTitleDrift(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo"] = `{
+	  "allow_squash_merge": true, "allow_merge_commit": false, "allow_rebase_merge": false,
+	  "delete_branch_on_merge": true,
+	  "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+	  "squash_merge_commit_message": "COMMIT_MESSAGES"
+	}`
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	want := map[string]string{
+		"squash_merge_commit_title":   "PR_TITLE",
+		"squash_merge_commit_message": "BLANK",
+	}
+	for _, c := range changes {
+		if w, ok := want[c.Field]; ok {
+			if c.Want != w {
+				t.Errorf("%s want = %q, want %q", c.Field, c.Want, w)
+			}
+			delete(want, c.Field)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("undetected drift: %v (changes = %v)", want, changes)
+	}
+}
+
+// Apply must send both, or a repository on GitHub's defaults stays there.
+func TestSettingsApplySendsSquashCommitDefaults(t *testing.T) {
+	gh := alignedGH(t)
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var patched string
+	for _, c := range gh.calls {
+		if strings.Contains(c, "PATCH") {
+			patched = c
+		}
+	}
+	for _, want := range []string{"squash_merge_commit_title=PR_TITLE", "squash_merge_commit_message=BLANK"} {
+		if !strings.Contains(patched, want) {
+			t.Errorf("PATCH does not set %s: %s", want, patched)
+		}
 	}
 }
