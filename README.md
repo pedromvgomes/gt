@@ -102,10 +102,10 @@ Run the configured setup templates against the current repository. Works inside 
 
 ### `gt repo <init|check|sync|settings|fleet>`
 
-Keep repositories structurally consistent: Dependabot config, PR gating, conventional commits, and Dependabot auto-merge, all declared in one committed `.gt-repo.yaml`.
+Keep repositories structurally consistent: the CI/CD pipeline, Dependabot config, conventional commits, and Dependabot auto-merge, all declared in one committed `.gt-repo.yaml`.
 
-- `gt repo init` — detect Dependabot ecosystems from the files on disk and seed `checks.required` from the check names your existing `pull_request` workflows already produce. Writes `.gt-repo.yaml` for you to review. `--dry-run` prints without writing.
-- `gt repo check` — render the spec, diff it against the working tree, and lint the workflow triggers the gate depends on. Non-zero exit on any problem, so it works as a PR check. `--json` for machine-readable output.
+- `gt repo init` — detect Dependabot ecosystems from the files on disk and write `.gt-repo.yaml` with gt's defaults, for you to review. `--dry-run` prints without writing.
+- `gt repo check` — render the spec and diff it against the working tree. Non-zero exit on drift, so it works as a PR check. `--json` for machine-readable output.
 - `gt repo sync` — write the files that have drifted. `--dry-run`, `--yes`, and `--skip-workflows`. A repository with no `.gt-repo.yaml` is not governed; sync says so and exits 0, which makes it safe to run from a post-clone setup template.
 - `gt repo config [--json]` — print the resolved spec with defaults applied. gt's own workflows consume this rather than re-parsing the YAML.
 - `gt repo settings diff|apply` — branch protection, merge methods, and the single required status check, through your existing `gh` credentials.
@@ -172,82 +172,128 @@ Templates in your global config and in a per-repo `<gt-managed-root>/.gt.yaml` r
 
 ## Repository governance
 
-Keeping many repositories structurally consistent is the problem `gt repo` solves. A GitHub template repo cannot: templates copy once and never propagate, so a change to shared policy means editing every repository by hand.
+Keeping many repositories structurally consistent is the problem `gt repo`
+solves. A GitHub template repo cannot: templates copy once and never
+propagate, so a change to shared policy means editing every repository by hand.
 
-A repository opts in by committing a **`.gt-repo.yaml`**. That one file drives three different propagation mechanisms:
+A repository opts in by committing a **`.gt-repo.yaml`**. That one file drives
+three propagation mechanisms:
 
 | Layer | How it reaches the repo |
 |---|---|
-| Gate logic (aggregation, conventional commits, drift check) | A thin caller pinned to gt's moving major tag — logic changes need **no file change at all** |
-| Files that must exist in-repo (`dependabot.yml`, the callers, CODEOWNERS) | `gt repo sync`, locally or from the weekly in-repo job |
+| Stage logic (attestation, conventional commits, bulwark, governance) | gt's reusable workflows, pinned to a moving major tag — changes need **no file edit at all** |
+| Files that must exist in-repo (orchestrators, `dependabot.yml`, CODEOWNERS) | `gt repo sync`, locally or from the weekly in-repo job |
 | GitHub API state (branch protection, merge methods) | `gt repo settings apply`, using your `gh` credentials |
 
 ```yaml
 # .gt-repo.yaml
 dependabot:
-  - ecosystem: cargo
-    directory: /source/daemon
-  - ecosystem: npm
-    directory: /source
-    note: |
-      Workspace ROOT: a single yarn.lock covers every member. A per-member
-      entry leaves the lockfile stale and fails `yarn install --immutable`.
+  - ecosystem: gomod
+    directory: /
 
-checks:
-  timeout_minutes: 30
-  required: ["All checks passed"]   # gt's gate waits on these
-  optional: ["E2E Tests"]           # allowed to be absent
+pipeline:
+  ci:
+    enabled: true
+    stages: [preflight, build, test, end2end]
+    merge_queue: false      # organization-owned repositories only
+  cd:
+    enabled: true
+    stages: [preflight, publish, deploy, verify]
+    tags: ["v*.*.*"]
 
 conventional_commits:
   enabled: true
   scope: pr_title # pr_title | commits | both
 
-dependabot_auto_merge:
+bulwark:
   enabled: true
-  max_bump: minor
 ```
 
-Shared policy — Dependabot cooldown days, commit-message prefixes, the weekly sync schedule — deliberately lives in gt's templates rather than this file, so changing it everywhere is one gt release.
+Shared policy — Dependabot cooldown, commit-message prefixes, the sync
+schedule — deliberately lives in gt's templates rather than this file, so
+changing it everywhere is one gt release.
 
-### One required status check, forever
+### The pipeline, and which files are yours
 
-Branch protection requires exactly one check: **`PR / Gate`**. gt generates it, and it validates everything listed in `checks`. Never list it in `checks` — it is the aggregator, and `gt repo check` rejects a spec that does.
+gt owns `ci-orchestration.yml` and `cd-orchestration.yml`. They wire the stages
+together and nothing else:
 
-Reusable workflows report as `<caller job> / <called job>`, which is where the name comes from. A plain job reports under its own name alone, so a job named `All checks passed` is the check `All checks passed`, with no workflow prefix.
+```
+attest
+  └─ ci-preflight
+       └─ ci-build
+            ├─ ci-test ─── bulwark
+            └─ ci-end2end
+conventional-commits, governance
+  └─ ci-gate     ← the one required check
+```
 
-Because the name never changes, branch protection is configured once. Rename a CI job and you update `.gt-repo.yaml`, not the protection rule.
+The `ci-*` and `cd-*` stage files are **yours**. gt writes each one once as an
+empty stub and then never touches it again — not to update it, and not to
+delete it when you drop the stage. That is where your build, tests and
+deployment go.
 
-### Why a check that never appears is the dangerous case
+`ci-preflight` decides what runs: emit `run-build`, `run-test` or `run-end2end`
+as `"false"` to skip a stage. The stub emits nothing, so everything runs until
+you say otherwise. A skipped stage passes the gate.
 
-The gate polls the PR's checks. `success`, `skipped` and `neutral` pass; `failure`, `cancelled` and `timed_out` fail. Skipped passing is deliberate — it avoids the trap where a legitimately skipped job never reports and blocks the PR forever.
+### One required check, forever
 
-But a check that *never appears* is indistinguishable at runtime from one that has not started yet. So `gt repo check` catches it statically instead, failing when:
+Branch protection requires exactly one check: **`ci-gate`**. It is a plain job
+in a workflow your repository owns, so its check name is just the job name.
+Because every stage is a job in that same workflow, it aggregates them with
+`needs:` — no polling, no timeout, and no way to confuse "absent" with "not
+started yet".
 
-- a name in `checks.required` is one no workflow can produce (a typo, or a renamed job);
-- the workflow producing it carries a top-level `paths:` / `paths-ignore:` filter, so it may not run at all;
-- the name still contains a `${{ }}` expression, which a matrix job expands before reporting.
+Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
 
-The fix for a filtered workflow is to trigger it unconditionally and gate its jobs with job-level `if:`, so every job still reports a conclusion. Use `checks.optional` for checks that may genuinely be absent.
+### Skipping work that was already validated
+
+For a `pull_request` event GitHub tests `refs/pull/N/merge` — the merged result
+of the PR into its base — and a squash merge produces a commit with that same
+tree. So `ci-gate` records the tree it validated as a `gt/validated-tree`
+commit status, and later runs compare against it:
+
+- **push to the default branch** — if the tree already carries a passing
+  attestation, every stage skips. The identical tree passed; re-running proves
+  nothing.
+- **tag push** — `cd-orchestration` refuses to publish a tree that carries no
+  passing attestation. That is a stronger guarantee than re-running CI, which
+  only tells you the code passes now, again.
+
+This replaces "require branches to be up to date": nobody has to rebase, so a
+merge never turns other open PRs red. It fails safe in every direction — a
+missing, unreadable or mismatched attestation means run the pipeline.
 
 ### What CI cannot do, and why
 
-GitHub blocks `GITHUB_TOKEN` from creating or updating anything under `.github/workflows/`, so a compromised action cannot rewrite a repository's own automation. Three consequences, all handled the same way:
+GitHub blocks `GITHUB_TOKEN` from creating or updating anything under
+`.github/workflows/`, so a compromised action cannot rewrite a repository's own
+automation. Three consequences, all handled the same way:
 
-- The weekly sync repairs everything *except* workflow files, and reports the ones it had to leave.
-- Dependabot PRs touching `.github/workflows/**` can never self-merge — every repo with the `github-actions` ecosystem produces these routinely.
-- Updating a caller file itself needs the same escalation.
+- The weekly sync repairs everything *except* workflow files, and reports the
+  ones it had to leave.
+- Dependabot PRs touching `.github/workflows/**` can never self-merge — every
+  repo with the `github-actions` ecosystem produces these routinely.
+- Updating an orchestrator itself needs the same escalation.
 
-In each case the in-repo job does what its token allows, and the rest escalates to a local `gt repo fleet …` run using your own credentials. No long-lived token is stored anywhere. Pinning the callers to a moving major tag is what keeps this rare: gate logic changes touch no file.
+In each case the in-repo job does what its token allows, and the rest escalates
+to a local `gt repo fleet …` run using your own credentials. No long-lived
+token is stored anywhere.
 
 ### Getting started
 
 ```sh
-gt repo init          # detect and seed .gt-repo.yaml
+gt repo init          # detect ecosystems, write .gt-repo.yaml
 $EDITOR .gt-repo.yaml # prune what detection over-found, add notes
-gt repo sync          # render the governance files
+gt repo sync          # render the orchestrators and stage stubs
+# move your build and test jobs into ci-build.yml / ci-test.yml
 gt repo settings diff # preview branch protection changes
 gt repo settings apply
 ```
+
+Have `ci-test.yml` upload its coverage as an artifact named `gt-coverage`, and
+the bulwark stage consumes it instead of running your suite a second time.
 
 Then add a setup template so new clones are governed automatically:
 
@@ -258,6 +304,10 @@ setup:
       match: ["github.com:pedromvgomes/*", "github.com/pedromvgomes/*"]
       run: gt repo sync --yes
 ```
+
+See [docs/pipeline-design.md](docs/pipeline-design.md) for why it is shaped
+this way.
+
 
 ## Coding-agent integration
 

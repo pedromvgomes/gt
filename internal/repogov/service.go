@@ -184,7 +184,9 @@ const specHeader = `# Repository governance for gt. This file is the source of t
 # schedule) lives in gt's templates, not here, so it stays consistent across
 # every governed repo.
 #
-# checks.required lists the checks gt's gate waits on. Do not list the gate
-# itself — it is the aggregator, and branch protection requires only it.
+# The pipeline stages below become jobs in ci-orchestration.yml, each calling a
+# ci-*/cd-* workflow that belongs to this repository: gt creates those once and
+# never touches them again. Branch protection needs exactly one check, ci-gate,
+# which waits on all of them.
 
 `
