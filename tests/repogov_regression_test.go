@@ -103,6 +103,79 @@ func TestCallersReferenceDistinctlyNamedUpstreamWorkflows(t *testing.T) {
 	}
 }
 
+// The mirror image of the test below, and the one onboarding depends on: a
+// repository adopting gt usually already has a CODEOWNERS. gt knows that path,
+// so without the marker check the very first sync would delete a file gt never
+// wrote — silently, and before anyone had a chance to opt in.
+func TestPreExistingFilesGtDidNotWriteAreLeftAlone(t *testing.T) {
+	root := t.TempDir()
+
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	spec.Files = []string{"sync"} // codeowners deliberately not declared
+	if err := repogov.SaveSpec(root, spec); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+
+	codeowners := filepath.Join(root, ".github", "CODEOWNERS")
+	if err := os.MkdirAll(filepath.Dir(codeowners), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const handWritten = "# The repository's own, predating gt.\n* @wardnet/maintainers\n"
+	if err := os.WriteFile(codeowners, []byte(handWritten), 0o644); err != nil {
+		t.Fatalf("write CODEOWNERS: %v", err)
+	}
+
+	report, err := repogov.Check(testOptions(root))
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	for _, r := range report.Results {
+		if r.Path == ".github/CODEOWNERS" && r.Status == repogov.StatusOrphaned {
+			t.Error("a hand-written CODEOWNERS was reported as an orphan gt may delete")
+		}
+	}
+
+	if _, _, err := repogov.Sync(testOptions(root)); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	got, err := os.ReadFile(codeowners)
+	if err != nil {
+		t.Fatalf("CODEOWNERS was removed by sync: %v", err)
+	}
+	if string(got) != handWritten {
+		t.Errorf("CODEOWNERS was rewritten:\ngot:  %q\nwant: %q", got, handWritten)
+	}
+}
+
+// Orphan removal keys off the marker, so a managed template that lost it would
+// become undeletable — gt would render it, stop recognising it, and leave it
+// running forever once the spec dropped it.
+func TestEveryManagedFileCarriesTheMarker(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	spec.Files = repospec.FileKeys
+
+	files, err := repogov.Render(testInput(spec))
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	seen := 0
+	for _, f := range files {
+		if f.Mode != repogov.ModeManaged {
+			continue
+		}
+		seen++
+		if !strings.Contains(string(f.Content), repogov.ManagedMarker) {
+			t.Errorf("managed file %s does not carry %q, so gt could never remove it as an orphan",
+				f.Path, repogov.ManagedMarker)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no managed files rendered; the test proves nothing")
+	}
+}
+
 // Dropping an entry from files:, or removing the last dependabot ecosystem,
 // must not leave the previously rendered file on disk still running while
 // check reports the repository compliant.

@@ -31,6 +31,15 @@ const WorkflowDir = ".github/workflows"
 // moving major tag of this repo.
 const Upstream = "pedromvgomes/gt"
 
+// ManagedMarker is the sentence every managed template opens with, and the only
+// evidence gt has that it wrote a file rather than merely knowing that path.
+//
+// Orphan removal depends on it: a repository being onboarded may already have a
+// CODEOWNERS or an .editorconfig that gt could render but did not write, and
+// deleting those because the spec has not opted in yet would destroy content gt
+// never owned. Every managed template must carry it; a test enforces that.
+const ManagedMarker = "Managed by gt"
+
 // Shared Dependabot policy. These live here, not in .gt-repo.yaml, so changing
 // them for every governed repo is a one-line edit in gt.
 const (

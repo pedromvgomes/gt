@@ -102,9 +102,15 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 			Mode: f.Mode, Want: f.Content, Got: got,
 		})
 	}
-	// Anything gt can render, that exists on disk, but that the current spec
-	// does not ask for, is an orphan: a file gt wrote earlier that is still
-	// active in CI while nothing claims it.
+	// A file gt can render, that exists on disk, that the current spec does not
+	// ask for, AND that carries gt's marker, is an orphan: gt wrote it earlier
+	// and it is still active in CI while nothing claims it.
+	//
+	// The marker is what makes this safe. Without it, onboarding a repository
+	// that already has a CODEOWNERS or an .editorconfig would delete it on the
+	// first sync, purely because gt happens to know that path and the spec had
+	// not opted in yet. gt removes what gt wrote; everything else belongs to
+	// the repository.
 	wanted := make(map[string]bool, len(files))
 	for _, f := range files {
 		wanted[f.Path] = true
@@ -124,6 +130,9 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", p, err)
 		}
+		if !hasManagedMarker(got) {
+			continue
+		}
 		results = append(results, Result{
 			Path: p, Status: StatusOrphaned, Workflow: isWorkflow,
 			Mode: ModeManaged, Got: got,
@@ -132,6 +141,19 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 
 	sort.Slice(results, func(i, j int) bool { return results[i].Path < results[j].Path })
 	return results, nil
+}
+
+// hasManagedMarker reports whether a file on disk was written by gt.
+//
+// Only the head of the file is examined: the marker is always the first line of
+// a managed template, and scanning further would let an unrelated mention of gt
+// deep inside a repository's own file make it look managed.
+func hasManagedMarker(content []byte) bool {
+	const head = 512
+	if len(content) > head {
+		content = content[:head]
+	}
+	return bytes.Contains(content, []byte(ManagedMarker))
 }
 
 // Drifted returns only the results that need writing.
