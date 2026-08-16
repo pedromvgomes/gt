@@ -503,10 +503,16 @@ func TestSyncAllowsUpgrade(t *testing.T) {
 }
 
 // bulwark decides who produces coverage from .bulwark.yml, not from an action
-// input — those were removed when the setting moved into the file. The default
-// is `run`, so a repository without the file has bulwark silently re-execute
-// the suite ci-test already ran. Scaffolding it is what stops that being the
-// quiet default.
+// input — those were removed when the setting moved into the file. gt
+// scaffolds the file so the choice is written down rather than inherited.
+//
+// It must scaffold `run`, not `report`. `report` says a report already exists,
+// and at the moment this file is created ci-test is a no-op stub that uploads
+// nothing — bulwark then exits with an error rather than shrugging at the
+// missing file. Onboarding gt itself proved that: the bulwark stage failed on
+// `open : no such file or directory` on a pipeline where every stage was a
+// stub. The repository flips it to `report` in the commit that makes ci-test
+// actually produce coverage.
 func TestBulwarkConfigScaffoldedWhenTestsProduceCoverage(t *testing.T) {
 	files, err := repogov.Render(testInput(repospec.Default()))
 	if err != nil {
@@ -525,8 +531,14 @@ func TestBulwarkConfigScaffoldedWhenTestsProduceCoverage(t *testing.T) {
 	if found.Mode != repogov.ModeScaffold {
 		t.Errorf("mode = %q, want scaffold — its contents are bulwark's, not gt's", found.Mode)
 	}
-	if !strings.Contains(string(found.Content), "source: report") {
-		t.Errorf("scaffold does not set coverage.source: report:\n%s", found.Content)
+	if !strings.Contains(string(found.Content), "source: run") {
+		t.Errorf("scaffold does not set coverage.source: run:\n%s", found.Content)
+	}
+	// Guards the direction specifically: `report` here fails the security gate
+	// on every repo whose ci-test is still a scaffold, which is all of them on
+	// the day they onboard.
+	if strings.Contains(string(found.Content), "source: report") {
+		t.Errorf("scaffold sets coverage.source: report, which fails until ci-test uploads coverage:\n%s", found.Content)
 	}
 }
 

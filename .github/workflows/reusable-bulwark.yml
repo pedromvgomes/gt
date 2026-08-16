@@ -9,7 +9,8 @@ name: gt bulwark
 # it falls back to running the tests itself, which is correct but slower.
 #
 # Which side produces coverage is bulwark's own setting now — `coverage.source`
-# in .bulwark.yml, which gt scaffolds as `report`. This workflow no longer tells
+# in .bulwark.yml, which gt scaffolds as `run` and the repository flips to
+# `report` once ci-test actually uploads one. This workflow no longer tells
 # bulwark anything about it; it only lands the artifact where bulwark already
 # searches.
 
@@ -104,9 +105,10 @@ jobs:
         with:
           dir: ${{ inputs.dir }}
           # No coverage inputs: bulwark reads coverage.source from .bulwark.yml
-          # at its scan root. gt scaffolds that file with `source: report`,
-          # because the default is `run` and would re-execute the suite ci-test
-          # already ran.
+          # at its scan root. gt scaffolds that file with `source: run`, which
+          # is what is true while ci-test is still a stub. A repository flips it
+          # to `report` when ci-test starts uploading gt-coverage; doing so
+          # earlier makes bulwark exit on a report that was never produced.
           #
           # GitHub withholds secrets from Dependabot events, so those runs fall
           # back to bulwark's token-less path automatically.

@@ -41,7 +41,31 @@ jobs:
           # cannot do. Cheap enough to always fetch.
           fetch-depth: 0
 
+      # In the gt repository itself, build from the checkout instead of
+      # installing the released binary — the same reason the orchestrator there
+      # references ./.github/workflows/reusable-*.yml rather than the pinned
+      # tag: a PR must exercise the gt in that PR, not the last release.
+      #
+      # It is also the only way gt can govern itself before the first release
+      # carrying `gt repo` exists: install.sh would fetch a gt that has no such
+      # command, and every governance job would fail on a bootstrap problem
+      # rather than on anything real.
+      - name: Set up Go
+        if: github.repository == 'pedromvgomes/gt'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gt from this checkout
+        if: github.repository == 'pedromvgomes/gt'
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/gt" ./cmd/gt
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
       - name: Install gt
+        if: github.repository != 'pedromvgomes/gt'
         run: curl -fsSL https://raw.githubusercontent.com/pedromvgomes/gt/main/install.sh | sh
 
       - name: Read config

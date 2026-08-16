@@ -2,19 +2,26 @@
 #
 # gt created it once and will never modify or delete it again. bulwark owns
 # what goes in it; gt only makes sure it exists, because the one setting below
-# is load-bearing for the pipeline and silently wrong by default.
+# decides whether the pipeline runs your test suite once or twice.
 #
-# `coverage.source` says who produces the coverage bulwark gates on. In this
-# pipeline ci-test produces it and uploads it as the `gt-coverage` artifact,
-# which the bulwark stage extracts before bulwark runs — so `report` is
-# correct. Leaving it unset means `run`, and bulwark would execute your suite a
-# second time without saying so.
+# `coverage.source` says who produces the coverage bulwark gates on:
 #
-# A stage skipped by ci-preflight simply produces no report, which bulwark
-# treats as no coverage for that ecosystem rather than an error.
+#   run     bulwark executes the suite itself. Slower, and correct whenever
+#           nothing else has produced a report yet.
+#   report  bulwark only reads a report someone else produced. Faster, and
+#           WRONG until something actually produces one — bulwark exits with
+#           an error when told to read a report that is not there.
+#
+# It starts as `run` because that is what is true the moment this file is
+# created: ci-test is a scaffolded no-op, so nothing uploads coverage yet.
+#
+# Change it to `report` in the same commit that makes ci-test produce coverage
+# and upload it as the `gt-coverage` artifact, which the bulwark stage extracts
+# before bulwark runs. Flipping it earlier trades a double test run for a
+# failing security gate.
 #
 # Everything else bulwark supports — per-language enablement, coverage
 # tolerances, patch-coverage opt-outs, toolchain overrides — belongs here too.
 # See bulwark's README.
 coverage:
-  source: report
+  source: run
