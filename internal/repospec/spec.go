@@ -142,13 +142,58 @@ type MergeSettings struct {
 	MergeCommit         bool `yaml:"merge_commit" json:"merge_commit"`
 	Rebase              bool `yaml:"rebase" json:"rebase"`
 	DeleteBranchOnMerge bool `yaml:"delete_branch_on_merge" json:"delete_branch_on_merge"`
+	// SquashTitle decides what the squashed commit's subject line is.
+	//
+	// Default pr_title, and this is load-bearing rather than cosmetic. GitHub's
+	// own default, commit_or_pr_title, uses the COMMIT subject when a PR has
+	// exactly one commit — so a repository can enforce Conventional Commits on
+	// PR titles and still land a non-conforming subject on the default branch,
+	// which is the one place the convention was for.
+	SquashTitle string `yaml:"squash_title" json:"squash_title"`
+	// SquashMessage decides the squashed commit's body. Default blank: the
+	// alternative, commit_messages, concatenates every WIP subject from the
+	// branch into the permanent history of the default branch.
+	SquashMessage string `yaml:"squash_message" json:"squash_message"`
 }
 
+// BranchProtection is the pull-request and history policy gt renders into its
+// ruleset. Every field has an opinionated default, so a repository states only
+// where it disagrees — and an explicit `false` still overrides, because Parse
+// unmarshals over Default() rather than over a zero value.
 type BranchProtection struct {
 	Branch            string `yaml:"branch" json:"branch"`
 	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
 	RequireUpToDate   bool   `yaml:"require_up_to_date" json:"require_up_to_date"`
+	// DismissStaleReviews drops approvals when new commits land. Default true:
+	// an approval is of a diff, and a review of code that has since changed is
+	// a rubber stamp wearing a reviewer's name.
+	DismissStaleReviews bool `yaml:"dismiss_stale_reviews" json:"dismiss_stale_reviews"`
+	// RequireThreadResolution blocks merge on unresolved review threads.
+	// Default true: an unresolved thread is a question nobody answered, and
+	// merging over it silently decides the answer is "no".
+	RequireThreadResolution bool `yaml:"require_thread_resolution" json:"require_thread_resolution"`
+	// RequireCodeOwnerReview needs a CODEOWNERS file to mean anything, and gt
+	// does not require repositories to have one. Default false.
+	RequireCodeOwnerReview bool `yaml:"require_code_owner_review" json:"require_code_owner_review"`
+	// RequireLastPushApproval demands someone other than the last pusher
+	// approve. Default false: with required_approvals at 0 it has nothing to
+	// act on, and turning it on without approvals would block every PR.
+	RequireLastPushApproval bool `yaml:"require_last_push_approval" json:"require_last_push_approval"`
 }
+
+// Squash commit title sources. The GitHub values these map to are an
+// implementation detail of settings.go.
+const (
+	SquashTitlePR       = "pr_title"
+	SquashTitleCommitPR = "commit_or_pr_title"
+)
+
+// Squash commit body sources.
+const (
+	SquashMessageBlank   = "blank"
+	SquashMessagePRBody  = "pr_body"
+	SquashMessageCommits = "commit_messages"
+)
 
 // Conventional-commit enforcement scopes.
 const (
@@ -225,6 +270,8 @@ func Default() Spec {
 				MergeCommit:         false,
 				Rebase:              false,
 				DeleteBranchOnMerge: true,
+				SquashTitle:         SquashTitlePR,
+				SquashMessage:       SquashMessageBlank,
 			},
 			BranchProtection: BranchProtection{
 				Branch: "main",
@@ -233,6 +280,14 @@ func Default() Spec {
 				// attestation proves the same property after the fact, without
 				// anyone having to rebase.
 				RequireUpToDate: false,
+				// The two opinions worth holding: an approval is of a diff, and
+				// an unresolved thread is an unanswered question.
+				DismissStaleReviews:     true,
+				RequireThreadResolution: true,
+				// Off, because both need something gt does not require: a
+				// CODEOWNERS file, and a nonzero approval count.
+				RequireCodeOwnerReview:  false,
+				RequireLastPushApproval: false,
 			},
 		},
 		Bulwark: Bulwark{Enabled: true},
@@ -454,6 +509,18 @@ func validateSettings(s Settings) error {
 	}
 	if s.BranchProtection.RequiredApprovals < 0 {
 		return fmt.Errorf("settings.branch_protection.required_approvals cannot be negative")
+	}
+	switch m.SquashTitle {
+	case SquashTitlePR, SquashTitleCommitPR:
+	default:
+		return fmt.Errorf("settings.merge.squash_title %q is not one of %s, %s",
+			m.SquashTitle, SquashTitlePR, SquashTitleCommitPR)
+	}
+	switch m.SquashMessage {
+	case SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits:
+	default:
+		return fmt.Errorf("settings.merge.squash_message %q is not one of %s, %s, %s",
+			m.SquashMessage, SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits)
 	}
 	return nil
 }

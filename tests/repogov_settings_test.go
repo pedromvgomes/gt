@@ -61,7 +61,9 @@ const compliantRepoJSON = `{
   "allow_squash_merge": true,
   "allow_merge_commit": false,
   "allow_rebase_merge": false,
-  "delete_branch_on_merge": true
+  "delete_branch_on_merge": true,
+  "squash_merge_commit_title": "PR_TITLE",
+  "squash_merge_commit_message": "BLANK"
 }`
 
 // rulesetListJSON is the summary list endpoint. gt finds its own ruleset by
@@ -95,8 +97,12 @@ func compliantRulesetJSON(t *testing.T, checks ...string) string {
 			{"type": "non_fast_forward"},
 			{"type": "required_linear_history"},
 			{"type": "pull_request", "parameters": map[string]any{
-				"required_approving_review_count": 0,
-				"allowed_merge_methods":           []string{"squash"},
+				"required_approving_review_count":   0,
+				"dismiss_stale_reviews_on_push":     true,
+				"required_review_thread_resolution": true,
+				"require_code_owner_review":         false,
+				"require_last_push_approval":        false,
+				"allowed_merge_methods":             []string{"squash"},
 			}},
 			{"type": "required_status_checks", "parameters": map[string]any{
 				"strict_required_status_checks_policy": false,
@@ -144,7 +150,9 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	  "allow_squash_merge": true,
 	  "allow_merge_commit": true,
 	  "allow_rebase_merge": false,
-	  "delete_branch_on_merge": true
+	  "delete_branch_on_merge": true,
+	  "squash_merge_commit_title": "PR_TITLE",
+	  "squash_merge_commit_message": "BLANK"
 	}`
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
@@ -221,10 +229,11 @@ func TestSettingsDiffReportsOtherProtectionOnTheSameBranch(t *testing.T) {
 	}
 }
 
-// A ruleset doing something gt does not model must be reported as KEPT, and
-// never deleted — losing a signature requirement or a push restriction because
-// gt did not recognise it is far worse than leaving two rulesets in place.
-func TestSettingsKeepsARulesetDoingSomethingGtDoesNotManage(t *testing.T) {
+// A rule gt does not model is carried into gt's ruleset verbatim and the old
+// ruleset is then removed. Dropping it would quietly revoke a protection;
+// leaving the old ruleset behind would put two objects on one branch. Copying
+// it across is the only option that does neither.
+func TestSettingsAbsorbsRulesGtDoesNotModel(t *testing.T) {
 	gh := alignedGH(t)
 	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "signing")
 	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"signing","target":"branch","enforcement":"active","rules":[{"type":"required_signatures"}]}`
@@ -237,8 +246,8 @@ func TestSettingsKeepsARulesetDoingSomethingGtDoesNotManage(t *testing.T) {
 	for _, c := range changes {
 		if c.Field == "ruleset signing" {
 			found = true
-			if !strings.Contains(c.Want, "kept") || !strings.Contains(c.Want, "required_signatures") {
-				t.Errorf("want = %q, want it to say kept and name required_signatures", c.Want)
+			if !strings.Contains(c.Want, "folded into") || !strings.Contains(c.Want, "required_signatures") {
+				t.Errorf("want = %q, want it to say folded-in and name required_signatures", c.Want)
 			}
 		}
 	}
@@ -249,10 +258,47 @@ func TestSettingsKeepsARulesetDoingSomethingGtDoesNotManage(t *testing.T) {
 	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
 		t.Fatalf("SettingsApply() error = %v", err)
 	}
+
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	if !strings.Contains(string(body), "required_signatures") {
+		t.Errorf("the unmodelled rule was not carried into gt's ruleset:\n%s", body)
+	}
+	var deleted bool
 	for _, c := range gh.calls {
 		if strings.Contains(c, "DELETE") && strings.Contains(c, "/rulesets/101") {
-			t.Fatalf("apply deleted a ruleset gt does not fully manage: %s", c)
+			deleted = true
 		}
+	}
+	if !deleted {
+		t.Error("the absorbed ruleset was left behind, so the branch still has two")
+	}
+}
+
+// bypass_actors are facts about people and apps, not policy gt has an opinion
+// on. Apply must write them back untouched or it silently revokes an exemption.
+func TestSettingsPreservesBypassActors(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "bypass_actors":[{"actor_id":5,"actor_type":"Integration","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	if !strings.Contains(string(body), `"actor_id":5`) {
+		t.Errorf("bypass actors were dropped on apply:\n%s", body)
 	}
 }
 
@@ -539,5 +585,111 @@ func TestListReposParsesOwnerRepos(t *testing.T) {
 	}
 	if !strings.Contains(gh.calls[0], "--no-archived") {
 		t.Errorf("ListRepos did not exclude archived repos: %q", gh.calls[0])
+	}
+}
+
+// A disabled ruleset is removed like any other — leaving it is the same
+// clutter — but its rules are NOT folded into gt's active ruleset. Disabled
+// means somebody switched that off deliberately, and carrying it across would
+// turn it back on under a different name.
+func TestSettingsRemovesDisabledRulesetsWithoutCarryingTheirRules(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = `[
+	  {"id":100,"name":"gt","enforcement":"active","target":"branch"},
+	  {"id":101,"name":"Code Quality Copilot review","enforcement":"disabled","target":"branch"}
+	]`
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"Code Quality Copilot review",
+	  "target":"branch","enforcement":"disabled","rules":[{"type":"copilot_code_review"}]}`
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var reported bool
+	for _, c := range changes {
+		if strings.Contains(c.Field, "Copilot") {
+			reported = true
+			if !strings.Contains(c.Want, "disabled") {
+				t.Errorf("want = %q, want it to say the rules are not carried over", c.Want)
+			}
+		}
+	}
+	if !reported {
+		t.Fatalf("disabled ruleset not reported: %v", changes)
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	if strings.Contains(string(body), "copilot_code_review") {
+		t.Errorf("a rule from a DISABLED ruleset was activated by folding it in:\n%s", body)
+	}
+	var deleted bool
+	for _, c := range gh.calls {
+		if strings.Contains(c, "DELETE") && strings.Contains(c, "/rulesets/101") {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Error("disabled ruleset was left behind")
+	}
+}
+
+// The PR-title gate only governs what lands on the default branch if the
+// squashed commit actually takes its subject from the PR. GitHub's default,
+// COMMIT_OR_PR_TITLE, uses the commit subject when a PR has exactly one commit
+// — so a repository can enforce Conventional Commits and still land a
+// non-conforming message, with every check green.
+func TestSettingsDiffDetectsSquashCommitTitleDrift(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo"] = `{
+	  "allow_squash_merge": true, "allow_merge_commit": false, "allow_rebase_merge": false,
+	  "delete_branch_on_merge": true,
+	  "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+	  "squash_merge_commit_message": "COMMIT_MESSAGES"
+	}`
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	want := map[string]string{
+		"squash_merge_commit_title":   "PR_TITLE",
+		"squash_merge_commit_message": "BLANK",
+	}
+	for _, c := range changes {
+		if w, ok := want[c.Field]; ok {
+			if c.Want != w {
+				t.Errorf("%s want = %q, want %q", c.Field, c.Want, w)
+			}
+			delete(want, c.Field)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("undetected drift: %v (changes = %v)", want, changes)
+	}
+}
+
+// Apply must send both, or a repository on GitHub's defaults stays there.
+func TestSettingsApplySendsSquashCommitDefaults(t *testing.T) {
+	gh := alignedGH(t)
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var patched string
+	for _, c := range gh.calls {
+		if strings.Contains(c, "PATCH") {
+			patched = c
+		}
+	}
+	for _, want := range []string{"squash_merge_commit_title=PR_TITLE", "squash_merge_commit_message=BLANK"} {
+		if !strings.Contains(patched, want) {
+			t.Errorf("PATCH does not set %s: %s", want, patched)
+		}
 	}
 }

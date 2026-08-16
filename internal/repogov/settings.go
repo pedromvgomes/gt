@@ -64,10 +64,26 @@ func (c SettingChange) String() string {
 
 // repoSettings is the subset of the repository API gt manages.
 type repoSettings struct {
-	AllowSquashMerge    bool `json:"allow_squash_merge"`
-	AllowMergeCommit    bool `json:"allow_merge_commit"`
-	AllowRebaseMerge    bool `json:"allow_rebase_merge"`
-	DeleteBranchOnMerge bool `json:"delete_branch_on_merge"`
+	AllowSquashMerge         bool   `json:"allow_squash_merge"`
+	AllowMergeCommit         bool   `json:"allow_merge_commit"`
+	AllowRebaseMerge         bool   `json:"allow_rebase_merge"`
+	DeleteBranchOnMerge      bool   `json:"delete_branch_on_merge"`
+	SquashMergeCommitTitle   string `json:"squash_merge_commit_title"`
+	SquashMergeCommitMessage string `json:"squash_merge_commit_message"`
+}
+
+// githubSquashTitle and githubSquashMessage translate the spec's lowercase
+// vocabulary into the API's. Keeping the spec in its own words means a GitHub
+// rename does not become a breaking change to every .gt-repo.yaml.
+var githubSquashTitle = map[string]string{
+	repospec.SquashTitlePR:       "PR_TITLE",
+	repospec.SquashTitleCommitPR: "COMMIT_OR_PR_TITLE",
+}
+
+var githubSquashMessage = map[string]string{
+	repospec.SquashMessageBlank:   "BLANK",
+	repospec.SquashMessagePRBody:  "PR_BODY",
+	repospec.SquashMessageCommits: "COMMIT_MESSAGES",
 }
 
 // RulesetName is the ruleset gt owns. Everything gt enforces on the default
@@ -109,10 +125,10 @@ func desiredRuleset(spec repospec.Spec) map[string]any {
 		{"type": "required_linear_history"},
 		{"type": "pull_request", "parameters": map[string]any{
 			"required_approving_review_count":   bp.RequiredApprovals,
-			"dismiss_stale_reviews_on_push":     false,
-			"require_code_owner_review":         false,
-			"require_last_push_approval":        false,
-			"required_review_thread_resolution": false,
+			"dismiss_stale_reviews_on_push":     bp.DismissStaleReviews,
+			"require_code_owner_review":         bp.RequireCodeOwnerReview,
+			"require_last_push_approval":        bp.RequireLastPushApproval,
+			"required_review_thread_resolution": bp.RequireThreadResolution,
 			"allowed_merge_methods":             methods,
 		}},
 	}
@@ -158,17 +174,42 @@ type liveRuleset struct {
 			Include []string `json:"include"`
 		} `json:"ref_name"`
 	} `json:"conditions"`
-	Rules []struct {
-		Type       string `json:"type"`
-		Parameters struct {
-			RequiredApprovingReviewCount     int      `json:"required_approving_review_count"`
-			AllowedMergeMethods              []string `json:"allowed_merge_methods"`
-			StrictRequiredStatusChecksPolicy bool     `json:"strict_required_status_checks_policy"`
-			RequiredStatusChecks             []struct {
-				Context string `json:"context"`
-			} `json:"required_status_checks"`
-		} `json:"parameters"`
-	} `json:"rules"`
+	// BypassActors is kept as raw JSON and written back untouched. gt has no
+	// opinion about who may bypass a branch's rules — that is a per-repository
+	// fact about people and apps — and dropping it on apply would quietly
+	// revoke an exemption somebody relies on.
+	BypassActors []json.RawMessage `json:"bypass_actors"`
+	Rules        []liveRule        `json:"rules"`
+}
+
+// liveRule keeps the parsed fields gt compares AND the original JSON, so a rule
+// type gt does not model can be carried through verbatim rather than dropped.
+type liveRule struct {
+	Type       string `json:"type"`
+	Parameters struct {
+		RequiredApprovingReviewCount     int      `json:"required_approving_review_count"`
+		DismissStaleReviewsOnPush        bool     `json:"dismiss_stale_reviews_on_push"`
+		RequireCodeOwnerReview           bool     `json:"require_code_owner_review"`
+		RequireLastPushApproval          bool     `json:"require_last_push_approval"`
+		RequiredReviewThreadResolution   bool     `json:"required_review_thread_resolution"`
+		AllowedMergeMethods              []string `json:"allowed_merge_methods"`
+		StrictRequiredStatusChecksPolicy bool     `json:"strict_required_status_checks_policy"`
+		RequiredStatusChecks             []struct {
+			Context string `json:"context"`
+		} `json:"required_status_checks"`
+	} `json:"parameters"`
+	raw json.RawMessage
+}
+
+func (r *liveRule) UnmarshalJSON(data []byte) error {
+	type plain liveRule
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*r = liveRule(p)
+	r.raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // findRuleset returns gt's ruleset, and every other active ruleset targeting
@@ -195,7 +236,13 @@ func findRuleset(ctx context.Context, gh GH, owner, name, branch string) (*liveR
 	var mine *liveRuleset
 	var others []liveRuleset
 	for _, sum := range summaries {
-		if sum.Name != RulesetName && (sum.Enforcement != "active" || sum.Target != "branch") {
+		// Disabled rulesets are included deliberately. They are still objects
+		// governing this branch in the UI, and leaving them behind is the same
+		// clutter as leaving an active one — gt removes them too. What it must
+		// NOT do is carry their rules across: disabled means somebody switched
+		// that off on purpose, and folding it into an active ruleset would turn
+		// it back on under a different name.
+		if sum.Name != RulesetName && sum.Target != "branch" {
 			continue
 		}
 		detail, err := gh.Run(ctx, "api", fmt.Sprintf("repos/%s/%s/rulesets/%d", owner, name, sum.ID))
@@ -216,26 +263,37 @@ func findRuleset(ctx context.Context, gh GH, owner, name, branch string) (*liveR
 	return mine, others, nil
 }
 
-// supersededBy reports whether every rule type in `other` is also managed by
-// gt's ruleset, so removing `other` loses nothing.
-//
-// This is what separates "gt replaces your ad-hoc protection" from "gt deletes
-// a rule you needed". A ruleset doing something gt does not model — required
-// signatures, push restrictions, a tag target — is never removed; gt reports it
-// and leaves the decision to a human.
-func supersededBy(other liveRuleset, spec repospec.Spec) (bool, []string) {
+// managedRuleTypes is the set gt renders itself.
+func managedRuleTypes(spec repospec.Spec) map[string]bool {
 	managed := map[string]bool{}
 	for _, r := range desiredRuleset(spec)["rules"].([]map[string]any) {
 		managed[r["type"].(string)] = true
 	}
-	var unmanaged []string
+	return managed
+}
+
+// unmanagedRules returns the rules in `other` that gt does not render itself —
+// code_quality and copilot_code_review being the ones in use today.
+//
+// They are not dropped and they do not force a second ruleset to survive:
+// apply copies them verbatim into gt's own ruleset and then removes the old
+// one, so the branch ends up governed by exactly one object with the same
+// protections it had before.
+func unmanagedRules(other liveRuleset, spec repospec.Spec) []liveRule {
+	// See findRuleset: a disabled ruleset contributes nothing, because its rules
+	// are not in force and copying them would enable them.
+	if other.Enforcement != "active" {
+		return nil
+	}
+	managed := managedRuleTypes(spec)
+	var out []liveRule
 	for _, r := range other.Rules {
 		if !managed[r.Type] {
-			unmanaged = append(unmanaged, r.Type)
+			out = append(out, r)
 		}
 	}
-	sort.Strings(unmanaged)
-	return len(unmanaged) == 0, unmanaged
+	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
+	return out
 }
 
 // rulesetChanges compares gt's ruleset against what the spec asks for.
@@ -287,6 +345,18 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
 			add("ruleset.required_approving_review_count",
 				fmt.Sprint(bp.RequiredApprovals),
 				fmt.Sprint(r.Parameters.RequiredApprovingReviewCount))
+			add("ruleset.dismiss_stale_reviews_on_push",
+				fmt.Sprint(bp.DismissStaleReviews),
+				fmt.Sprint(r.Parameters.DismissStaleReviewsOnPush))
+			add("ruleset.required_review_thread_resolution",
+				fmt.Sprint(bp.RequireThreadResolution),
+				fmt.Sprint(r.Parameters.RequiredReviewThreadResolution))
+			add("ruleset.require_code_owner_review",
+				fmt.Sprint(bp.RequireCodeOwnerReview),
+				fmt.Sprint(r.Parameters.RequireCodeOwnerReview))
+			add("ruleset.require_last_push_approval",
+				fmt.Sprint(bp.RequireLastPushApproval),
+				fmt.Sprint(r.Parameters.RequireLastPushApproval))
 			wantMethods, _ := want["rules"].([]map[string]any)
 			var wm []string
 			for _, wr := range wantMethods {
@@ -359,6 +429,18 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		}
 	}
 
+	// What the squashed commit actually says. Drift here is the quiet kind: the
+	// PR-title gate keeps passing while a non-conforming subject lands on the
+	// default branch, because GitHub took it from the single commit instead.
+	for _, c := range []struct{ field, want, got string }{
+		{"squash_merge_commit_title", githubSquashTitle[m.SquashTitle], live.SquashMergeCommitTitle},
+		{"squash_merge_commit_message", githubSquashMessage[m.SquashMessage], live.SquashMergeCommitMessage},
+	} {
+		if c.want != c.got {
+			changes = append(changes, SettingChange{Field: c.field, Want: c.want, Got: c.got})
+		}
+	}
+
 	bp := spec.Settings.BranchProtection
 	mine, others, err := findRuleset(ctx, gh, owner, name, bp.Branch)
 	if err != nil {
@@ -372,20 +454,22 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 	// would let gt claim a repository matches while something else also governs
 	// the branch.
 	for _, o := range others {
-		if ok, unmanaged := supersededBy(o, spec); ok {
-			changes = append(changes, SettingChange{
-				Field: "ruleset " + o.Name,
-				Want:  "removed (fully covered by the " + RulesetName + " ruleset)",
-				Got:   "also active on this branch",
-			})
-			continue
-		} else {
-			changes = append(changes, SettingChange{
-				Field: "ruleset " + o.Name,
-				Want:  "kept; gt does not manage " + strings.Join(unmanaged, ", "),
-				Got:   "also active on this branch",
-			})
+		want := "removed (fully covered by the " + RulesetName + " ruleset)"
+		if o.Enforcement != "active" {
+			want = "removed (disabled; its rules are not carried over)"
 		}
+		if extra := unmanagedRules(o, spec); len(extra) > 0 {
+			var types []string
+			for _, r := range extra {
+				types = append(types, r.Type)
+			}
+			want = "folded into " + RulesetName + " (carrying " + strings.Join(types, ", ") + ") and removed"
+		}
+		got := "also active on this branch"
+		if o.Enforcement != "active" {
+			got = "present on this branch (" + o.Enforcement + ")"
+		}
+		changes = append(changes, SettingChange{Field: "ruleset " + o.Name, Want: want, Got: got})
 	}
 
 	// Same reasoning for classic protection, which gt no longer writes.
@@ -411,6 +495,8 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		"-F", fmt.Sprintf("allow_merge_commit=%t", m.MergeCommit),
 		"-F", fmt.Sprintf("allow_rebase_merge=%t", m.Rebase),
 		"-F", fmt.Sprintf("delete_branch_on_merge=%t", m.DeleteBranchOnMerge),
+		"-f", fmt.Sprintf("squash_merge_commit_title=%s", githubSquashTitle[m.SquashTitle]),
+		"-f", fmt.Sprintf("squash_merge_commit_message=%s", githubSquashMessage[m.SquashMessage]),
 	}
 	if _, err := gh.Run(ctx, repoArgs...); err != nil {
 		return err
@@ -422,7 +508,54 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		return err
 	}
 
-	body, err := json.Marshal(desiredRuleset(spec))
+	payload := desiredRuleset(spec)
+
+	// Carry through everything gt does not model, from gt's own ruleset and
+	// from the ones it is about to absorb: rule types gt has no opinion about,
+	// and the bypass actors, which are facts about people rather than policy.
+	// Dropping either would mean apply quietly removed a protection or an
+	// exemption that nobody asked it to touch.
+	sources := append([]liveRuleset(nil), others...)
+	if mine != nil {
+		sources = append([]liveRuleset{*mine}, sources...)
+	}
+	carried := map[string]json.RawMessage{}
+	var bypass []json.RawMessage
+	for _, src := range sources {
+		for _, r := range unmanagedRules(src, spec) {
+			if _, seen := carried[r.Type]; !seen {
+				carried[r.Type] = r.raw
+			}
+		}
+		if len(bypass) == 0 && src.Enforcement == "active" {
+			bypass = src.BypassActors
+		}
+	}
+	if len(carried) > 0 {
+		types := make([]string, 0, len(carried))
+		for t := range carried {
+			types = append(types, t)
+		}
+		sort.Strings(types)
+		rules := payload["rules"].([]map[string]any)
+		raw := make([]json.RawMessage, 0, len(rules)+len(types))
+		for _, r := range rules {
+			b, err := json.Marshal(r)
+			if err != nil {
+				return fmt.Errorf("encode rule: %w", err)
+			}
+			raw = append(raw, b)
+		}
+		for _, t := range types {
+			raw = append(raw, carried[t])
+		}
+		payload["rules"] = raw
+	}
+	if len(bypass) > 0 {
+		payload["bypass_actors"] = bypass
+	}
+
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode ruleset payload: %w", err)
 	}
@@ -440,15 +573,10 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		return err
 	}
 
-	// Remove what gt just replaced, but only where nothing is lost. Leaving the
-	// old ruleset in place is how a repository ends up with two things governing
-	// one branch, which is the problem this subsystem exists to remove; deleting
-	// one that does something gt does not model would be worse.
+	// Remove what gt just replaced. Safe now that anything gt does not model was
+	// copied into the ruleset above: leaving them would put two objects on one
+	// branch, which is the problem this subsystem exists to remove.
 	for _, o := range others {
-		ok, _ := supersededBy(o, spec)
-		if !ok {
-			continue
-		}
 		if _, err := gh.Run(ctx, "api", "--method", "DELETE",
 			fmt.Sprintf("repos/%s/%s/rulesets/%d", owner, name, o.ID)); err != nil {
 			return fmt.Errorf("remove superseded ruleset %q: %w", o.Name, err)
