@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -63,12 +64,44 @@ const compliantRepoJSON = `{
   "delete_branch_on_merge": true
 }`
 
-func compliantProtectionJSON(t *testing.T) string {
+// rulesetListJSON is the summary list endpoint. gt finds its own ruleset by
+// name here before fetching the detail.
+func rulesetListJSON(names ...string) string {
+	var items []map[string]any
+	for i, n := range names {
+		items = append(items, map[string]any{
+			"id": 100 + i, "name": n, "enforcement": "active", "target": "branch",
+		})
+	}
+	body, _ := json.Marshal(items)
+	return string(body)
+}
+
+// compliantRulesetJSON is a ruleset detail that matches repospec.Default().
+func compliantRulesetJSON(t *testing.T, checks ...string) string {
 	t.Helper()
+	if len(checks) == 0 {
+		checks = []string{repospec.GateCheckJob}
+	}
+	var required []map[string]any
+	for _, c := range checks {
+		required = append(required, map[string]any{"context": c})
+	}
 	body, err := json.Marshal(map[string]any{
-		"required_status_checks": map[string]any{
-			"strict":   false,
-			"contexts": []string{repospec.GateCheckJob},
+		"id": 100, "name": repogov.RulesetName, "target": "branch", "enforcement": "active",
+		"conditions": map[string]any{"ref_name": map[string]any{"include": []string{"refs/heads/main"}}},
+		"rules": []map[string]any{
+			{"type": "deletion"},
+			{"type": "non_fast_forward"},
+			{"type": "required_linear_history"},
+			{"type": "pull_request", "parameters": map[string]any{
+				"required_approving_review_count": 0,
+				"allowed_merge_methods":           []string{"squash"},
+			}},
+			{"type": "required_status_checks", "parameters": map[string]any{
+				"strict_required_status_checks_policy": false,
+				"required_status_checks":               required,
+			}},
 		},
 	})
 	if err != nil {
@@ -77,12 +110,24 @@ func compliantProtectionJSON(t *testing.T) string {
 	return string(body)
 }
 
+// alignedGH is a fake whose repository, ruleset list and ruleset detail all
+// match repospec.Default(), and whose branch has no classic protection.
+func alignedGH(t *testing.T) *fakeGH {
+	t.Helper()
+	return &fakeGH{
+		responses: map[string]string{
+			"repos/pedromvgomes/demo":              compliantRepoJSON,
+			"repos/pedromvgomes/demo/rulesets":     rulesetListJSON(repogov.RulesetName),
+			"repos/pedromvgomes/demo/rulesets/100": compliantRulesetJSON(t),
+		},
+		errors: map[string]error{
+			"branches/main/protection": errors.New("gh: Branch not protected (HTTP 404)"),
+		},
+	}
+}
+
 func TestSettingsDiffCleanWhenAligned(t *testing.T) {
-	gh := &fakeGH{responses: map[string]string{
-		"branches/main/protection": compliantProtectionJSON(t),
-		"repos/pedromvgomes/demo":  compliantRepoJSON,
-	}}
-	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	changes, err := repogov.SettingsDiff(context.Background(), alignedGH(t), repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
@@ -94,15 +139,13 @@ func TestSettingsDiffCleanWhenAligned(t *testing.T) {
 // gt enforces squash-only, which is what lets conventional-commit enforcement
 // reduce to a PR-title check.
 func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
-	gh := &fakeGH{responses: map[string]string{
-		"branches/main/protection": compliantProtectionJSON(t),
-		"repos/pedromvgomes/demo": `{
-		  "allow_squash_merge": true,
-		  "allow_merge_commit": true,
-		  "allow_rebase_merge": false,
-		  "delete_branch_on_merge": true
-		}`,
-	}}
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo"] = `{
+	  "allow_squash_merge": true,
+	  "allow_merge_commit": true,
+	  "allow_rebase_merge": false,
+	  "delete_branch_on_merge": true
+	}`
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
@@ -112,106 +155,247 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	}
 }
 
-// Branch protection must converge on exactly one context: gt's gate. A repo
-// still listing individual CI jobs is drift, because renaming any of them
-// would silently unprotect the branch.
+// The ruleset must converge on exactly one context: gt's gate. A repo still
+// listing individual CI jobs is drift, because renaming any of them would
+// silently unprotect the branch.
 func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
-	prot, err := json.Marshal(map[string]any{
-		"required_status_checks": map[string]any{
-			"strict":   false,
-			"contexts": []string{"CI / build", "CI / test"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	gh := &fakeGH{responses: map[string]string{
-		"branches/main/protection": string(prot),
-		"repos/pedromvgomes/demo":  compliantRepoJSON,
-	}}
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetJSON(t, "build", "test")
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
-	if len(changes) != 1 || !strings.Contains(changes[0].Field, "contexts") {
-		t.Fatalf("SettingsDiff() = %v, want a contexts change", changes)
-	}
-	if changes[0].Want != repospec.GateCheckJob {
-		t.Errorf("want contexts = %q, expected %q", changes[0].Want, repospec.GateCheckJob)
-	}
-}
-
-// An unprotected branch is a 404. That is a state to converge from, not an
-// error — otherwise gt could never protect a branch for the first time.
-func TestSettingsDiffTreatsMissingProtectionAsDrift(t *testing.T) {
-	gh := &fakeGH{
-		responses: map[string]string{"repos/pedromvgomes/demo": compliantRepoJSON},
-		errors:    map[string]error{"protection": errNotFound{}},
-	}
-	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
-	if err != nil {
-		t.Fatalf("SettingsDiff() error = %v", err)
-	}
-	if len(changes) != 1 || changes[0].Field != "branch_protection" {
-		t.Fatalf("SettingsDiff() = %v, want a branch_protection change", changes)
-	}
-}
-
-type errNotFound struct{}
-
-func (errNotFound) Error() string { return "gh: HTTP 404: Branch not protected" }
-
-func TestSettingsApplySendsGateAsTheOnlyRequiredCheck(t *testing.T) {
-	gh := &fakeGH{}
-	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
-	}
-
-	var payload map[string]any
-	found := false
-	for i, call := range gh.calls {
-		if strings.Contains(call, "protection") && gh.inputs[i] != nil {
-			if err := json.Unmarshal(gh.inputs[i], &payload); err != nil {
-				t.Fatalf("protection payload is not JSON: %v", err)
-			}
+	var found bool
+	for _, c := range changes {
+		if c.Field == "ruleset.required_status_checks" && c.Want == repospec.GateCheckJob {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("no branch-protection call with a body; calls = %v", gh.calls)
-	}
-
-	checks, ok := payload["required_status_checks"].(map[string]any)
-	if !ok {
-		t.Fatalf("payload missing required_status_checks: %v", payload)
-	}
-	contexts, ok := checks["contexts"].([]any)
-	if !ok || len(contexts) != 1 || contexts[0] != repospec.GateCheckJob {
-		t.Errorf("contexts = %v, want exactly [%q]", checks["contexts"], repospec.GateCheckJob)
+		t.Fatalf("SettingsDiff() = %v, want the gate to replace the per-job checks", changes)
 	}
 }
 
-// The protection endpoint rejects a review requirement of zero, so it must be
-// expressed by dropping the block entirely.
-func TestSettingsApplyOmitsReviewsWhenZeroApprovals(t *testing.T) {
-	gh := &fakeGH{}
+// A repository with no gt ruleset is drift to converge from, not an error.
+func TestSettingsDiffTreatsMissingRulesetAsDrift(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = `[]`
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	if len(changes) != 1 || changes[0].Got != "absent" {
+		t.Fatalf("SettingsDiff() = %v, want a single absent-ruleset change", changes)
+	}
+}
+
+// Two systems governing one branch is the problem this subsystem exists to
+// remove, so gt reports both a second ruleset and leftover classic protection.
+// It reports rather than deletes: someone configured those deliberately.
+func TestSettingsDiffReportsOtherProtectionOnTheSameBranch(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "main branch protection")
+	// Rules gt also manages, so removing it loses nothing.
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"main branch protection","target":"branch","enforcement":"active","rules":[{"type":"deletion"},{"type":"non_fast_forward"}]}`
+	delete(gh.errors, "branches/main/protection")
+	gh.responses["branches/main/protection"] = `{"required_status_checks":{"strict":false,"contexts":[]}}`
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var sawOther, sawClassic bool
+	for _, c := range changes {
+		if c.Field == "ruleset main branch protection" {
+			sawOther = true
+		}
+		if c.Field == "classic branch protection" {
+			sawClassic = true
+		}
+	}
+	if !sawOther {
+		t.Errorf("a second active ruleset on the branch was not reported: %v", changes)
+	}
+	if !sawClassic {
+		t.Errorf("leftover classic branch protection was not reported: %v", changes)
+	}
+}
+
+// A ruleset doing something gt does not model must be reported as KEPT, and
+// never deleted — losing a signature requirement or a push restriction because
+// gt did not recognise it is far worse than leaving two rulesets in place.
+func TestSettingsKeepsARulesetDoingSomethingGtDoesNotManage(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "signing")
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"signing","target":"branch","enforcement":"active","rules":[{"type":"required_signatures"}]}`
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var found bool
+	for _, c := range changes {
+		if c.Field == "ruleset signing" {
+			found = true
+			if !strings.Contains(c.Want, "kept") || !strings.Contains(c.Want, "required_signatures") {
+				t.Errorf("want = %q, want it to say kept and name required_signatures", c.Want)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("unmanaged ruleset not reported: %v", changes)
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	for _, c := range gh.calls {
+		if strings.Contains(c, "DELETE") && strings.Contains(c, "/rulesets/101") {
+			t.Fatalf("apply deleted a ruleset gt does not fully manage: %s", c)
+		}
+	}
+}
+
+// The ruleset gt replaces IS removed, or the repository keeps two things
+// governing one branch — which is the whole complaint.
+func TestSettingsApplyRemovesTheRulesetItSupersedes(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "main branch protection")
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"main branch protection","target":"branch","enforcement":"active","rules":[{"type":"deletion"},{"type":"pull_request"}]}`
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var deleted bool
+	for _, c := range gh.calls {
+		if strings.Contains(c, "DELETE") && strings.Contains(c, "/rulesets/101") {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("superseded ruleset was left in place; calls = %v", gh.calls)
+	}
+}
+
+// gt writes ONE ruleset and never classic protection. Writing both is what put
+// two sources of truth on the same branch in the first place.
+func TestSettingsApplyWritesARulesetAndNotClassicProtection(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = `[]`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+
+	var createdRuleset bool
+	for _, c := range gh.calls {
+		if strings.Contains(c, "branches/main/protection") && strings.Contains(c, "PUT") {
+			t.Errorf("apply wrote classic branch protection: %s", c)
+		}
+		if strings.Contains(c, "POST") && strings.HasSuffix(c, "/rulesets --input - --header Accept: application/vnd.github+json") {
+			createdRuleset = true
+		}
+	}
+	if !createdRuleset {
+		t.Fatalf("apply did not create a ruleset; calls = %v", gh.calls)
+	}
+
+	var payload struct {
+		Name        string `json:"name"`
+		Enforcement string `json:"enforcement"`
+		Rules       []struct {
+			Type       string `json:"type"`
+			Parameters struct {
+				AllowedMergeMethods  []string `json:"allowed_merge_methods"`
+				RequiredStatusChecks []struct {
+					Context string `json:"context"`
+				} `json:"required_status_checks"`
+			} `json:"parameters"`
+		} `json:"rules"`
+	}
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal ruleset payload: %v", err)
+	}
+	if payload.Name != repogov.RulesetName || payload.Enforcement != "active" {
+		t.Errorf("payload name/enforcement = %q/%q", payload.Name, payload.Enforcement)
+	}
+
+	types := map[string]bool{}
+	for _, r := range payload.Rules {
+		types[r.Type] = true
+		if r.Type == "pull_request" && !sameStringSlice(r.Parameters.AllowedMergeMethods, []string{"squash"}) {
+			t.Errorf("allowed_merge_methods = %v, want [squash]", r.Parameters.AllowedMergeMethods)
+		}
+		if r.Type == "required_status_checks" {
+			if len(r.Parameters.RequiredStatusChecks) != 1 ||
+				r.Parameters.RequiredStatusChecks[0].Context != repospec.GateCheckJob {
+				t.Errorf("required checks = %v, want exactly %q", r.Parameters.RequiredStatusChecks, repospec.GateCheckJob)
+			}
+		}
+	}
+	for _, want := range []string{"deletion", "non_fast_forward", "required_linear_history", "pull_request", "required_status_checks"} {
+		if !types[want] {
+			t.Errorf("ruleset is missing the %s rule", want)
+		}
+	}
+}
+
+// An existing gt ruleset is updated in place rather than duplicated.
+func TestSettingsApplyUpdatesTheExistingRuleset(t *testing.T) {
+	gh := alignedGH(t)
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var updated bool
+	for _, c := range gh.calls {
+		if strings.Contains(c, "PUT") && strings.Contains(c, "/rulesets/100") {
+			updated = true
+		}
+		if strings.Contains(c, "POST") && strings.Contains(c, "/rulesets ") {
+			t.Errorf("apply created a second ruleset instead of updating: %s", c)
+		}
+	}
+	if !updated {
+		t.Fatalf("apply did not update ruleset 100; calls = %v", gh.calls)
+	}
+}
+
+// With CI disabled nothing renders ci-orchestration.yml, so requiring the gate
+// would block every PR forever on a check nothing can report.
+func TestSettingsApplyOmitsTheGateWhenCIIsDisabled(t *testing.T) {
 	spec := repospec.Default()
-	spec.Settings.BranchProtection.RequiredApprovals = 0
+	spec.Pipeline.CI.Enabled = false
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = `[]`
 	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
 		t.Fatalf("SettingsApply() error = %v", err)
 	}
-	for i, call := range gh.calls {
-		if !strings.Contains(call, "protection") || gh.inputs[i] == nil {
-			continue
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(gh.inputs[i], &payload); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if payload["required_pull_request_reviews"] != nil {
-			t.Errorf("required_pull_request_reviews = %v, want null", payload["required_pull_request_reviews"])
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
 		}
 	}
+	if strings.Contains(string(body), "required_status_checks") {
+		t.Errorf("gate required with CI disabled:\n%s", body)
+	}
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSettingsRequireRepositoryIdentity(t *testing.T) {
