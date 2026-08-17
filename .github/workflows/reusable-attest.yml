@@ -107,9 +107,11 @@ jobs:
             fi
           done <<< "$attested"
 
-          echo "validated=${validated}" >> "$GITHUB_OUTPUT"
-          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
-          echo "run_url=${run_url}" >> "$GITHUB_OUTPUT"
+          {
+            echo "validated=${validated}"
+            echo "tree=${tree}"
+            echo "run_url=${run_url}"
+          } >> "$GITHUB_OUTPUT"
 
           if [[ "$validated" == "true" ]]; then
             echo "✅ this tree already passed the gate"
