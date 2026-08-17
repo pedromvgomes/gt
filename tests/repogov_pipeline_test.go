@@ -615,3 +615,39 @@ func TestBulwarkNamesItsSecretsInsteadOfInheriting(t *testing.T) {
 		}
 	}
 }
+
+// attest leaves a note on the pull request when it skips the pipeline, which
+// needs write access. A skipped job looks the same whether the work was
+// unnecessary or something broke, and that ambiguity lands on a reviewer.
+//
+// The permission is easy to lose to a well-meaning tightening, and losing it
+// fails silently: the note is best-effort, so the pipeline stays green and the
+// explanation just stops appearing.
+func TestAttestCanCommentOnThePullRequest(t *testing.T) {
+	content := pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"]
+
+	var wf struct {
+		Jobs map[string]struct {
+			Permissions map[string]string `yaml:"permissions"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(content, &wf); err != nil {
+		t.Fatalf("unmarshal ci-orchestration.yml: %v", err)
+	}
+	got := wf.Jobs["attest"].Permissions["pull-requests"]
+	if got != "write" {
+		t.Errorf("attest pull-requests = %q, want write — it cannot explain a skip without it", got)
+	}
+}
+
+// Without target_url the skip note can only assert that an earlier run
+// validated the tree; with it, the reader can go and look.
+func TestGateRecordsTheRunThatValidatedTheTree(t *testing.T) {
+	content := string(pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	if !strings.Contains(content, "target_url=") {
+		t.Error("ci-gate does not record target_url on the attestation, so a skip cannot link the run that earned it")
+	}
+	if !strings.Contains(content, "actions/runs/") {
+		t.Error("target_url does not point at the run")
+	}
+}
