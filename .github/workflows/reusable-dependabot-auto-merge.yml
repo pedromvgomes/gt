@@ -27,8 +27,11 @@ on:
       #
       # Both optional. Without them the job runs on GITHUB_TOKEN and reports
       # workflow-touching PRs as needing a human, which is the old behaviour.
-      APP_ID:
-        description: GitHub App id used to mint a merge token that may touch workflows.
+      APP_CLIENT_ID:
+        description: >-
+          GitHub App client id, used to mint a merge token that may touch
+          workflow files. `app-id` is deprecated in favour of this by
+          actions/create-github-app-token, which warns on every run.
         required: false
       APP_PRIVATE_KEY:
         description: Private key for that App.
@@ -47,7 +50,7 @@ jobs:
     # takes down every caller rather than just the one that opted in. `env` is
     # readable there, so the presence check goes through this instead.
     env:
-      HAS_APP: ${{ secrets.APP_ID != '' }}
+      HAS_APP: ${{ secrets.APP_CLIENT_ID != '' }}
     permissions:
       contents: write # squash-merge PRs and delete their branches
       pull-requests: write
@@ -135,12 +138,26 @@ jobs:
       # Guarded on the secret being present as well as the setting, so a repo
       # that opts in before the App is installed degrades to the old behaviour
       # instead of failing the run.
+      # Opting in and then not providing the secret is a configuration mistake,
+      # not a state to degrade from. Falling back to GITHUB_TOKEN here would
+      # look like success while quietly doing what the opt-in was meant to stop:
+      # skipping every workflow-touching bump, forever, with a green run.
+      - name: Check the App secret is present
+        if: steps.policy.outputs.enabled == 'true' && steps.policy.outputs.github_app == 'true' && env.HAS_APP != 'true'
+        run: |
+          echo "::error::dependabot_auto_merge.github_app is true but APP_CLIENT_ID is not set."
+          echo "Set APP_CLIENT_ID and APP_PRIVATE_KEY (organisation secrets are fine),"
+          echo "or set github_app: false in .gt-repo.yaml to merge with GITHUB_TOKEN."
+          exit 1
+
       - name: Mint a merge token from the GitHub App
         id: app-token
         if: steps.policy.outputs.enabled == 'true' && steps.policy.outputs.github_app == 'true' && env.HAS_APP == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.APP_ID }}
+          # client-id, not app-id: the latter is deprecated by the action and
+          # warns on every run.
+          client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Merge eligible Dependabot PRs
