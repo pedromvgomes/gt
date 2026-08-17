@@ -480,3 +480,47 @@ func TestDiffSkipWorkflowsExcludesWorkflowFiles(t *testing.T) {
 		t.Error("skipWorkflows excluded everything; non-workflow files should remain")
 	}
 }
+
+// The auto-merge caller must NAME the App secrets rather than inherit them.
+//
+// `secrets: inherit` is documented as working for reusable workflows "in the
+// same organization or enterprise", and gt lives under a different owner than
+// the repositories calling it. The bulwark stage already lost its Codecov token
+// to exactly that, silently — the job kept passing while the upload stopped.
+// Here the failure would be quieter still: every github-actions bump would go
+// on being skipped as unmergeable, which is what it did before the App existed.
+func TestAutoMergeCallerNamesTheAppSecrets(t *testing.T) {
+	spec := repospec.Default()
+	spec.Files = repospec.FileKeys
+	content := renderMap(t, testInput(spec))[".github/workflows/dependabot-auto-merge.yml"]
+
+	var wf struct {
+		Jobs map[string]struct {
+			Secrets any `yaml:"secrets"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(content, &wf); err != nil {
+		t.Fatalf("unmarshal dependabot-auto-merge.yml: %v", err)
+	}
+	job, ok := wf.Jobs["auto-merge"]
+	if !ok {
+		t.Fatal("no auto-merge job rendered")
+	}
+	if job.Secrets == "inherit" {
+		t.Fatal("auto-merge inherits secrets; an org secret will not reach gt across owners")
+	}
+	named, ok := job.Secrets.(map[string]any)
+	if !ok {
+		t.Fatalf("secrets = %#v, want a map of named secrets", job.Secrets)
+	}
+	for _, want := range []string{"APP_ID", "APP_PRIVATE_KEY"} {
+		v, present := named[want]
+		if !present {
+			t.Errorf("auto-merge does not pass %s; workflow bumps stay unmergeable", want)
+			continue
+		}
+		if s, _ := v.(string); !strings.Contains(s, "secrets."+want) {
+			t.Errorf("%s = %q, want it to forward ${{ secrets.%s }}", want, s, want)
+		}
+	}
+}
