@@ -156,10 +156,37 @@ jobs:
 
             echo ""
             echo "── PR #${number}: ${title}"
-            echo "   mergeable=${mergeable} state=${state} draft=${draft}"
 
             if [[ "$draft" == "true" ]]; then
+              echo "   mergeable=${mergeable} state=${state} draft=${draft}"
               echo "   → skip: draft"
+              continue
+            fi
+
+            # GitHub computes mergeability lazily: the first read of a pull
+            # request returns UNKNOWN and starts the calculation in the
+            # background. A freshly opened Dependabot PR is therefore almost
+            # always UNKNOWN on the first look — so asking once and treating
+            # UNKNOWN as "has conflicts" silently skipped every PR, every run.
+            #
+            # Re-read the individual PR until it settles. UNKNOWN after the last
+            # attempt is treated as not mergeable, which is the safe direction:
+            # the next scheduled run picks it up.
+            attempt=1
+            while [[ "$mergeable" == "UNKNOWN" || "$state" == "UNKNOWN" ]] && (( attempt <= 5 )); do
+              sleep $(( attempt * 3 ))
+              fresh=$(gh pr view "$number" --repo "$REPO" \
+                --json mergeable,mergeStateStatus 2>/dev/null || echo '{}')
+              mergeable=$(jq -r '.mergeable // "UNKNOWN"' <<<"$fresh")
+              state=$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$fresh")
+              echo "   re-read ${attempt}/5: mergeable=${mergeable} state=${state}"
+              attempt=$(( attempt + 1 ))
+            done
+
+            echo "   mergeable=${mergeable} state=${state} draft=${draft}"
+
+            if [[ "$mergeable" == "UNKNOWN" ]]; then
+              echo "   → skip: GitHub had not finished computing mergeability; next run picks it up"
               continue
             fi
             if [[ "$mergeable" != "MERGEABLE" ]]; then
