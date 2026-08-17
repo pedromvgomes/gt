@@ -513,7 +513,7 @@ func TestAutoMergeCallerNamesTheAppSecrets(t *testing.T) {
 	if !ok {
 		t.Fatalf("secrets = %#v, want a map of named secrets", job.Secrets)
 	}
-	for _, want := range []string{"APP_ID", "APP_PRIVATE_KEY"} {
+	for _, want := range []string{"APP_CLIENT_ID", "APP_PRIVATE_KEY"} {
 		v, present := named[want]
 		if !present {
 			t.Errorf("auto-merge does not pass %s; workflow bumps stay unmergeable", want)
@@ -521,6 +521,35 @@ func TestAutoMergeCallerNamesTheAppSecrets(t *testing.T) {
 		}
 		if s, _ := v.(string); !strings.Contains(s, "secrets."+want) {
 			t.Errorf("%s = %q, want it to forward ${{ secrets.%s }}", want, s, want)
+		}
+	}
+}
+
+// Opting into the App and then not providing the secret must fail, not fall
+// back. A silent fallback to GITHUB_TOKEN looks like a green run while doing
+// precisely what the opt-in exists to stop: skipping every workflow-touching
+// bump, forever. The whole reason `github_app` exists is that GITHUB_TOKEN
+// cannot merge those, so degrading to it is degrading to the broken state.
+func TestAutoMergeFailsWhenOptedInWithoutTheSecret(t *testing.T) {
+	// The guard lives in the reusable workflow rather than the rendered caller,
+	// so this reads the workflow gt publishes.
+	body, err := os.ReadFile(filepath.Join("..", ".github", "workflows", "reusable-dependabot-auto-merge.yml"))
+	if err != nil {
+		t.Skipf("reusable workflow not readable from here: %v", err)
+	}
+	content := string(body)
+	if !strings.Contains(content, "APP_CLIENT_ID is not set") {
+		t.Error("no loud failure when github_app is on but APP_CLIENT_ID is missing")
+	}
+	if !strings.Contains(content, "client-id:") {
+		t.Error("still minting with the deprecated app-id input")
+	}
+	// Match the YAML input, not the word: the comment above it explains why
+	// app-id is not used, and a substring check would flag its own rationale.
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "app-id:") {
+			t.Errorf("app-id is deprecated by create-github-app-token and warns on every run: %q", trimmed)
 		}
 	}
 }
