@@ -81,6 +81,20 @@ type DependabotAutoMerge struct {
 	Schedule     string `yaml:"schedule" json:"schedule"`
 	MaxBump      string `yaml:"max_bump" json:"max_bump"`
 	DeleteBranch bool   `yaml:"delete_branch" json:"delete_branch"`
+	// GitHubApp mints the merge token from a GitHub App instead of using
+	// GITHUB_TOKEN, reading APP_ID and APP_PRIVATE_KEY.
+	//
+	// It exists for one reason: GITHUB_TOKEN is a GitHub App installation token
+	// without the `workflows` permission, and that permission is not grantable
+	// — there is no `workflows:` key for a workflow's permissions block. So
+	// merging any PR that touches .github/workflows/** is refused outright,
+	// which is every github-actions bump Dependabot ever opens. Those pile up
+	// forever without this.
+	//
+	// Off by default: it needs an App installed on the org, so it cannot be
+	// assumed. Where it is unset, the job keeps working on GITHUB_TOKEN and
+	// keeps reporting workflow-touching PRs as needing a human.
+	GitHubApp bool `yaml:"github_app" json:"github_app"`
 }
 
 // Bulwark is the shared code-quality and security gate. Every governed repo

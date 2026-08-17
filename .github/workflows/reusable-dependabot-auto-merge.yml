@@ -19,6 +19,20 @@ name: gt dependabot auto-merge
 
 on:
   workflow_call:
+    secrets:
+      # Declared, not inherited. `secrets: inherit` is documented as working
+      # for reusable workflows "in the same organization or enterprise", and gt
+      # lives under a different owner than the repositories calling it — the
+      # bulwark stage lost its Codecov token to exactly that.
+      #
+      # Both optional. Without them the job runs on GITHUB_TOKEN and reports
+      # workflow-touching PRs as needing a human, which is the old behaviour.
+      APP_ID:
+        description: GitHub App id used to mint a merge token that may touch workflows.
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key for that App.
+        required: false
 
 permissions:
   contents: read
@@ -105,12 +119,31 @@ jobs:
             echo "enabled=$(jq -r '.dependabot_auto_merge.enabled' "${RUNNER_TEMP}/spec.json")"
             echo "max_bump=$(jq -r '.dependabot_auto_merge.max_bump' "${RUNNER_TEMP}/spec.json")"
             echo "delete_branch=$(jq -r '.dependabot_auto_merge.delete_branch' "${RUNNER_TEMP}/spec.json")"
+            echo "github_app=$(jq -r '.dependabot_auto_merge.github_app' "${RUNNER_TEMP}/spec.json")"
           } >> "$GITHUB_OUTPUT"
+
+      # A token that may touch .github/workflows/**, which GITHUB_TOKEN may not
+      # and cannot be granted. Without it every github-actions bump Dependabot
+      # opens is unmergeable by this job, forever.
+      #
+      # Guarded on the secret being present as well as the setting, so a repo
+      # that opts in before the App is installed degrades to the old behaviour
+      # instead of failing the run.
+      - name: Mint a merge token from the GitHub App
+        id: app-token
+        if: steps.policy.outputs.enabled == 'true' && steps.policy.outputs.github_app == 'true' && secrets.APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Merge eligible Dependabot PRs
         if: steps.policy.outputs.enabled == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The App token when one was minted, GITHUB_TOKEN otherwise. Only the
+          # former can merge a PR that edits a workflow file.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          USING_APP: ${{ steps.app-token.outputs.token != '' }}
           REPO: ${{ github.repository }}
           MAX_BUMP: ${{ steps.policy.outputs.max_bump }}
           DELETE_BRANCH: ${{ steps.policy.outputs.delete_branch }}
@@ -248,8 +281,18 @@ jobs:
               # rebases conflicted PRs; a later run picks it up.
               echo "   → skip: merge conflict — Dependabot will rebase; picked up next run"
             elif echo "$out" | grep -qi "without .workflows. permission"; then
-              echo "   → skip: touches a workflow file; GITHUB_TOKEN cannot merge these."
-              echo "     Run 'gt repo fleet merge-pending' locally to merge it."
+              if [[ "$USING_APP" == "true" ]]; then
+                # The App is configured but its installation lacks the
+                # permission, which is a setup problem worth failing on rather
+                # than a fact of life to be reported every night.
+                echo "   → FAILED: the GitHub App cannot write workflows."
+                echo "     Grant its installation the 'Workflows' repository permission."
+                failed=1
+              else
+                echo "   → skip: touches a workflow file; GITHUB_TOKEN cannot merge these."
+                echo "     Set dependabot_auto_merge.github_app to merge them here,"
+                echo "     or run 'gt repo fleet merge-pending' locally."
+              fi
             else
               echo "   → FAILED to merge #${number}; continuing with the rest"
               failed=1
