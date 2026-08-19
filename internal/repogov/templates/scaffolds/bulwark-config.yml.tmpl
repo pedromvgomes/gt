@@ -20,6 +20,16 @@
 # before bulwark runs. Flipping it earlier trades a double test run for a
 # failing security gate.
 #
+# Lay that artifact out the way the repository is laid out. bulwark looks for
+# each report next to the unit that produced it — `<moduleDir>/coverage.out` per
+# Go module, `<crateDir>/coverage/` per Rust crate, and
+# `<packageDir>/coverage/{coverage-summary.json,lcov.info}` per TypeScript
+# package, the last of which has no path override because those locations are
+# Vitest convention rather than a project's choice. The bulwark stage mirrors
+# the artifact into the scan root, so an artifact whose paths match the repo's
+# needs no further configuration, and a single-module repo can still upload one
+# `coverage.out` at the top level.
+#
 # Everything else bulwark supports — per-language enablement, coverage
 # tolerances, patch-coverage opt-outs, toolchain overrides — belongs here too.
 # See bulwark's README.
