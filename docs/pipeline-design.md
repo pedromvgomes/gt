@@ -360,7 +360,19 @@ profiles it produced. The bulwark stage downloads it when present, and falls
 back to running the suite itself when absent.
 
 That is the whole double-run fix, and it is a convention rather than
-configuration: nothing to wire beyond uploading under the agreed name.
+configuration: nothing to wire beyond uploading under the agreed name, laid out
+the way the repository is laid out.
+
+The layout matters because bulwark finds each report next to the unit that
+produced it rather than at one agreed path — `<moduleDir>/coverage.out` per Go
+module, `<crateDir>/coverage/` per Rust crate,
+`<packageDir>/coverage/{coverage-summary.json,lcov.info}` per TypeScript package
+— and the TypeScript pair has no override at all, deliberately, because those
+locations are Vitest convention rather than a project's choice. So the stage
+mirrors the artifact's tree into the scan root instead of lifting named files
+out of it. A repo with one module still uploads one `coverage.out` and it still
+lands at the root; a repo with nine TypeScript packages uploads nine pairs and
+each lands where discovery already looks.
 
 It also settles the `.bulwark.yml` question. `report` becomes the normal path
 and `run` the fallback, decided by the orchestrator rather than per repo — so

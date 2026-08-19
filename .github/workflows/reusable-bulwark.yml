@@ -95,9 +95,30 @@ jobs:
           # step no longer tells bulwark anything; it just puts the artifact
           # where bulwark already searches.
           #
-          # coverage.out and lcov.info are the first conventional candidates
-          # bulwark checks per module, so landing them at the scan root needs no
-          # matching configuration.
+          # It mirrors the artifact's tree into the scan root rather than
+          # lifting two named files out of it, because bulwark finds reports
+          # relative to the UNIT that produced them, not at one agreed path:
+          # <moduleDir>/coverage.out per Go module, <crateDir>/coverage/ per
+          # Rust crate, and <packageDir>/coverage/coverage-summary.json plus
+          # <packageDir>/coverage/lcov.info per TypeScript package — the last
+          # of which has no override at all, deliberately, because those paths
+          # are Vitest convention rather than a project's choice.
+          #
+          # A flat copy therefore worked only for a repo with exactly one unit
+          # per language. Any monorepo with two TypeScript packages had nowhere
+          # to put the second one's report, so `coverage.source: report` fell
+          # back to measuring nothing for that language — silently, since an
+          # unmeasured language warns rather than failing. The repos hitting
+          # this were hand-rolling their own bulwark job to work around it.
+          #
+          # Mirroring is what the contract already said: "an artifact
+          # containing whatever profiles it produced" (docs/pipeline-design.md).
+          # ci-test lays the artifact out the way the repository is laid out,
+          # and every path lands where discovery already looks.
+          #
+          # Backwards compatible: an artifact holding only coverage.out or
+          # lcov.info at its top level still lands at the scan root, exactly as
+          # the flat copy left it.
           if [[ ! -d "$COVERAGE_DIR" ]]; then
             echo "no gt-coverage artifact — bulwark will find no report for this run"
             echo "(a stage skipped by ci-preflight produces none, which is not an error)"
@@ -105,18 +126,25 @@ jobs:
           fi
 
           dest="${DIR:-.}"
+
+          # Every placed path is echoed rather than copied silently. This step
+          # writes into the tree that is about to be scanned, so which files it
+          # put where has to be answerable from the log alone — and a report
+          # that landed one directory away from where bulwark looks is
+          # otherwise indistinguishable from one that was never produced.
           copied=0
-          for name in coverage.out lcov.info; do
-            if [[ -f "${COVERAGE_DIR}/${name}" ]]; then
-              cp "${COVERAGE_DIR}/${name}" "${dest}/${name}"
-              echo "placed ${name} at ${dest}/"
-              copied=$((copied + 1))
-            fi
-          done
+          while IFS= read -r -d '' src; do
+            rel="${src#"$COVERAGE_DIR"/}"
+            mkdir -p "${dest}/$(dirname "$rel")"
+            cp "$src" "${dest}/${rel}"
+            echo "placed ${rel}"
+            copied=$((copied + 1))
+          done < <(find "$COVERAGE_DIR" -type f -print0)
 
           if [[ "$copied" -eq 0 ]]; then
-            echo "::warning::gt-coverage exists but holds neither coverage.out nor lcov.info"
-            ls -la "$COVERAGE_DIR"
+            echo "::warning::gt-coverage exists but is empty — bulwark will find no report"
+          else
+            echo "placed ${copied} file(s) under ${dest}/"
           fi
 
       # Every third-party action above is SHA-pinned, because a tag its owner
