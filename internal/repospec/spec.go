@@ -53,6 +53,23 @@ type DependabotEntry struct {
 	// PR then fails that same broken check — so auto-merge will not land it
 	// either. Recovering takes a human.
 	Groups []DependabotGroup `yaml:"groups,omitempty" json:"groups,omitempty"`
+	// Allow narrows which dependencies Dependabot will open PRs for.
+	//
+	// It exists because Dependabot's default is direct dependencies only, and
+	// that default silently freezes any pin held indirectly. bulwark's go-pin
+	// module is the case: it has no .go files, so `go mod tidy` marks gosec and
+	// govulncheck as `// indirect`, and without an allow rule neither is ever
+	// bumped — in the security scanner, with nothing reporting it.
+	Allow []DependabotAllow `yaml:"allow,omitempty" json:"allow,omitempty"`
+}
+
+// DependabotAllow is one allow rule. Either field may stand alone: a name with
+// no type, a type with no name, or both together.
+type DependabotAllow struct {
+	DependencyName string `yaml:"dependency_name,omitempty" json:"dependency_name,omitempty"`
+	// DependencyType is Dependabot's vocabulary: direct, indirect, all,
+	// production, development.
+	DependencyType string `yaml:"dependency_type,omitempty" json:"dependency_type,omitempty"`
 }
 
 // DependabotGroup is one named group inside an ecosystem entry. Note carries
@@ -69,6 +86,9 @@ type DependabotGroup struct {
 	// Empty renders nothing and leaves Dependabot on its default.
 	AppliesTo string `yaml:"applies_to,omitempty" json:"applies_to,omitempty"`
 }
+
+// Dependabot allow-rule dependency types.
+var DependencyTypes = []string{"direct", "indirect", "all", "production", "development"}
 
 // Dependabot group scopes.
 const (
@@ -407,6 +427,27 @@ func validateDependabot(entries []DependabotEntry) error {
 		seen[key] = true
 		if err := validateGroups(i, e.Groups); err != nil {
 			return err
+		}
+		if err := validateAllow(i, e.Allow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAllow(entry int, rules []DependabotAllow) error {
+	for j, r := range rules {
+		name := strings.TrimSpace(r.DependencyName)
+		typ := strings.TrimSpace(r.DependencyType)
+		// A rule with neither field matches nothing, which reads as "allow
+		// nothing" and would stop every update for the ecosystem. Refuse it
+		// rather than render a config that silently switches updates off.
+		if name == "" && typ == "" {
+			return fmt.Errorf("dependabot[%d].allow[%d]: needs dependency_name, dependency_type, or both", entry, j)
+		}
+		if typ != "" && !contains(DependencyTypes, typ) {
+			return fmt.Errorf("dependabot[%d].allow[%d]: dependency_type %q is not one of %s",
+				entry, j, typ, strings.Join(DependencyTypes, ", "))
 		}
 	}
 	return nil

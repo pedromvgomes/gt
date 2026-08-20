@@ -107,6 +107,29 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			wantSub: "applies_to",
 		},
 		{
+			// A rule with neither field matches nothing, which Dependabot reads
+			// as "update nothing" — the opposite of what anyone typing an allow
+			// rule means.
+			name: "empty allow rule",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{
+					Ecosystem: "gomod", Directory: "/",
+					Allow: []repospec.DependabotAllow{{}},
+				}}
+			},
+			wantSub: "dependency_name, dependency_type, or both",
+		},
+		{
+			name: "invalid dependency_type",
+			mutate: func(s *repospec.Spec) {
+				s.Dependabot = []repospec.DependabotEntry{{
+					Ecosystem: "gomod", Directory: "/",
+					Allow: []repospec.DependabotAllow{{DependencyName: "x", DependencyType: "sideways"}},
+				}}
+			},
+			wantSub: "dependency_type",
+		},
+		{
 			name:    "invalid conventional-commit scope",
 			mutate:  func(s *repospec.Spec) { s.ConventionalCommits.Scope = "title" },
 			wantSub: "conventional_commits.scope",
