@@ -553,3 +553,53 @@ func TestAutoMergeFailsWhenOptedInWithoutTheSecret(t *testing.T) {
 		}
 	}
 }
+
+// Dependabot's default is direct dependencies only, so a pin held indirectly is
+// never bumped — and nothing reports a dependency that simply stops being
+// updated. bulwark's go-pin module is exactly that: no .go files, so `go mod
+// tidy` marks gosec and govulncheck `// indirect`, and without an allow rule
+// the security scanner's own tool pins freeze in place.
+func TestRenderDependabotAllowRules(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{
+		Ecosystem: "gomod",
+		Directory: "/internal/golang/go-pin",
+		Allow: []repospec.DependabotAllow{
+			{DependencyName: "github.com/securego/gosec/v2", DependencyType: "all"},
+			{DependencyName: "golang.org/x/vuln", DependencyType: "all"},
+		},
+	}}
+	got := renderMap(t, testInput(spec))[".github/dependabot.yml"]
+
+	var parsed struct {
+		Updates []struct {
+			Allow []struct {
+				DependencyName string `yaml:"dependency-name"`
+				DependencyType string `yaml:"dependency-type"`
+			} `yaml:"allow"`
+		} `yaml:"updates"`
+	}
+	if err := yaml.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("unmarshal rendered dependabot.yml: %v\n%s", err, got)
+	}
+	allow := parsed.Updates[0].Allow
+	if len(allow) != 2 {
+		t.Fatalf("allow = %d rules, want 2:\n%s", len(allow), got)
+	}
+	if allow[0].DependencyName != "github.com/securego/gosec/v2" || allow[0].DependencyType != "all" {
+		t.Errorf("rule 0 = %+v, want gosec/all", allow[0])
+	}
+	if allow[1].DependencyName != "golang.org/x/vuln" {
+		t.Errorf("rule 1 = %+v, want golang.org/x/vuln", allow[1])
+	}
+}
+
+// An entry with no allow rules must emit no `allow:` key — an empty one would
+// match nothing, which Dependabot reads as "update nothing".
+func TestRenderOmitsAllowWhenUnset(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	if got := string(renderMap(t, testInput(spec))[".github/dependabot.yml"]); strings.Contains(got, "allow:") {
+		t.Errorf("rendered an empty allow key, which would stop all updates:\n%s", got)
+	}
+}

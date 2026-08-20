@@ -27,6 +27,22 @@ updates:
     cooldown:
       default-days: {{ $.CooldownDays }}
     open-pull-requests-limit: {{ $.PRLimit }}
+{{- if .Allow }}
+    # Dependabot's default is direct dependencies only, so anything held
+    # indirectly is never bumped. An allow rule is what stops a pin freezing
+    # silently — nothing reports a dependency that simply stops being updated.
+    allow:
+{{- range .Allow }}
+{{- if .DependencyName }}
+      - dependency-name: "{{ .DependencyName }}"
+{{- if .DependencyType }}
+        dependency-type: {{ .DependencyType }}
+{{- end }}
+{{- else }}
+      - dependency-type: {{ .DependencyType }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if .Groups }}
     # Grouped dependencies share a single PR. A group exists when its members
     # must move together: landing one alone breaks the default branch, and the
