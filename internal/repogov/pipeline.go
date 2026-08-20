@@ -19,48 +19,6 @@ const AttestContext = "gt/validated-tree"
 // attestation, so re-running it would test identical content twice.
 const attestGuard = "needs.attest.outputs.validated != 'true'"
 
-// baselineGuard is attestGuard with an exemption for pushes to the default
-// branch, and it exists because bulwark's coverage gate cannot work without it.
-//
-// bulwark takes its baseline from a run ON the merge-base — "the current commit
-// *is* the baseline — so record what was just measured and stop". That path is
-// the whole reason `coverage.source: report` is usable: a repository whose
-// coverage comes from a multi-job pipeline can never reconstruct a historical
-// baseline, because bulwark's fallback measures a bare worktree with none of
-// the toolchain or staged reports the pipeline provides.
-//
-// Skipping the pipeline on an already-validated push removed that run, so every
-// baseline came from the fallback instead. On gt that meant main measured at
-// 0.7% against pull requests measured at 76.2% — two numbers produced by
-// different methods, compared to each other. A gate nothing can fail.
-//
-// So the stages that produce and consume coverage always run on a push, and
-// the attestation only skips them on a pull request. end2end is exempt from the
-// exemption: it contributes no coverage, and it is the expensive one.
-const baselineGuard = "(" + attestGuard + " || github.event_name == 'push')"
-
-// coverageChain is the stages a push to the default branch must run whatever
-// the attestation says, because bulwark records its baseline from that run.
-//
-// It is the dependency chain down to the coverage producer, not a taste: a job
-// whose `needs` was skipped is skipped too, so test cannot run on its own —
-// preflight and build have to come with it.
-var coverageChain = map[string]bool{
-	"preflight": true,
-	"build":     true,
-	"test":      true,
-}
-
-// stageGuard returns the condition for one stage. Only the CI stages that feed
-// the coverage baseline get the push exemption; end2end and every CD stage keep
-// the plain attestation guard, which is where the saving now comes from.
-func stageGuard(name, guard string) string {
-	if guard == attestGuard && coverageChain[name] {
-		return baselineGuard
-	}
-	return guard
-}
-
 // stageJob is one rendered orchestrator job.
 type stageJob struct {
 	Name string
@@ -133,8 +91,8 @@ func buildStages(
 		}
 
 		var conds []string
-		if g := stageGuard(name, guard); g != "" {
-			conds = append(conds, g)
+		if guard != "" {
+			conds = append(conds, guard)
 		}
 		// Only gate on preflight's output when preflight actually exists;
 		// referencing outputs of an absent job would never be true.
@@ -289,12 +247,9 @@ type ciData struct {
 	AttestContext   string
 	CheckoutRef     string
 	SkipGuard       string
-	// BulwarkGuard exempts a push from the attestation skip, because bulwark
-	// records the coverage baseline from exactly that run.
-	BulwarkGuard string
-	CIStages     []stageJob
-	GateNeeds    string
-	BulwarkNeeds string
+	CIStages        []stageJob
+	GateNeeds       string
+	BulwarkNeeds    string
 
 	AttestWorkflowRef              string
 	BulwarkWorkflowRef             string
@@ -349,7 +304,6 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		CIStages:        stages,
 		GateNeeds:       gateNeeds("attest", stages, fixed...),
 		BulwarkNeeds:    strings.Join(bulwarkNeeds, ", "),
-		BulwarkGuard:    baselineGuard,
 
 		AttestWorkflowRef:              workflowRef("attest.yml", major, in.RepoOwner, in.RepoName),
 		BulwarkWorkflowRef:             workflowRef("bulwark.yml", major, in.RepoOwner, in.RepoName),
