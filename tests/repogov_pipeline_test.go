@@ -652,38 +652,28 @@ func TestGateRecordsTheRunThatValidatedTheTree(t *testing.T) {
 	}
 }
 
-// bulwark takes its coverage baseline from a run on the merge-base — "the
-// current commit *is* the baseline". Skipping the pipeline on an already
-// validated push removed that run, so every baseline fell back to bulwark
-// measuring a bare worktree instead. On gt that meant main measured 0.7%
-// against pull requests measured 76.2%: two numbers produced by different
-// methods, compared to each other, in a gate nothing could fail.
+// bulwark takes its coverage baseline from a run on the merge-base, so gt used
+// to force the whole coverage chain to run on every push to manufacture one.
+// bulwark v1.8.0 keys baselines by TREE instead: a pull request records its own
+// measurement, and a squash merge lands a commit carrying that same tree, so the
+// number is already there when main needs it.
 //
-// So the coverage chain runs on a push regardless of the attestation.
-func TestCoverageStagesAlwaysRunOnAPush(t *testing.T) {
+// Verified on gt's own bulwark-state before this was reverted — the six most
+// recent main commits all resolve to tree-keyed entries reading ~76%, where the
+// commit-keyed entry they replaced read 0.7%.
+//
+// So nothing is exempt from the attestation any more: an already-validated push
+// skips every stage, which is what attest was for.
+func TestAttestSkipsEveryStageOnAnAlreadyValidatedPush(t *testing.T) {
 	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
 
-	for _, name := range []string{"preflight", "build", "test", "bulwark"} {
-		job, ok := jobs[name]
-		if !ok {
-			t.Fatalf("no %s job rendered", name)
+	for name, job := range jobs {
+		if name == "attest" || name == repospec.GateCheckJob {
+			continue
 		}
-		if !strings.Contains(job.If, "github.event_name == 'push'") {
-			t.Errorf("%s skips on an attested push (%q); bulwark then has no baseline to record", name, job.If)
+		if strings.Contains(job.If, "github.event_name == 'push'") {
+			t.Errorf("%s still carries the push exemption (%q); bulwark keys baselines by tree now, "+
+				"so forcing it to run on every merge buys nothing", name, job.If)
 		}
-	}
-}
-
-// end2end is exempt from the exemption: it produces no coverage and it is the
-// expensive stage, so it is where the attestation still earns its keep. If it
-// gained the push exemption, attest would save nothing at all on a merge.
-func TestEnd2EndStillSkipsOnAnAttestedPush(t *testing.T) {
-	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
-	job, ok := jobs["end2end"]
-	if !ok {
-		t.Skip("no end2end stage in the default spec")
-	}
-	if strings.Contains(job.If, "github.event_name == 'push'") {
-		t.Errorf("end2end gained the push exemption (%q); the attestation now saves nothing on a merge", job.If)
 	}
 }
