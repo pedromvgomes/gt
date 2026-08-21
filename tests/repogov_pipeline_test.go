@@ -677,3 +677,40 @@ func TestAttestSkipsEveryStageOnAnAlreadyValidatedPush(t *testing.T) {
 		}
 	}
 }
+
+// A repository with nothing bulwark can measure turns the coverage gate off.
+// Left on, it resolves a baseline for languages that do not exist and reports a
+// number that means nothing — and a number that means nothing is one people
+// stop reading, which costs more than the minutes it wastes.
+func TestBulwarkCoverageCanBeTurnedOff(t *testing.T) {
+	spec := repospec.Default()
+	spec.Bulwark.Coverage = false
+	content := string(pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+	if !strings.Contains(content, "coverage: false") {
+		t.Errorf("coverage was not disabled in the bulwark stage:\n%s", content)
+	}
+}
+
+// On by default, and NOT passed explicitly when on: the reusable workflow
+// already defaults to true, and a `with:` block that exists only to restate a
+// default is noise in every rendered file.
+func TestBulwarkCoverageOnByDefault(t *testing.T) {
+	if !repospec.Default().Bulwark.Coverage {
+		t.Fatal("coverage defaults to off; a repo would silently lose its gate on sync")
+	}
+	content := string(pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	if strings.Contains(content, "coverage: false") {
+		t.Error("coverage disabled with the default spec")
+	}
+}
+
+// .bulwark.yml exists to declare where coverage comes from. With the coverage
+// gate off there is no such question, and scaffolding a file to answer it is
+// how a repository ends up carrying configuration nobody can explain.
+func TestBulwarkConfigNotScaffoldedWhenCoverageIsOff(t *testing.T) {
+	spec := repospec.Default()
+	spec.Bulwark.Coverage = false
+	if _, ok := pipelineFiles(t, spec)[".bulwark.yml"]; ok {
+		t.Error(".bulwark.yml was scaffolded for a repo with the coverage gate off")
+	}
+}

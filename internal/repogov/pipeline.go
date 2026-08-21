@@ -158,7 +158,14 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 	// say `report` or bulwark re-runs the suite ci-test already ran — and the
 	// default is `run`, so forgetting the file is silently expensive rather
 	// than loudly broken.
-	if spec.Bulwark.Enabled && spec.Pipeline.CI.Enabled && contains(spec.Pipeline.CI.Stages, "test") {
+	//
+	// Not scaffolded when the coverage gate is off: the file exists to declare
+	// where coverage comes from, and writing one to answer a question nobody
+	// asks is how a repository ends up with configuration it cannot explain.
+	// A repository that wants it for bulwark's other settings can add it; gt
+	// never deletes a scaffold.
+	if spec.Bulwark.Enabled && spec.Bulwark.Coverage &&
+		spec.Pipeline.CI.Enabled && contains(spec.Pipeline.CI.Stages, "test") {
 		path := ".bulwark.yml"
 		if spec.Bulwark.Dir != "" {
 			path = spec.Bulwark.Dir + "/.bulwark.yml"
@@ -244,6 +251,7 @@ type ciData struct {
 	MergeQueue      bool
 	Bulwark         bool
 	BulwarkDir      string
+	BulwarkCoverage bool
 	AttestContext   string
 	CheckoutRef     string
 	SkipGuard       string
@@ -298,6 +306,7 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		MergeQueue:      in.Spec.Pipeline.CI.MergeQueue,
 		Bulwark:         in.Spec.Bulwark.Enabled,
 		BulwarkDir:      in.Spec.Bulwark.Dir,
+		BulwarkCoverage: in.Spec.Bulwark.Coverage,
 		AttestContext:   AttestContext,
 		CheckoutRef:     checkoutRef,
 		SkipGuard:       attestGuard,

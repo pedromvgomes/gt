@@ -127,6 +127,14 @@ type Bulwark struct {
 	// moving into .bulwark.yml because that file lives *at* the scan root, so
 	// bulwark must know the root before it can read its own config.
 	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
+	// Coverage runs bulwark's coverage gate. Default true.
+	//
+	// Off for a repository with nothing bulwark can measure — boma is shell and
+	// container-driven pytest, wardnet-infrastructure is YAML. Leaving it on
+	// there is not harmless: the gate spends time resolving a baseline for
+	// languages that do not exist, and every run reports a coverage result that
+	// means nothing, which is the kind of number people start ignoring.
+	Coverage bool `yaml:"coverage" json:"coverage"`
 }
 
 // Pipeline declares the CI and CD orchestration gt renders. Each listed stage
@@ -324,7 +332,7 @@ func Default() Spec {
 				RequireLastPushApproval: false,
 			},
 		},
-		Bulwark: Bulwark{Enabled: true},
+		Bulwark: Bulwark{Enabled: true, Coverage: true},
 		Pipeline: Pipeline{
 			CI: PipelineCI{Enabled: true, Stages: append([]string(nil), CIStages...)},
 			CD: PipelineCD{
