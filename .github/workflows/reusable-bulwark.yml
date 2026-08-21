@@ -30,6 +30,13 @@ on:
           set bulwark.dir.
         type: string
         default: "."
+      coverage:
+        description: >-
+          Run bulwark's coverage gate. Off for a repository with nothing it can
+          measure — left on there, it resolves a baseline for languages that do
+          not exist and reports a number that means nothing.
+        type: boolean
+        default: true
     secrets:
       # Declared explicitly rather than relying on the caller's `secrets:
       # inherit`. GitHub documents inherit as working for "reusable workflows in
@@ -156,6 +163,7 @@ jobs:
       - uses: wardnet/bulwark@v1
         with:
           dir: ${{ inputs.dir }}
+          run-coverage: ${{ inputs.coverage }}
           # No coverage inputs: bulwark reads coverage.source from .bulwark.yml
           # at its scan root. gt scaffolds that file with `source: run`, which
           # is what is true while ci-test is still a stub. A repository flips it
