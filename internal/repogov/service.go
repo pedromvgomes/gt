@@ -1,6 +1,7 @@
 package repogov
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -56,11 +57,16 @@ type Report struct {
 	// VersionStale is set when the spec records an older gt than the one
 	// running, meaning re-rendering may produce different output.
 	VersionStale bool
+	// SpecStale is set when .gt-repo.yaml would not round-trip to itself —
+	// almost always because it restates gt defaults that sync now omits. It is
+	// drift in its own right: a file that pins a default has silently stopped
+	// tracking it, so check reports it and sync rewrites it.
+	SpecStale bool
 }
 
 // Clean reports whether the repository is fully compliant.
 func (r Report) Clean() bool {
-	return len(Drifted(r.Results)) == 0
+	return len(Drifted(r.Results)) == 0 && !r.SpecStale
 }
 
 // versionStale reports whether the spec was rendered by a different gt than the
@@ -106,11 +112,32 @@ func checkSpec(spec repospec.Spec, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	// Compared against the spec as it stands, version included: this asks
+	// "would sync rewrite this file for reasons other than the version stamp?",
+	// and folding the stamp in would make every pre-upgrade repository report
+	// spec drift on top of the staleness warning it already gets.
+	specStale, err := specDrifted(opts.WorkDir, spec)
+	if err != nil {
+		return Report{}, err
+	}
 	return Report{
 		Spec:         spec,
 		Results:      results,
 		VersionStale: versionStale(spec.GTVersion, opts.GTVersion),
+		SpecStale:    specStale,
 	}, nil
+}
+
+func specDrifted(workdir string, spec repospec.Spec) (bool, error) {
+	want, err := specBytes(spec)
+	if err != nil {
+		return false, err
+	}
+	current, err := os.ReadFile(repospec.Path(workdir))
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", repospec.FileName, err)
+	}
+	return !bytes.Equal(current, want), nil
 }
 
 // Sync renders and writes any drifted files, then records the gt version that
@@ -133,22 +160,30 @@ func apply(report Report, opts Options) ([]string, error) {
 	if err != nil {
 		return written, err
 	}
+	// The spec is rewritten whenever its serialisation differs from what gt
+	// would write — which is how a file that restates defaults gets slimmed
+	// down. Keying this on the version alone would mean a repository only sheds
+	// redundant keys when it happens to upgrade, and never sheds ones added by
+	// hand.
+	//
 	// A --skip-workflows run did not render the workflow files, so it has not
-	// brought the repo up to this gt version and must not claim it has.
-	// Stamping here would suppress the staleness warning that is the only
-	// remaining signal those files are behind.
-	if opts.SkipWorkflows {
-		return written, nil
-	}
-
-	// Stamp the version only once the files it describes are actually on disk,
-	// so an interrupted sync never claims to be newer than it is.
-	if report.Spec.GTVersion != opts.GTVersion {
-		spec := report.Spec
+	// brought the repo up to this gt version and must not claim it has:
+	// stamping there would suppress the staleness warning that is the only
+	// remaining signal those files are behind. Slimming the file is not a
+	// version claim, so it still happens — that run is the weekly in-repo sync,
+	// and it is what rolls this out across the fleet without anyone cloning
+	// eleven repositories.
+	spec := report.Spec
+	if !opts.SkipWorkflows {
+		// Stamp the version only once the files it describes are actually on
+		// disk, so an interrupted sync never claims to be newer than it is.
 		spec.GTVersion = opts.GTVersion
-		if err := SaveSpec(opts.WorkDir, spec); err != nil {
-			return written, err
-		}
+	}
+	changed, err := saveSpecIfChanged(opts.WorkDir, spec)
+	if err != nil {
+		return written, err
+	}
+	if changed {
 		written = append(written, repospec.FileName)
 	}
 	return written, nil
@@ -238,29 +273,170 @@ func Init(opts Options) (repospec.Spec, error) {
 // SaveSpec writes the manifest back, preserving a managed header so the file
 // announces how it is meant to be edited.
 func SaveSpec(workdir string, spec repospec.Spec) error {
-	var buf strings.Builder
-	buf.WriteString(specHeader)
-	if err := WriteSpecTo(&buf, spec); err != nil {
+	raw, err := specBytes(spec)
+	if err != nil {
 		return err
 	}
 	// #nosec G306 -- .gt-repo.yaml is committed and read by CI; it is repository content, not a secret.
-	if err := os.WriteFile(repospec.Path(workdir), []byte(buf.String()), 0o644); err != nil {
+	if err := os.WriteFile(repospec.Path(workdir), raw, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", repospec.FileName, err)
 	}
 	return nil
 }
 
-// WriteSpecTo encodes a spec as YAML.
+// saveSpecIfChanged writes the manifest only when it would differ from what is
+// already there, and reports whether it wrote. Sync uses this so an unchanged
+// repository reports nothing written rather than a no-op edit.
+func saveSpecIfChanged(workdir string, spec repospec.Spec) (bool, error) {
+	raw, err := specBytes(spec)
+	if err != nil {
+		return false, err
+	}
+	if current, err := os.ReadFile(repospec.Path(workdir)); err == nil && bytes.Equal(current, raw) {
+		return false, nil
+	}
+	// #nosec G306 -- .gt-repo.yaml is committed and read by CI; it is repository content, not a secret.
+	if err := os.WriteFile(repospec.Path(workdir), raw, 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", repospec.FileName, err)
+	}
+	return true, nil
+}
+
+func specBytes(spec repospec.Spec) ([]byte, error) {
+	var buf strings.Builder
+	buf.WriteString(specHeader)
+	if err := writeOverridesTo(&buf, spec); err != nil {
+		return nil, err
+	}
+	return []byte(buf.String()), nil
+}
+
+// WriteSpecTo encodes the fully resolved spec as YAML, defaults included. This
+// is what `gt repo config` prints, and it is deliberately not what gets written
+// to disk — see writeOverridesTo.
 func WriteSpecTo(w io.Writer, spec repospec.Spec) error {
+	return encodeYAML(w, spec)
+}
+
+// writeOverridesTo encodes a spec as YAML with every field that still carries
+// gt's default omitted. This is what lands in .gt-repo.yaml.
+//
+// It is the whole point of the file being opinionated. Serialising the fully
+// resolved spec pinned all ~25 defaults into every repository, and a repository
+// that has pinned a default no longer tracks it: changing an opinion in gt
+// would reach nobody, because all eleven files already said the old value
+// explicitly. What is written is exactly the set of deliberate overrides, so
+// everything absent follows gt.
+//
+// Safe because repospec.Parse unmarshals over Default(), so an absent field and
+// a field written with its default value parse to the same spec — which is also
+// why pruning a value someone typed by hand loses nothing.
+func writeOverridesTo(w io.Writer, spec repospec.Spec) error {
+	node, err := prunedSpecNode(spec)
+	if err != nil {
+		return err
+	}
+	return encodeYAML(w, node)
+}
+
+func encodeYAML(w io.Writer, v any) error {
 	enc := yaml.NewEncoder(w)
 	enc.SetIndent(2)
-	if err := enc.Encode(spec); err != nil {
+	if err := enc.Encode(v); err != nil {
 		return fmt.Errorf("encode %s: %w", repospec.FileName, err)
 	}
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("encode %s: %w", repospec.FileName, err)
 	}
 	return nil
+}
+
+// prunedSpecNode renders spec and repospec.Default() to YAML nodes and removes
+// from the former every key whose value the latter already carries.
+//
+// It works on nodes rather than a map[string]any so that field order survives:
+// yaml.v3 emits struct fields in declaration order but map keys sorted, and a
+// spec file whose keys reshuffle on every sync is a diff nobody can read.
+func prunedSpecNode(spec repospec.Spec) (*yaml.Node, error) {
+	actual, err := specNode(spec)
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := specNode(repospec.Default())
+	if err != nil {
+		return nil, err
+	}
+	pruneNode(actual, defaults)
+	return actual, nil
+}
+
+func specNode(spec repospec.Spec) (*yaml.Node, error) {
+	raw, err := yaml.Marshal(spec)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", repospec.FileName, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("encode %s: %w", repospec.FileName, err)
+	}
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
+		return doc.Content[0], nil
+	}
+	return &doc, nil
+}
+
+// pruneNode deletes from actual every mapping key that is identical to the same
+// key in defaults, recursing into nested mappings so a struct with one override
+// keeps that one field rather than all of them. A mapping left empty by the
+// recursion is deleted in turn, so `settings: {}` never survives.
+func pruneNode(actual, defaults *yaml.Node) {
+	if actual == nil || defaults == nil || actual.Kind != yaml.MappingNode || defaults.Kind != yaml.MappingNode {
+		return
+	}
+	kept := make([]*yaml.Node, 0, len(actual.Content))
+	for i := 0; i+1 < len(actual.Content); i += 2 {
+		key, val := actual.Content[i], actual.Content[i+1]
+		def := mappingValue(defaults, key.Value)
+		if def == nil {
+			kept = append(kept, key, val)
+			continue
+		}
+		if nodesEqual(val, def) {
+			continue
+		}
+		if val.Kind == yaml.MappingNode && def.Kind == yaml.MappingNode {
+			pruneNode(val, def)
+			if len(val.Content) == 0 {
+				continue
+			}
+		}
+		kept = append(kept, key, val)
+	}
+	actual.Content = kept
+}
+
+func mappingValue(m *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// nodesEqual compares by re-encoding, which is both simpler than walking two
+// trees and the definition that actually matters here: two values are the same
+// if they would be written the same way.
+func nodesEqual(a, b *yaml.Node) bool {
+	ra, err := yaml.Marshal(a)
+	if err != nil {
+		return false
+	}
+	rb, err := yaml.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ra, rb)
 }
 
 const specHeader = `# Repository governance for gt. This file is the source of truth; run
@@ -274,5 +450,10 @@ const specHeader = `# Repository governance for gt. This file is the source of t
 # ci-*/cd-* workflow that belongs to this repository: gt creates those once and
 # never touches them again. Branch protection needs exactly one check, ci-gate,
 # which waits on all of them.
+#
+# Only deliberate overrides are written here. Everything absent follows gt's
+# default and keeps following it as that default changes — a value pinned in
+# this file stops tracking gt, which is why sync removes the ones that merely
+# restate it. Run 'gt repo config' to see the resolved spec, defaults included.
 
 `

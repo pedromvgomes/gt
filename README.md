@@ -193,21 +193,28 @@ dependabot:
 
 pipeline:
   ci:
-    enabled: true
     stages: [preflight, build, test, end2end]
-    merge_queue: false      # organization-owned repositories only
   cd:
-    enabled: true
-    stages: [preflight, publish, deploy, verify]
-    tags: ["v*.*.*"]
-
-conventional_commits:
-  enabled: true
-  scope: pr_title # pr_title | commits | both
-
-bulwark:
-  enabled: true
+    enabled: false
 ```
+
+### Only overrides are written
+
+gt is opinionated, so the file records what you have decided *differently*, not
+the resolved configuration. Everything absent follows gt's default and keeps
+following it as that default changes.
+
+That is the point, not a formatting preference. A repository that spells out a
+default has silently stopped tracking it: changing an opinion in gt would reach
+none of the repositories whose files already state the old value, and the
+propagation mechanism this whole subsystem exists for would quietly do nothing.
+So `sync` writes only the overrides, and `check` reports a file that restates
+defaults as drift — the weekly in-repo sync then slims it without anyone
+cloning the repository.
+
+Overriding is unaffected: any value you set that differs from the default is
+kept, including a `false` against a default of `true`. `gt repo config` prints
+the resolved spec with every default applied.
 
 Shared policy — Dependabot cooldown, commit-message prefixes, the sync
 schedule — deliberately lives in gt's templates rather than this file, so
