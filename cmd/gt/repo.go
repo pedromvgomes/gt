@@ -217,7 +217,11 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 			printReport(opts.ui, report, govOpts)
 
 			drifted := repogov.Drifted(report.Results)
-			if len(drifted) == 0 {
+			// report.SpecStale matters here as much as a drifted file: it is
+			// the case where every managed file is byte-correct but
+			// .gt-repo.yaml still pins defaults sync would now omit. Gating on
+			// len(drifted) alone made that state permanently unfixable.
+			if len(drifted) == 0 && !report.SpecStale {
 				opts.ui.Info("Nothing to write.")
 				return nil
 			}
@@ -311,6 +315,11 @@ func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
 	if report.VersionStale {
 		printer.Warn("rendered by gt %s, running %s — sync to re-render with current policy",
 			report.Spec.GTVersion, opts.GTVersion)
+	}
+
+	if report.SpecStale {
+		printer.Warn("%s restates values that are gt defaults — sync rewrites it to only the overrides",
+			repospec.FileName)
 	}
 
 	drifted := repogov.Drifted(report.Results)
