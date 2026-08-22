@@ -156,11 +156,17 @@ jobs:
 
       # Every third-party action above is SHA-pinned, because a tag its owner
       # controls can be silently repointed at code we never reviewed. bulwark is
-      # ours: the floating v1 alias is its intended delivery channel, moved
+      # ours: the floating major alias is its intended delivery channel, moved
       # deliberately on each release so consumers pick up scanner fixes without
       # a bump PR each time.
+      #
+      # Tracking v2 since bulwark 2.0.0. The release only moves the tag matching
+      # its own major, so v1 stopped at 1.9.0 the moment 2.0.0 shipped: staying
+      # on it would have frozen this wrapper there for good while the binary it
+      # installs kept advancing, because `version` defaults to latest and gt
+      # does not pin it.
       # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
-      - uses: wardnet/bulwark@v1
+      - uses: wardnet/bulwark@v2
         with:
           dir: ${{ inputs.dir }}
           run-coverage: ${{ inputs.coverage }}
