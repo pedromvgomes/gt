@@ -371,24 +371,19 @@ func prunedSpecNode(spec repospec.Spec) (*yaml.Node, error) {
 }
 
 func specNode(spec repospec.Spec) (*yaml.Node, error) {
-	raw, err := yaml.Marshal(spec)
-	if err != nil {
+	// Node.Encode rather than a Marshal/Unmarshal round trip through bytes:
+	// it yields the mapping directly, with no document node to unwrap and no
+	// second error path that a fixed struct type can never take anyway.
+	var node yaml.Node
+	if err := node.Encode(spec); err != nil {
 		return nil, fmt.Errorf("encode %s: %w", repospec.FileName, err)
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("encode %s: %w", repospec.FileName, err)
-	}
-	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
-		return doc.Content[0], nil
-	}
-	return &doc, nil
+	return &node, nil
 }
 
 // pruneNode deletes from actual every mapping key that is identical to the same
 // key in defaults, recursing into nested mappings so a struct with one override
-// keeps that one field rather than all of them. A mapping left empty by the
-// recursion is deleted in turn, so `settings: {}` never survives.
+// keeps that one field rather than all of them.
 func pruneNode(actual, defaults *yaml.Node) {
 	if actual == nil || defaults == nil || actual.Kind != yaml.MappingNode || defaults.Kind != yaml.MappingNode {
 		return
@@ -404,11 +399,12 @@ func pruneNode(actual, defaults *yaml.Node) {
 		if nodesEqual(val, def) {
 			continue
 		}
+		// No empty-mapping check afterwards: both sides are the same Go struct
+		// type, so they always carry the same keys, and a mapping whose every
+		// child matched would have been equal and dropped above. A mapping that
+		// reaches the recursion therefore always keeps at least one child.
 		if val.Kind == yaml.MappingNode && def.Kind == yaml.MappingNode {
 			pruneNode(val, def)
-			if len(val.Content) == 0 {
-				continue
-			}
 		}
 		kept = append(kept, key, val)
 	}
@@ -424,19 +420,22 @@ func mappingValue(m *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// nodesEqual compares by re-encoding, which is both simpler than walking two
-// trees and the definition that actually matters here: two values are the same
-// if they would be written the same way.
+// nodesEqual compares two nodes structurally. Comments and position are
+// deliberately ignored: what matters is whether the two would parse to the same
+// value, not whether they were written identically.
 func nodesEqual(a, b *yaml.Node) bool {
-	ra, err := yaml.Marshal(a)
-	if err != nil {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Kind != b.Kind || a.Tag != b.Tag || a.Value != b.Value || len(a.Content) != len(b.Content) {
 		return false
 	}
-	rb, err := yaml.Marshal(b)
-	if err != nil {
-		return false
+	for i := range a.Content {
+		if !nodesEqual(a.Content[i], b.Content[i]) {
+			return false
+		}
 	}
-	return bytes.Equal(ra, rb)
+	return true
 }
 
 const specHeader = `# Repository governance for gt. This file is the source of truth; run
