@@ -72,7 +72,7 @@ jobs:
     # dependencies from GitHub Packages during install, and a called workflow
     # can only narrow what the caller grants — a stage cannot ask for it back.
     # Read-only, so granting it where it is unused costs nothing. A stage
-    # needing more than this is a gt change.
+    # needing more says so in pipeline.ci.stage_permissions.
     permissions:
       contents: read
       packages: read
@@ -93,7 +93,7 @@ jobs:
     # dependencies from GitHub Packages during install, and a called workflow
     # can only narrow what the caller grants — a stage cannot ask for it back.
     # Read-only, so granting it where it is unused costs nothing. A stage
-    # needing more than this is a gt change.
+    # needing more says so in pipeline.ci.stage_permissions.
     permissions:
       contents: read
       packages: read
@@ -114,7 +114,7 @@ jobs:
     # dependencies from GitHub Packages during install, and a called workflow
     # can only narrow what the caller grants — a stage cannot ask for it back.
     # Read-only, so granting it where it is unused costs nothing. A stage
-    # needing more than this is a gt change.
+    # needing more says so in pipeline.ci.stage_permissions.
     permissions:
       contents: read
       packages: read
