@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -156,6 +157,9 @@ type PipelineCI struct {
 	// forever for a required check that never reports. Merge queues need an
 	// organization-owned repository, so this is off by default.
 	MergeQueue bool `yaml:"merge_queue" json:"merge_queue"`
+	// StagePermissions grants a named stage scopes beyond the CI baseline.
+	// See StagePermissions for why this exists and what it cannot do.
+	StagePermissions StagePermissions `yaml:"stage_permissions,omitempty" json:"stage_permissions,omitempty"`
 }
 
 type PipelineCD struct {
@@ -165,7 +169,24 @@ type PipelineCD struct {
 	// different ones — a single component on v*.*.*, or several independently
 	// versioned components on their own prefixes.
 	Tags []string `yaml:"tags" json:"tags"`
+	// StagePermissions grants a named stage scopes beyond the CD baseline.
+	StagePermissions StagePermissions `yaml:"stage_permissions,omitempty" json:"stage_permissions,omitempty"`
 }
+
+// StagePermissions maps a stage name to the scopes its orchestrator job is
+// granted on top of the pipeline's baseline, as `scope: level`.
+//
+// This exists because a called workflow can only ever NARROW what its caller
+// grants. A leaf that genuinely needs more — uploading SARIF to code scanning,
+// pushing a build cache to a registry — cannot ask for it back, so without a
+// way to widen the calling job the only options were to lose the capability
+// silently or keep the repository off the pipeline entirely.
+//
+// It is deliberately additive and deliberately per-stage. The baseline stays
+// the answer for almost every stage, a widened stage names the one scope it
+// needs, and the rendered orchestrator shows exactly which stage holds what —
+// so the grant is reviewable in the diff rather than implied by a template.
+type StagePermissions map[string]map[string]string
 
 type ConventionalCommits struct {
 	Enabled bool     `yaml:"enabled" json:"enabled"`
@@ -256,6 +277,22 @@ const (
 var (
 	CIStages = []string{"preflight", "build", "test", "end2end"}
 	CDStages = []string{"preflight", "publish", "deploy", "verify"}
+)
+
+// PermissionScopes is the GITHUB_TOKEN scope vocabulary, and PermissionLevels
+// the values each may take.
+//
+// Enumerated rather than passed through so a typo is a spec error at sync time
+// instead of a scope GitHub silently ignores — which would render a job that
+// looks widened but is not, and fail only later at the API call it was meant
+// to permit.
+var (
+	PermissionScopes = []string{
+		"actions", "attestations", "checks", "contents", "deployments",
+		"discussions", "id-token", "issues", "packages", "pages",
+		"pull-requests", "repository-projects", "security-events", "statuses",
+	}
+	PermissionLevels = []string{"read", "write", "none"}
 )
 
 // GateCheckJob is the aggregating job, and so the single check branch
@@ -536,6 +573,16 @@ func validatePipeline(p Pipeline) error {
 	if err := validateStages("pipeline.cd.stages", p.CD.Enabled, p.CD.Stages, CDStages); err != nil {
 		return err
 	}
+	if err := validateStagePermissions(
+		"pipeline.ci.stage_permissions", p.CI.Enabled, p.CI.StagePermissions, p.CI.Stages,
+	); err != nil {
+		return err
+	}
+	if err := validateStagePermissions(
+		"pipeline.cd.stage_permissions", p.CD.Enabled, p.CD.StagePermissions, p.CD.Stages,
+	); err != nil {
+		return err
+	}
 	if p.CD.Enabled && len(p.CD.Tags) == 0 {
 		return fmt.Errorf("pipeline.cd.tags cannot be empty when CD is enabled; nothing would ever trigger it")
 	}
@@ -558,6 +605,46 @@ func validateStages(field string, enabled bool, got, known []string) error {
 			return fmt.Errorf("%s[%d]: duplicate stage %q", field, i, st)
 		}
 		seen[st] = true
+	}
+	return nil
+}
+
+// validateStagePermissions rejects a grant that could not take effect: one
+// naming a stage the pipeline does not run, or a scope or level GitHub does
+// not define. Each of those would otherwise render a job that reads as
+// widened but is not.
+func validateStagePermissions(
+	field string, enabled bool, perms StagePermissions, stages []string,
+) error {
+	if len(perms) == 0 {
+		return nil
+	}
+	if !enabled {
+		return fmt.Errorf("%s: cannot grant permissions while the pipeline is disabled", field)
+	}
+	// Sorted so the same spec always reports the same error first.
+	for _, stage := range sortedKeys(perms) {
+		if !contains(stages, stage) {
+			return fmt.Errorf(
+				"%s: stage %q is not enabled (enabled: %s)",
+				field, stage, strings.Join(stages, ", "))
+		}
+		scopes := perms[stage]
+		if len(scopes) == 0 {
+			return fmt.Errorf("%s.%s: no permissions listed; drop the entry instead", field, stage)
+		}
+		for _, scope := range sortedKeys(scopes) {
+			if !contains(PermissionScopes, scope) {
+				return fmt.Errorf(
+					"%s.%s: unknown permission scope %q (accepted: %s)",
+					field, stage, scope, strings.Join(PermissionScopes, ", "))
+			}
+			if level := scopes[scope]; !contains(PermissionLevels, level) {
+				return fmt.Errorf(
+					"%s.%s.%s: invalid level %q (accepted: %s)",
+					field, stage, scope, level, strings.Join(PermissionLevels, ", "))
+			}
+		}
 	}
 	return nil
 }
@@ -636,4 +723,17 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// sortedKeys returns a map's keys in a stable order, so validation reports the
+// same first error for the same spec and rendering is byte-identical run to
+// run. Go map iteration order is randomised, which would otherwise make a
+// re-render a spurious diff.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

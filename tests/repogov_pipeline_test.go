@@ -1,9 +1,11 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -286,6 +288,31 @@ func TestPipelineValidation(t *testing.T) {
 		{"cd stage in ci", func(s *repospec.Spec) {
 			s.Pipeline.CI.Stages = []string{"publish"}
 		}, "unknown stage"},
+		{"permissions for a stage that is not enabled", func(s *repospec.Spec) {
+			s.Pipeline.CI.Stages = []string{"preflight", "build"}
+			s.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+				"end2end": {"packages": "write"},
+			}
+		}, "is not enabled"},
+		{"unknown permission scope", func(s *repospec.Spec) {
+			s.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+				"build": {"code-scanning": "write"},
+			}
+		}, "unknown permission scope"},
+		{"invalid permission level", func(s *repospec.Spec) {
+			s.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+				"build": {"security-events": "readwrite"},
+			}
+		}, "invalid level"},
+		{"permissions with an empty scope map", func(s *repospec.Spec) {
+			s.Pipeline.CI.StagePermissions = repospec.StagePermissions{"build": {}}
+		}, "no permissions listed"},
+		{"permissions while ci is disabled", func(s *repospec.Spec) {
+			s.Pipeline.CI.Enabled = false
+			s.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+				"build": {"security-events": "write"},
+			}
+		}, "pipeline is disabled"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -712,5 +739,124 @@ func TestBulwarkConfigNotScaffoldedWhenCoverageIsOff(t *testing.T) {
 	spec.Bulwark.Coverage = false
 	if _, ok := pipelineFiles(t, spec)[".bulwark.yml"]; ok {
 		t.Error(".bulwark.yml was scaffolded for a repo with the coverage gate off")
+	}
+}
+
+// stagePermissions reads the rendered `permissions:` block of one orchestrator
+// job, which is the grant its called stage workflow can narrow from.
+func stagePermissions(t *testing.T, content []byte, job string) map[string]string {
+	t.Helper()
+	var wf struct {
+		Jobs map[string]struct {
+			Permissions map[string]string `yaml:"permissions"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(content, &wf); err != nil {
+		t.Fatalf("unmarshal workflow: %v\n%s", err, content)
+	}
+	j, ok := wf.Jobs[job]
+	if !ok {
+		t.Fatalf("no %q job in rendered workflow:\n%s", job, content)
+	}
+	return j.Permissions
+}
+
+// The baseline is the contract every existing repo already renders. A change to
+// stage permissions that shifted it would rewrite all seventeen governed repos
+// on their next sync, so pin it.
+func TestStagesDefaultToTheBaselinePermissions(t *testing.T) {
+	files := pipelineFiles(t, repospec.Default())
+
+	for _, stage := range repospec.CIStages {
+		got := stagePermissions(t, files[".github/workflows/ci-orchestration.yml"], stage)
+		want := map[string]string{"contents": "read", "packages": "read"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ci stage %q permissions = %v, want %v", stage, got, want)
+		}
+	}
+	for _, stage := range repospec.CDStages {
+		got := stagePermissions(t, files[".github/workflows/cd-orchestration.yml"], stage)
+		want := map[string]string{"contents": "write", "packages": "write"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("cd stage %q permissions = %v, want %v", stage, got, want)
+		}
+	}
+}
+
+// The reason this feature exists: a leaf can only narrow what its caller
+// grants, so a stage hosting a job that uploads SARIF or pushes a build cache
+// needs the calling job widened. Without this the capability is lost silently.
+func TestStagePermissionsWidenOnlyTheNamedStage(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+		"build":   {"security-events": "write"},
+		"end2end": {"packages": "write"},
+	}
+
+	content := pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"]
+
+	// A scope the baseline withholds entirely is added.
+	build := stagePermissions(t, content, "build")
+	wantBuild := map[string]string{
+		"contents": "read", "packages": "read", "security-events": "write",
+	}
+	if !reflect.DeepEqual(build, wantBuild) {
+		t.Errorf("build permissions = %v, want %v", build, wantBuild)
+	}
+
+	// A scope the baseline already sets is raised, not duplicated.
+	end2end := stagePermissions(t, content, "end2end")
+	wantEnd2End := map[string]string{"contents": "read", "packages": "write"}
+	if !reflect.DeepEqual(end2end, wantEnd2End) {
+		t.Errorf("end2end permissions = %v, want %v", end2end, wantEnd2End)
+	}
+
+	// Every other stage stays exactly where it was. A grant that leaked across
+	// stages would hand write scopes to jobs nobody reviewed for them.
+	for _, stage := range []string{"preflight", "test"} {
+		got := stagePermissions(t, content, stage)
+		want := map[string]string{"contents": "read", "packages": "read"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("stage %q permissions = %v, want the untouched baseline %v", stage, got, want)
+		}
+	}
+}
+
+// CD carries the same mechanism, so a delivery stage needing OIDC does not
+// become a second gt change.
+func TestStagePermissionsApplyToCD(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CD.Enabled = true
+	spec.Pipeline.CD.StagePermissions = repospec.StagePermissions{
+		"publish": {"id-token": "write"},
+	}
+
+	content := pipelineFiles(t, spec)[".github/workflows/cd-orchestration.yml"]
+	got := stagePermissions(t, content, "publish")
+	want := map[string]string{"contents": "write", "packages": "write", "id-token": "write"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("publish permissions = %v, want %v", got, want)
+	}
+}
+
+// Map iteration in Go is randomised, so an unsorted render would produce a
+// spurious diff on every sync and make `gt repo check` flap.
+func TestStagePermissionsRenderDeterministically(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+		"build": {
+			"security-events": "write",
+			"id-token":        "write",
+			"attestations":    "write",
+			"checks":          "write",
+		},
+	}
+
+	first := pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"]
+	for i := range 20 {
+		again := pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"]
+		if !bytes.Equal(first, again) {
+			t.Fatalf("render %d differs from the first:\n%s\n---\n%s", i, first, again)
+		}
 	}
 }

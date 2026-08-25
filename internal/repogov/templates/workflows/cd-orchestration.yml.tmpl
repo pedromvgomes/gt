@@ -67,18 +67,27 @@ jobs:
     # already sit inside.
     # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit
     secrets: inherit
+{{- if .Widened }}
+    # Widened beyond the delivery baseline (contents: write, packages: write)
+    # by pipeline.cd.stage_permissions in .gt-repo.yaml — an OIDC id-token,
+    # say. A called workflow can only narrow what its caller grants, so a leaf
+    # needing a scope the baseline withholds cannot ask for it back; the
+    # calling job grants it here and the leaf narrows from it.
+{{- else }}
     # Delivery writes: a publish stage creates a release, a deploy stage moves
     # artifacts. A called workflow can only narrow this, so a stage needing
-    # less should say so in its own permissions block. A stage needing *more*
-    # — OIDC id-token, package registries — is a gt change today; no consumer
-    # has asked for one yet.
+    # less should say so in its own permissions block. A stage needing more
+    # says so in pipeline.cd.stage_permissions.
+    #
+    # packages is write, not read: delivery both consumes private @scope
+    # dependencies and publishes to GitHub Packages — wardnet-design-system's
+    # changeset publish needs it. A stage that merely installs can drop this to
+    # read in its own block.
+{{- end }}
     permissions:
-      contents: write
-      # write, not read: delivery both consumes private @scope dependencies and
-      # publishes to GitHub Packages — wardnet-design-system's changeset
-      # publish needs it. A called workflow can only narrow, so a stage that
-      # merely installs can drop this to read in its own block.
-      packages: write
+{{- range .Permissions }}
+      {{ .Scope }}: {{ .Level }}
+{{- end }}
 {{- end }}
 
   cd-gate:

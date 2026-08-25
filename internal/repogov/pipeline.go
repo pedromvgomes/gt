@@ -2,6 +2,7 @@ package repogov
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/repospec"
@@ -26,6 +27,62 @@ type stageJob struct {
 	Needs string
 	// If is the job's condition, already combined.
 	If string
+	// Permissions is the job's full `permissions:` block: the pipeline
+	// baseline with any per-stage grant merged over it, already ordered.
+	Permissions []stagePerm
+	// Widened marks a stage carrying a grant beyond the baseline, so the
+	// rendered file can say why it differs from its siblings.
+	Widened bool
+}
+
+// stagePerm is one `scope: level` line.
+type stagePerm struct {
+	Scope string
+	Level string
+}
+
+// ciBaselinePermissions and cdBaselinePermissions are what every stage gets
+// before any per-stage grant. A called workflow may only narrow these, so the
+// baseline is the ceiling for a stage that asks for nothing.
+var (
+	ciBaselinePermissions = map[string]string{
+		"contents": "read",
+		"packages": "read",
+	}
+	cdBaselinePermissions = map[string]string{
+		"contents": "write",
+		"packages": "write",
+	}
+)
+
+// mergePermissions layers a per-stage grant over the baseline and returns the
+// result in scope order. The grant wins on conflict — that is the whole point
+// of naming a scope the baseline already sets, as with packages: read →
+// write.
+func mergePermissions(baseline, grant map[string]string) ([]stagePerm, bool) {
+	merged := make(map[string]string, len(baseline)+len(grant))
+	for scope, level := range baseline {
+		merged[scope] = level
+	}
+	widened := false
+	for scope, level := range grant {
+		if merged[scope] != level {
+			widened = true
+		}
+		merged[scope] = level
+	}
+
+	scopes := make([]string, 0, len(merged))
+	for scope := range merged {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+
+	out := make([]stagePerm, 0, len(scopes))
+	for _, scope := range scopes {
+		out = append(out, stagePerm{Scope: scope, Level: merged[scope]})
+	}
+	return out, widened
 }
 
 // dependsOn describes how a stage is wired, given which stages exist.
@@ -63,6 +120,7 @@ var cdWiring = map[string]stageWiring{
 // decided whether it needs to run at all.
 func buildStages(
 	enabled []string, order []string, wiring map[string]stageWiring, root, guard string,
+	baseline map[string]string, grants repospec.StagePermissions,
 ) ([]stageJob, error) {
 	present := map[string]bool{}
 	for _, s := range enabled {
@@ -100,10 +158,14 @@ func buildStages(
 			conds = append(conds, fmt.Sprintf("needs.preflight.outputs.run-%s != 'false'", name))
 		}
 
+		perms, widened := mergePermissions(baseline, grants[name])
+
 		jobs = append(jobs, stageJob{
-			Name:  name,
-			Needs: strings.Join(needs, ", "),
-			If:    strings.Join(conds, " && "),
+			Name:        name,
+			Needs:       strings.Join(needs, ", "),
+			If:          strings.Join(conds, " && "),
+			Permissions: perms,
+			Widened:     widened,
 		})
 	}
 	return jobs, nil
@@ -280,7 +342,8 @@ const checkoutRef = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #
 
 func buildCIData(in Input, shared templateData) (ciData, error) {
 	stages, err := buildStages(
-		in.Spec.Pipeline.CI.Stages, repospec.CIStages, ciWiring, "attest", attestGuard)
+		in.Spec.Pipeline.CI.Stages, repospec.CIStages, ciWiring, "attest", attestGuard,
+		ciBaselinePermissions, in.Spec.Pipeline.CI.StagePermissions)
 	if err != nil {
 		return ciData{}, err
 	}
@@ -324,7 +387,8 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 func buildCDData(in Input, shared templateData) (cdData, error) {
 	const root = "verify-attestation"
 	stages, err := buildStages(
-		in.Spec.Pipeline.CD.Stages, repospec.CDStages, cdWiring, root, "")
+		in.Spec.Pipeline.CD.Stages, repospec.CDStages, cdWiring, root, "",
+		cdBaselinePermissions, in.Spec.Pipeline.CD.StagePermissions)
 	if err != nil {
 		return cdData{}, err
 	}

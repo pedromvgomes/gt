@@ -418,6 +418,46 @@ Ordering is fixed: preflight → build → (test, end2end) → bulwark. Delibera
 not configurable; a central pipeline every repo can rearrange is not a central
 pipeline.
 
+### Stage permissions
+
+Every stage job is granted a baseline — `contents: read` + `packages: read` for
+CI, `contents: write` + `packages: write` for CD — and a called workflow can
+only ever *narrow* what its caller grants. A leaf needing a scope the baseline
+withholds cannot ask for it back.
+
+That is a real wall, not a theoretical one. wardnet's `build` leaf uploads
+clippy SARIF through `codeql-action/upload-sarif`, which needs
+`security-events: write`; its `end2end` leaf pushes a registry build cache,
+which needs `packages: write`. Migrating either as-is would not fail loudly —
+it would keep passing while silently no longer uploading.
+
+So a stage may be widened by name:
+
+```yaml
+pipeline:
+  ci:
+    stages: [preflight, build, test, end2end]
+    stage_permissions:
+      build:
+        security-events: write   # codeql-action/upload-sarif
+      end2end:
+        packages: write          # --cache-to type=registry
+```
+
+The grant is merged over the baseline, so a scope named here raises it
+(`packages: read` → `write`) and every scope not named is untouched. Only the
+stage named is affected — a grant never leaks to its siblings.
+
+Both the stage names and the scope/level vocabulary are validated at sync time.
+A typo like `code-scanning: write` is rejected rather than rendered, because
+GitHub ignores an unknown scope silently: the job would look widened, pass
+review, and fail later at the one API call it was meant to permit.
+
+This is deliberately per-stage and deliberately additive. The baseline stays the
+answer for almost every stage, a widened stage names the one scope it needs, and
+the rendered orchestrator says which stage holds what — so the grant is
+reviewable in the diff rather than implied by a template.
+
 ## Migration
 
 Per repo: move build and test jobs out of the existing `ci.yml` into
