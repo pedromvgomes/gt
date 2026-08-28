@@ -160,6 +160,9 @@ type PipelineCI struct {
 	// StagePermissions grants a named stage scopes beyond the CI baseline.
 	// See StagePermissions for why this exists and what it cannot do.
 	StagePermissions StagePermissions `yaml:"stage_permissions,omitempty" json:"stage_permissions,omitempty"`
+	// IndependentStages names stages that consume no sibling stage's output.
+	// See the type for what it can and cannot express.
+	IndependentStages []string `yaml:"independent_stages,omitempty" json:"independent_stages,omitempty"`
 }
 
 type PipelineCD struct {
@@ -171,6 +174,8 @@ type PipelineCD struct {
 	Tags []string `yaml:"tags" json:"tags"`
 	// StagePermissions grants a named stage scopes beyond the CD baseline.
 	StagePermissions StagePermissions `yaml:"stage_permissions,omitempty" json:"stage_permissions,omitempty"`
+	// IndependentStages names stages that consume no sibling stage's output.
+	IndependentStages []string `yaml:"independent_stages,omitempty" json:"independent_stages,omitempty"`
 }
 
 // StagePermissions maps a stage name to the scopes its orchestrator job is
@@ -187,6 +192,26 @@ type PipelineCD struct {
 // needs, and the rendered orchestrator shows exactly which stage holds what —
 // so the grant is reviewable in the diff rather than implied by a template.
 type StagePermissions map[string]map[string]string
+
+// IndependentStages, in a pipeline spec, is the set of stages that consume no
+// sibling stage's output and so need not wait for one.
+//
+// This is a statement about the repository, not a reordering knob. The stage
+// graph stays fixed: nothing here can add a dependency, invent an edge, or
+// change the order stages render in. The only thing it can do is remove a
+// dependency the repository does not actually have, dropping that stage back
+// to depending on preflight alone.
+//
+// The dependency on preflight is never removed, because preflight produces no
+// artefact — it is the gate deciding whether a stage runs at all, and the
+// rendered `if:` reads its outputs.
+//
+// wardnet is the case this was added for. Its end2end suite rebuilds the
+// daemon from source inside Docker, so it consumes nothing the build stage
+// produces, and under its previous hand-rolled pipeline the two ran
+// concurrently. Making it wait for build added about eleven minutes to every
+// daemon pull request while proving nothing — a real cost paid for an edge
+// that does not exist.
 
 type ConventionalCommits struct {
 	Enabled bool     `yaml:"enabled" json:"enabled"`
@@ -275,9 +300,14 @@ const (
 // CIStages and CDStages are the stage vocabularies, in the order the
 // orchestrators wire them.
 var (
-	CIStages = []string{"preflight", "build", "test", "end2end"}
-	CDStages = []string{"preflight", "publish", "deploy", "verify"}
+	CIStages = []string{StagePreflight, "build", "test", "end2end"}
+	CDStages = []string{StagePreflight, "publish", "deploy", "verify"}
 )
+
+// StagePreflight is the gate every other stage reads its run-<stage> output
+// from. It is the one stage that never depends on a sibling, and the one that
+// can never be declared independent.
+const StagePreflight = "preflight"
 
 // PermissionScopes is the GITHUB_TOKEN scope vocabulary, and PermissionLevels
 // the values each may take.
@@ -583,6 +613,16 @@ func validatePipeline(p Pipeline) error {
 	); err != nil {
 		return err
 	}
+	if err := validateIndependentStages(
+		"pipeline.ci.independent_stages", p.CI.Enabled, p.CI.IndependentStages, p.CI.Stages,
+	); err != nil {
+		return err
+	}
+	if err := validateIndependentStages(
+		"pipeline.cd.independent_stages", p.CD.Enabled, p.CD.IndependentStages, p.CD.Stages,
+	); err != nil {
+		return err
+	}
 	if p.CD.Enabled && len(p.CD.Tags) == 0 {
 		return fmt.Errorf("pipeline.cd.tags cannot be empty when CD is enabled; nothing would ever trigger it")
 	}
@@ -645,6 +685,36 @@ func validateStagePermissions(
 					field, stage, scope, level, strings.Join(PermissionLevels, ", "))
 			}
 		}
+	}
+	return nil
+}
+
+// validateIndependentStages rejects a declaration that cannot mean anything:
+// one naming a stage the pipeline does not run, a duplicate, or `preflight`,
+// which has no sibling dependency to drop in the first place.
+func validateIndependentStages(field string, enabled bool, got, stages []string) error {
+	if len(got) == 0 {
+		return nil
+	}
+	if !enabled {
+		return fmt.Errorf("%s: cannot name stages while the pipeline is disabled", field)
+	}
+	seen := map[string]bool{}
+	for i, stage := range got {
+		if !contains(stages, stage) {
+			return fmt.Errorf(
+				"%s[%d]: stage %q is not enabled (enabled: %s)",
+				field, i, stage, strings.Join(stages, ", "))
+		}
+		if seen[stage] {
+			return fmt.Errorf("%s[%d]: duplicate stage %q", field, i, stage)
+		}
+		if stage == StagePreflight {
+			return fmt.Errorf(
+				"%s[%d]: %q has no stage dependency to drop; remove it",
+				field, i, stage)
+		}
+		seen[stage] = true
 	}
 	return nil
 }

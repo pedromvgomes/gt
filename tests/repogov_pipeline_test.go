@@ -313,6 +313,20 @@ func TestPipelineValidation(t *testing.T) {
 				"build": {"security-events": "write"},
 			}
 		}, "pipeline is disabled"},
+		{"independent stage that is not enabled", func(s *repospec.Spec) {
+			s.Pipeline.CI.Stages = []string{"preflight", "build"}
+			s.Pipeline.CI.IndependentStages = []string{"end2end"}
+		}, "is not enabled"},
+		{"independent preflight", func(s *repospec.Spec) {
+			s.Pipeline.CI.IndependentStages = []string{"preflight"}
+		}, "no stage dependency to drop"},
+		{"duplicate independent stage", func(s *repospec.Spec) {
+			s.Pipeline.CI.IndependentStages = []string{"end2end", "end2end"}
+		}, "duplicate stage"},
+		{"independent stages while ci is disabled", func(s *repospec.Spec) {
+			s.Pipeline.CI.Enabled = false
+			s.Pipeline.CI.IndependentStages = []string{"end2end"}
+		}, "pipeline is disabled"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -859,4 +873,82 @@ func TestStagePermissionsRenderDeterministically(t *testing.T) {
 			t.Fatalf("render %d differs from the first:\n%s\n---\n%s", i, first, again)
 		}
 	}
+}
+
+// The reason this exists: wardnet's end2end suite rebuilds the daemon from
+// source and consumes nothing build produces, so waiting on build added ~11
+// minutes to every daemon PR to prove an edge that does not exist.
+func TestIndependentStageDropsSiblingDependenciesButNotPreflight(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.IndependentStages = []string{"end2end"}
+
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+
+	e2e, ok := jobs["end2end"]
+	if !ok {
+		t.Fatalf("no end2end job; jobs = %v", jobs)
+	}
+	want := []string{"attest", "preflight"}
+	if !reflect.DeepEqual(e2e.Needs, want) {
+		t.Errorf("end2end needs = %v, want %v", e2e.Needs, want)
+	}
+
+	// preflight must survive, or the gating condition references the outputs
+	// of a job this one does not wait for and is never true.
+	if !strings.Contains(e2e.If, "needs.preflight.outputs.run-end2end") {
+		t.Errorf("end2end lost its preflight gate; if = %q", e2e.If)
+	}
+
+	// Independence is per-stage: test still consumes build's artefacts.
+	if test, ok := jobs["test"]; !ok {
+		t.Error("no test job")
+	} else if !contains(test.Needs, "build") {
+		t.Errorf("test needs = %v, want it to still wait on build", test.Needs)
+	}
+}
+
+// Detaching a stage must not drop it from the gate. If it did, a failing
+// end2end would stop blocking the merge — the exact defect branch protection
+// exists to prevent, arriving as a side effect of a performance tweak.
+func TestIndependentStageIsStillGated(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.IndependentStages = []string{"end2end"}
+
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+	gate, ok := jobs[repospec.GateCheckJob]
+	if !ok {
+		t.Fatalf("no %s job", repospec.GateCheckJob)
+	}
+	if !contains(gate.Needs, "end2end") {
+		t.Errorf("%s needs = %v, want end2end among them", repospec.GateCheckJob, gate.Needs)
+	}
+}
+
+// Declaring nothing must render exactly what it rendered before, so this
+// cannot quietly reshape the seventeen repos that do not use it.
+func TestStagesKeepTheirDependenciesByDefault(t *testing.T) {
+	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+
+	for _, tc := range []struct{ stage, dep string }{
+		{"test", "build"},
+		{"end2end", "build"},
+		{"build", "preflight"},
+	} {
+		j, ok := jobs[tc.stage]
+		if !ok {
+			t.Fatalf("no %s job", tc.stage)
+		}
+		if !contains(j.Needs, tc.dep) {
+			t.Errorf("%s needs = %v, want %q among them", tc.stage, j.Needs, tc.dep)
+		}
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }
