@@ -458,6 +458,40 @@ answer for almost every stage, a widened stage names the one scope it needs, and
 the rendered orchestrator says which stage holds what — so the grant is
 reviewable in the diff rather than implied by a template.
 
+### Independent stages
+
+Ordering is fixed, but *dependency* is a claim about the repository, and a
+repository can be right that it does not have one.
+
+```yaml
+pipeline:
+  ci:
+    stages: [preflight, build, test, end2end]
+    # end2end rebuilds the daemon from source inside Docker and consumes
+    # nothing build produces.
+    independent_stages: [end2end]
+```
+
+A stage named here drops its sibling dependencies and depends on preflight
+alone. That is the only thing it can do: it cannot add a dependency, invent an
+edge, or change the order stages render in. The fixed graph survives, because
+removing an edge you do not have is not rearranging the pipeline.
+
+The dependency on preflight is never removed. preflight produces no artefact —
+it is the gate deciding whether a stage runs at all, and the rendered `if:`
+reads its outputs, so dropping it from `needs:` would leave a condition that is
+never true. `preflight` itself cannot be declared independent; it has no
+sibling dependency to drop.
+
+Detaching a stage does **not** remove it from `ci-gate`. A failing end2end
+still blocks the merge; only its start time moves.
+
+wardnet is the case this was added for. Its end2end suite rebuilds the daemon
+from source, so it consumes nothing the build stage produces, and its previous
+hand-rolled pipeline ran the two concurrently. Serialising them added about
+eleven minutes to every daemon pull request — 24 minutes to 35 — to prove an
+edge that does not exist.
+
 ## Migration
 
 Per repo: move build and test jobs out of the existing `ci.yml` into

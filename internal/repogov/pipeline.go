@@ -120,11 +120,15 @@ var cdWiring = map[string]stageWiring{
 // decided whether it needs to run at all.
 func buildStages(
 	enabled []string, order []string, wiring map[string]stageWiring, root, guard string,
-	baseline map[string]string, grants repospec.StagePermissions,
+	baseline map[string]string, grants repospec.StagePermissions, independent []string,
 ) ([]stageJob, error) {
 	present := map[string]bool{}
 	for _, s := range enabled {
 		present[s] = true
+	}
+	detached := map[string]bool{}
+	for _, s := range independent {
+		detached[s] = true
 	}
 
 	hasPreflight := present["preflight"]
@@ -143,9 +147,17 @@ func buildStages(
 
 		needs := []string{root}
 		for _, dep := range w.after {
-			if present[dep] {
-				needs = append(needs, dep)
+			if !present[dep] {
+				continue
 			}
+			// A stage declared independent consumes no sibling's output, so
+			// only preflight survives — it produces no artefact, and the
+			// gating `if:` below reads its outputs, which requires it in
+			// `needs:`.
+			if detached[name] && dep != repospec.StagePreflight {
+				continue
+			}
+			needs = append(needs, dep)
 		}
 
 		var conds []string
@@ -343,7 +355,8 @@ const checkoutRef = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #
 func buildCIData(in Input, shared templateData) (ciData, error) {
 	stages, err := buildStages(
 		in.Spec.Pipeline.CI.Stages, repospec.CIStages, ciWiring, "attest", attestGuard,
-		ciBaselinePermissions, in.Spec.Pipeline.CI.StagePermissions)
+		ciBaselinePermissions, in.Spec.Pipeline.CI.StagePermissions,
+		in.Spec.Pipeline.CI.IndependentStages)
 	if err != nil {
 		return ciData{}, err
 	}
@@ -388,7 +401,8 @@ func buildCDData(in Input, shared templateData) (cdData, error) {
 	const root = "verify-attestation"
 	stages, err := buildStages(
 		in.Spec.Pipeline.CD.Stages, repospec.CDStages, cdWiring, root, "",
-		cdBaselinePermissions, in.Spec.Pipeline.CD.StagePermissions)
+		cdBaselinePermissions, in.Spec.Pipeline.CD.StagePermissions,
+		in.Spec.Pipeline.CD.IndependentStages)
 	if err != nil {
 		return cdData{}, err
 	}
