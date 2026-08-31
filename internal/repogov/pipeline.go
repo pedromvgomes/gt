@@ -55,17 +55,36 @@ var (
 	}
 )
 
+// permissionRank orders the levels so "is this a widening?" is answerable.
+// A scope absent from the baseline ranks below `none`, because granting it at
+// all is a widening.
+var permissionRank = map[string]int{"none": 0, "read": 1, "write": 2}
+
 // mergePermissions layers a per-stage grant over the baseline and returns the
-// result in scope order. The grant wins on conflict — that is the whole point
-// of naming a scope the baseline already sets, as with packages: read →
-// write.
-func mergePermissions(baseline, grant map[string]string) ([]stagePerm, bool) {
+// result in scope order, plus whether the stage ended up wider than baseline.
+//
+// The grant may only raise a scope. Lowering one is rejected rather than
+// applied: the feature is additive by design, a stage that needs *less* says
+// so in its own leaf (which may always narrow what it is given), and the
+// rendered comment announces a widening — so honouring a lowering here would
+// print "Widened beyond the baseline" directly above a scope that had just
+// been taken away, and hand the reviewer the opposite of what happened.
+func mergePermissions(
+	stage string, baseline, grant map[string]string,
+) ([]stagePerm, bool, error) {
 	merged := make(map[string]string, len(baseline)+len(grant))
 	for scope, level := range baseline {
 		merged[scope] = level
 	}
 	widened := false
-	for scope, level := range grant {
+	for _, scope := range sortedScopes(grant) {
+		level := grant[scope]
+		if base, ok := merged[scope]; ok && permissionRank[level] < permissionRank[base] {
+			return nil, false, fmt.Errorf(
+				"stage %q: %s: %s is narrower than the %s baseline; a stage needing "+
+					"less narrows in its own workflow, it does not ask for less here",
+				stage, scope, level, base)
+		}
 		if merged[scope] != level {
 			widened = true
 		}
@@ -82,7 +101,18 @@ func mergePermissions(baseline, grant map[string]string) ([]stagePerm, bool) {
 	for _, scope := range scopes {
 		out = append(out, stagePerm{Scope: scope, Level: merged[scope]})
 	}
-	return out, widened
+	return out, widened, nil
+}
+
+// sortedScopes keeps grant iteration deterministic, so the same spec always
+// reports the same first error.
+func sortedScopes(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // dependsOn describes how a stage is wired, given which stages exist.
@@ -170,7 +200,10 @@ func buildStages(
 			conds = append(conds, fmt.Sprintf("needs.preflight.outputs.run-%s != 'false'", name))
 		}
 
-		perms, widened := mergePermissions(baseline, grants[name])
+		perms, widened, err := mergePermissions(name, baseline, grants[name])
+		if err != nil {
+			return nil, err
+		}
 
 		jobs = append(jobs, stageJob{
 			Name:        name,

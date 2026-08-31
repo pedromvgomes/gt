@@ -10,8 +10,20 @@ name: {{ .Name }}
 on:
   workflow_call:
 
+# A called workflow may only ever NARROW what its caller grants, never widen
+# it — so this block is a ceiling on the whole stage, not a floor. Two
+# consequences worth knowing before editing it:
+#
+#   * packages: read matches the orchestrator's baseline. Dropping it here
+#     breaks any step resolving a private @scope dependency, and the failure
+#     names the registry rather than this file.
+#   * A stage widened via pipeline.{ci,cd}.stage_permissions still has to
+#     declare the extra scope HERE too. Granting security-events: write in the
+#     spec and leaving this at contents: read means the SARIF upload silently
+#     stops publishing — the caller offered the scope and the leaf declined it.
 permissions:
   contents: read
+  packages: read
 
 jobs:
   {{ .Job }}:
