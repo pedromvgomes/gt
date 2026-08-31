@@ -952,3 +952,53 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// A grant may only raise a scope. Honouring a lowering would render the
+// "Widened beyond the baseline" comment directly above a scope that had just
+// been taken away — telling a reviewer the opposite of what happened — and
+// would strip `contents` from a delivery stage, breaking checkout.
+func TestStagePermissionsRejectNarrowingTheBaseline(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CD.Enabled = true
+	spec.Pipeline.CD.StagePermissions = repospec.StagePermissions{
+		"deploy": {"contents": "none"},
+	}
+
+	if _, err := repogov.Render(testInput(spec)); err == nil {
+		t.Fatal("Render() = nil error, want a refusal to narrow the baseline")
+	} else if !strings.Contains(err.Error(), "narrower than") {
+		t.Fatalf("Render() error = %v, want it to say the grant is narrower", err)
+	}
+}
+
+// Widened must mean widened. A grant that restates a baseline value changes
+// nothing, so the stage must not advertise itself as widened.
+func TestStagePermissionsRestatingTheBaselineIsNotWidening(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+		"build": {"contents": "read", "packages": "read"},
+	}
+
+	content := pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"]
+	i := strings.Index(string(content), "  build:")
+	if i < 0 {
+		t.Fatal("no build job")
+	}
+	seg := string(content)[i : i+1200]
+	if strings.Contains(seg, "Widened beyond") {
+		t.Errorf("a grant restating the baseline reported itself as widened:\n%s", seg)
+	}
+}
+
+// `models` is a real GITHUB_TOKEN scope. The vocabulary is an allowlist, so
+// omitting one makes the feature unusable for that scope rather than merely
+// unvalidated.
+func TestModelsIsAnAcceptedScope(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.StagePermissions = repospec.StagePermissions{
+		"test": {"models": "read"},
+	}
+	if err := repospec.Validate(spec); err != nil {
+		t.Fatalf("Validate() rejected the models scope: %v", err)
+	}
+}

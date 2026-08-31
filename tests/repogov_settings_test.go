@@ -747,3 +747,53 @@ func TestSettingsApplyKeepsAnAbsorbedRule(t *testing.T) {
 		t.Errorf("a second apply dropped the absorbed rule:\n%s", body)
 	}
 }
+
+// With CI disabled gt renders no gate, because requiring a context nothing
+// reports blocks every pull request forever. Apply must therefore REMOVE a
+// live ci-gate requirement, not carry it: the owned rule set is fixed rather
+// than derived from what the spec happens to render, or a conditionally
+// omitted rule reads as somebody else's and survives.
+func TestSettingsApplyDropsTheGateWhenCIIsDisabled(t *testing.T) {
+	gh := alignedGH(t) // live ruleset requires ci-gate
+	spec := repospec.Default()
+	spec.Pipeline.CI.Enabled = false
+
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	if strings.Contains(string(body), "ci-gate") {
+		t.Errorf("apply kept a gate nothing can report, blocking every PR:\n%s", body)
+	}
+}
+
+// Apply always re-activates gt's own ruleset. If absorbing skipped it while it
+// was paused, it would come back active minus every rule gt had absorbed into
+// it — a silent protection loss whose only reported change was the enforcement
+// flag.
+func TestSettingsApplyKeepsAbsorbedRulesFromAPausedGtRuleset(t *testing.T) {
+	gh := alignedGH(t)
+	live := compliantRulesetJSON(t)
+	live = strings.Replace(live, `"rules":[`,
+		`"rules":[{"type":"code_quality","parameters":{"severity":"errors"}},`, 1)
+	live = strings.Replace(live, `"enforcement":"active"`, `"enforcement":"disabled"`, 1)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = live
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	if !strings.Contains(string(body), "code_quality") {
+		t.Errorf("re-activating a paused gt ruleset dropped its absorbed rule:\n%s", body)
+	}
+}
