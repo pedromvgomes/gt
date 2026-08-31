@@ -333,11 +333,12 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
 			add("ruleset.rules."+t, "present", "absent")
 		}
 	}
-	for t := range gotTypes {
-		if !wantTypes[t] {
-			add("ruleset.rules."+t, "absent", "present")
-		}
-	}
+	// Deliberately no converse loop. A live rule gt does not model is one it
+	// absorbed from a ruleset it superseded, and apply carries those through
+	// every time — including out of gt's own ruleset on a later run. Reporting
+	// one as surplus would describe a removal that never happens and leave
+	// `settings diff` permanently dirty for any repository that had a rule to
+	// absorb. See unmanagedRules.
 
 	for _, r := range live.Rules {
 		switch r.Type {
