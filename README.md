@@ -54,6 +54,8 @@ Flags:
 - `--no-ssh` keeps HTTPS URLs without prompting.
 - `--no-setup-auth` skips post-clone direnv setup.
 - `--user <name>` chooses the GitHub user for post-clone direnv setup.
+- `--profile <name>` selects an environment profile explicitly, overriding `match` patterns.
+- `--no-profile` exports no profile even if a `match` pattern applies.
 - `--setup <a,b,c>` runs only the named setup templates (overrides match-based selection).
 - `--no-setup` skips post-clone setup templates entirely.
 - `--yes` skips the setup confirmation prompt.
@@ -92,9 +94,15 @@ Delete local branches that do not have an active worktree, while preserving `mai
 
 Create or manage the top-level scratch worktree. `gt scratch` creates it when missing or prints its current commit when it already exists, `--reset` checks it out from a new source branch, and `--delete` removes it plus the local `scratch` branch.
 
-### `gt set-auth [--user <name>]`
+### `gt set-auth [--user <name>] [--profile <name>] [--no-profile] [--yes]`
 
-Write an idempotent `.envrc` at the gt-managed root that exports `GH_TOKEN` from `gh auth token --user <name>`, runs `direnv allow`, and prints shell-hook instructions if direnv is not active in new shells.
+Write an idempotent `.envrc` at the gt-managed root that exports `GH_TOKEN` from `gh auth token --user <name>`, runs `direnv allow`, and prints shell-hook instructions if direnv is not active in new shells. When [environment profiles](#environment-profiles) are configured, the matching profile's variables are appended to the same file.
+
+Without `--user`, gt reuses the user already recorded in a managed `.envrc` and only falls back to `gh api user` plus a prompt when there is none. That makes a bare `gt set-auth` the way to retrofit an already-cloned repository: it keeps the identity the repo was cloned with, needs no flags, and does not prompt. `--yes` overwrites a differing `.envrc` without confirming, so a sweep over existing clones can run unattended:
+
+```sh
+for repo in ~/work/repositories-*/*/; do (cd "$repo" && gt set-auth --yes); done
+```
 
 ### `gt setup [--setup a,b,c] [--no-setup] [--yes] [--from <name>] [--show] [--dry-run]`
 
@@ -135,6 +143,12 @@ ssh:
   host_aliases:
     github.com: github-personal
 
+profiles:
+  - name: personal
+    match: ["github.com:pedromvgomes/*"]
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude-personal
+
 setup:
   templates:
     - name: agentic-toolkit
@@ -148,6 +162,30 @@ setup:
       match: ["*"]
       script: ${HOME}/.config/gt/setup-scripts/golang-extras.sh
 ```
+
+### Environment profiles
+
+A coding-agent CLI picks its credential store from an environment variable — `CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex — and tooling that shells out to one inherits whatever the launching shell happened to export. The same command in the same worktree then authenticates as a different account depending on which terminal started it, with no warning. `gt set-auth` already pins `GH_TOKEN` to a named `gh` user for exactly this reason; profiles extend that to any other variable.
+
+```yaml
+profiles:
+  - name: work
+    match:
+      - "github.com:acme/*"
+      - "github.com/acme/*"
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude
+      CODEX_HOME: ~/.codex-work
+  - name: personal
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude-personal
+```
+
+- gt attaches no meaning to the names or the values. It exports what you list and nothing else, so a CLI it has never heard of needs no gt release — just another entry under `env`.
+- `match` uses the same glob syntax as setup templates, checked against the repo's `origin` URL. Selection is **first match wins** over the list, so order matters. A profile with no `match` never applies on its own; select it with `--profile <name>`.
+- **Nothing is opt-out by default.** With no configured profile matching, the `.envrc` is byte-identical to what gt wrote before profiles existed, so running `gt set-auth` across existing clones rewrites none of them. Use `match: ["*"]` for a catch-all, and `--no-profile` (or the reserved name `none`) to escape it for one repo.
+- Values get a leading `~/` or `$HOME` expanded and are then emitted literally into `export VAR="..."`, with `"`, `$`, `` ` `` and `\` escaped. gt does not check that a path exists — both agent CLIs create their profile directory on first use, so a fresh clone legitimately precedes it.
+- There is no prompt. `gt clone` and `gt set-auth` run from clone hooks and CI, where a question is a hang; the config already holds the answer.
 
 Per-repo overrides live at `<gt-managed-root>/.gt.yaml` and override global config per key. A per-repo config **may** declare its own `setup.templates`; they are merged on top of the global templates by name — a per-repo template that reuses a global template's `name` replaces it in place, and new names are appended after the global ones. This file lives at your gt-managed root (not committed inside the repo), so its templates are as trusted as the ones in your global config.
 
@@ -374,6 +412,7 @@ agentic/
 ```
 
 - **`agentic/skills/use-gt/`** is a Claude Code skill (with the standard `name` + `description` frontmatter). Point your agent at it once and it will reach for `gt clone` / `gt wt add` / `gt wt rm` instead of raw `git`, install `gt` on demand via the helper script, and ask the right pre-clone questions (which `gh` user to authenticate as, SSH vs HTTPS, etc.).
+- **[Environment profiles](#environment-profiles)** close the other half of the loop: they pin which credential store the agent CLIs themselves read (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so a run launched from the checkout bills the account you chose rather than the one the launching shell happened to export.
 - **`agentic/rules/worktree-per-session.md`** captures the non-negotiables: always use the bare-repo layout, sessions start at the gt-managed root, and every session must `gt wt add` its own worktree before doing any work.
 
 Why bother:
