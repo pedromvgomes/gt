@@ -422,7 +422,7 @@ func firstLine(s string) string {
 // Everything is in one object on purpose: the required check, the pull-request
 // requirement, the merge methods, and the history guarantees. A repository
 // either matches it or does not.
-func desiredRuleset(spec repospec.Spec, mq mergeQueueState) map[string]any {
+func desiredRuleset(spec repospec.Spec, mq mergeQueueState, strict bool) map[string]any {
 	bp := spec.Settings.BranchProtection
 	m := spec.Settings.Merge
 
@@ -462,8 +462,10 @@ func desiredRuleset(spec repospec.Spec, mq mergeQueueState) map[string]any {
 			"type": "required_status_checks",
 			"parameters": map[string]any{
 				// Never true alongside the merge_queue rule below: the two are
-				// branches of one decision, not two switches.
-				"strict_required_status_checks_policy": mq == mergeQueueStrict,
+				// branches of one decision, not two switches. Resolved by
+				// strictPolicy, because a deferral must render what is live
+				// rather than the decision gt has not made yet.
+				"strict_required_status_checks_policy": strict,
 				"do_not_enforce_on_create":             false,
 				"required_status_checks": []map[string]any{
 					{"context": repospec.GateCheckJob},
@@ -600,6 +602,29 @@ func findRuleset(ctx context.Context, gh GH, owner, name, branch string) (*liveR
 	return mine, others, nil
 }
 
+// strictPolicy resolves the strict-required-status-checks flag.
+//
+// Under a settled mechanism it follows the decision. Under a deferral it
+// follows whatever is live, for the same reason the merge_queue rule is carried
+// through verbatim: gt has not settled which mechanism applies, so it must tear
+// down neither branch of the choice. Rendering the settled value here would
+// remove the freshness guarantee a repository already has — and silently, since
+// rulesetChanges deliberately does not report this field during a deferral.
+func strictPolicy(mq mergeQueueState, live *liveRuleset) bool {
+	if mq != mergeQueueDeferred {
+		return mq == mergeQueueStrict
+	}
+	if live == nil {
+		return false
+	}
+	for _, r := range live.Rules {
+		if r.Type == "required_status_checks" {
+			return r.Parameters.StrictRequiredStatusChecksPolicy
+		}
+	}
+	return false
+}
+
 // gtRuleTypes is every rule type gt owns — the ones it renders when it wants
 // them AND the ones it deliberately omits.
 //
@@ -680,7 +705,7 @@ func unmanagedRulesOf(other liveRuleset, spec repospec.Spec, mq mergeQueueState)
 // rulesetChanges compares gt's ruleset against what the spec asks for.
 func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision) []SettingChange {
 	bp := spec.Settings.BranchProtection
-	want := desiredRuleset(spec, mq.State)
+	want := desiredRuleset(spec, mq.State, strictPolicy(mq.State, live))
 
 	if live == nil {
 		return []SettingChange{{
@@ -970,7 +995,7 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		return err
 	}
 
-	payload := desiredRuleset(spec, mq.State)
+	payload := desiredRuleset(spec, mq.State, strictPolicy(mq.State, mine))
 
 	// Carry through everything gt does not model, from gt's own ruleset and
 	// from the ones it is about to absorb: rule types gt has no opinion about,

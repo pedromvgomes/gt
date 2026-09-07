@@ -1142,3 +1142,56 @@ func TestSettingsLeavesAutoMergeAloneWithoutAQueue(t *testing.T) {
 		}
 	}
 }
+
+// strictRulesetWithoutQueue is the shape a repository on the strict fallback
+// actually has live: gt's gate required, up-to-date enforced, no queue rule.
+func strictRulesetWithoutQueue(t *testing.T) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(compliantRulesetWithoutQueue(t)), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, r := range parsed["rules"].([]any) {
+		rule := r.(map[string]any)
+		if rule["type"] == "required_status_checks" {
+			rule["parameters"].(map[string]any)["strict_required_status_checks_policy"] = true
+		}
+	}
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
+// A deferral must not tear down the strict policy, for the same reason it must
+// not tear down a live queue: gt has not settled which mechanism applies, so it
+// changes neither. This is the mechanism the affected repositories actually
+// have — a user-owned repo on the fallback, or one migrating toward a queue —
+// and diff deliberately stays silent about the field during a deferral, so
+// applying the unsettled value would remove the guarantee without saying so.
+func TestSettingsCarriesStrictPolicyThroughADeferral(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = strictRulesetWithoutQueue(t)
+	// The orchestrator momentarily unreadable — a rate limit, a blip.
+	gh.errors["contents/.github/workflows/ci-orchestration.yml"] = errors.New(
+		"gh: API rate limit exceeded (HTTP 403)")
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	for _, c := range changes {
+		if strings.Contains(c.Field, "strict_required_status_checks_policy") {
+			t.Errorf("diff proposed changing strict during a deferral: %s", c)
+		}
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	body := lastRulesetBody(gh)
+	if !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
+		t.Errorf("the live strict policy was torn down by a deferral:\n%s", body)
+	}
+}
