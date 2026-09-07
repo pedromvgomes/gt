@@ -14,7 +14,19 @@ type Config struct {
 	WorktreeTypes []string   `yaml:"worktree_types"`
 	SSH           SSH        `yaml:"ssh"`
 	Setup         Setup      `yaml:"setup"`
+	Profiles      []Profile  `yaml:"profiles"`
 	AutoUpdate    AutoUpdate `yaml:"auto_update"`
+}
+
+// Profile is a named set of environment variables that gt exports from a
+// repository's .envrc. gt attaches no meaning to the names or the values: it
+// exists so that tooling shelling out from a checkout resolves the same
+// credentials no matter which shell launched it. A profile with no match
+// patterns never applies on its own and is reachable only via --profile.
+type Profile struct {
+	Name  string            `yaml:"name"`
+	Match []string          `yaml:"match,omitempty"`
+	Env   map[string]string `yaml:"env"`
 }
 
 type AutoUpdate struct {
@@ -113,6 +125,7 @@ func Merge(base, override Config) Config {
 		base.SSH.UserAliases = map[string]map[string]string{}
 	}
 	base.Setup.Templates = MergeTemplates(base.Setup.Templates, override.Setup.Templates)
+	base.Profiles = MergeProfiles(base.Profiles, override.Profiles)
 	return base
 }
 
@@ -141,6 +154,28 @@ func MergeTemplates(base, override []Template) []Template {
 	return out
 }
 
+// MergeProfiles layers override profiles on top of base with the same
+// precedence MergeTemplates uses: a same-named profile replaces the base entry
+// in place, keeping its position, and new names are appended in order. Position
+// matters because profile selection is first-match-wins.
+func MergeProfiles(base, override []Profile) []Profile {
+	out := make([]Profile, len(base))
+	copy(out, base)
+	index := make(map[string]int, len(out))
+	for i, p := range out {
+		index[p.Name] = i
+	}
+	for _, p := range override {
+		if i, ok := index[p.Name]; ok {
+			out[i] = p
+			continue
+		}
+		index[p.Name] = len(out)
+		out = append(out, p)
+	}
+	return out
+}
+
 func Validate(cfg Config) error {
 	if len(cfg.WorktreeTypes) == 0 {
 		return fmt.Errorf("worktree_types cannot be empty")
@@ -165,6 +200,10 @@ func Validate(cfg Config) error {
 	}
 
 	if err := ValidateSSH(cfg.SSH); err != nil {
+		return err
+	}
+
+	if err := ValidateProfiles(cfg.Profiles); err != nil {
 		return err
 	}
 
@@ -197,6 +236,79 @@ func ValidateSSH(s SSH) error {
 		}
 	}
 	return nil
+}
+
+// ProfileNone is the reserved profile name meaning "export nothing". It lets a
+// repository opt out of a catch-all match pattern without deleting it, and it
+// is what --no-profile resolves to.
+const ProfileNone = "none"
+
+func ValidateProfiles(profiles []Profile) error {
+	names := map[string]bool{}
+	for i, p := range profiles {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("profiles[%d]: name is required", i)
+		}
+		if !validProfileName(name) {
+			return fmt.Errorf("profiles[%d]: invalid profile name %q; use letters, digits, '.', '_' or '-'", i, p.Name)
+		}
+		if name == ProfileNone {
+			return fmt.Errorf("profiles[%d]: %q is reserved; it always exports nothing", i, ProfileNone)
+		}
+		if names[name] {
+			return fmt.Errorf("profiles[%d]: duplicate profile name %q", i, name)
+		}
+		names[name] = true
+		if len(p.Env) == 0 {
+			return fmt.Errorf("profiles[%q]: env must declare at least one variable", name)
+		}
+		for j, pat := range p.Match {
+			if strings.TrimSpace(pat) == "" {
+				return fmt.Errorf("profiles[%q].match[%d]: pattern cannot be empty", name, j)
+			}
+		}
+		for key, value := range p.Env {
+			if !validEnvName(key) {
+				return fmt.Errorf("profiles[%q].env: invalid variable name %q", name, key)
+			}
+			if strings.ContainsAny(value, "\n\r") {
+				return fmt.Errorf("profiles[%q].env[%q]: value cannot contain a newline", name, key)
+			}
+		}
+	}
+	return nil
+}
+
+// validProfileName keeps names to what can appear unambiguously in a --profile
+// flag, an error message and the generated .envrc comment.
+func validProfileName(name string) bool {
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validEnvName is POSIX's name rule. The value is escaped before it reaches the
+// .envrc, but the name is emitted bare on the left of the '=' and cannot be.
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func ValidateSetup(s Setup) error {
@@ -317,6 +429,38 @@ ssh:
 auto_update:
   enabled: true
   check_interval: 24h
+
+# Optional environment profiles. 'gt set-auth' (and the post-clone auth step)
+# appends the selected profile's variables to the repository's .envrc, next to
+# GH_TOKEN, so anything launched from the checkout resolves the same
+# credentials regardless of which shell started it. The motivating case is
+# coding-agent CLIs, which pick their credential store from an env var
+# (CLAUDE_CONFIG_DIR, CODEX_HOME), but gt attaches no meaning to the names or
+# values - it exports what you list here and nothing else.
+#
+# Selection is first-match-wins over this list, using the same glob syntax as
+# setup template 'match' patterns, against the repo's origin URL. A profile
+# with no 'match' never applies on its own; select it with
+# 'gt set-auth --profile <name>' or 'gt clone --profile <name>'. When nothing
+# matches, the .envrc is exactly what gt wrote before profiles existed. The
+# name 'none' is reserved and exports nothing, so a catch-all pattern can be
+# escaped per repo with '--no-profile'.
+#
+# Values get a leading '~/' or '$HOME' expanded and are then emitted literally;
+# no other shell expansion happens. gt does not check that a path exists.
+#
+# profiles:
+#   - name: work
+#     match:
+#       - "github.com:acme/*"
+#       - "github.com/acme/*"
+#     env:
+#       CLAUDE_CONFIG_DIR: ~/.claude
+#       CODEX_HOME: ~/.codex
+#   - name: personal
+#     env:
+#       CLAUDE_CONFIG_DIR: ~/.claude-personal
+profiles: []
 
 # Optional setup templates run after 'gt clone' (and on demand via
 # 'gt setup'). Templates are evaluated in this order; every template
