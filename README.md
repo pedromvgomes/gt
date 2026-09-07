@@ -108,7 +108,7 @@ Keep repositories structurally consistent: the CI/CD pipeline, Dependabot config
 - `gt repo check` — render the spec and diff it against the working tree. Non-zero exit on drift, so it works as a PR check. `--json` for machine-readable output.
 - `gt repo sync` — write the files that have drifted. `--dry-run`, `--yes`, and `--skip-workflows`. A repository with no `.gt-repo.yaml` is not governed; sync says so and exits 0, which makes it safe to run from a post-clone setup template.
 - `gt repo config [--json]` — print the resolved spec with defaults applied. gt's own workflows consume this rather than re-parsing the YAML.
-- `gt repo settings diff|apply` — branch protection, merge methods, and the single required status check, through your existing `gh` credentials.
+- `gt repo settings diff|apply` — branch protection, merge methods, the merge queue, and the single required status check, through your existing `gh` credentials.
 - `gt repo fleet check|sync --owner <name>` — sweep every repository in an owner; `sync` opens a PR per repo. This is the escalation path for files `GITHUB_TOKEN` cannot write.
 - `gt repo fleet merge-pending --owner <name>` — list (or `--merge`) the Dependabot PRs the in-repo auto-merge cannot touch. Applies the same eligibility gates as the in-repo job.
 
@@ -271,6 +271,44 @@ commit status, and later runs compare against it:
 This replaces "require branches to be up to date": nobody has to rebase, so a
 merge never turns other open PRs red. It fails safe in every direction — a
 missing, unreadable or mismatched attestation means run the pipeline.
+
+### The merge queue
+
+An attestation reports what *was* tested. It cannot answer a question about a
+tree that does not exist yet — and two pull requests that touch disjoint files,
+are each green, and are semantically incompatible will both merge, breaking the
+default branch with nothing out of compliance anywhere.
+
+So every governed repository gets a merge queue. It builds each entry against
+the base tip plus the entries ahead of it, and rejects the second of that pair
+instead of merging it. `ci-orchestration.yml` triggers on `merge_group`, and
+`gt repo settings apply` adds the `merge_queue` ruleset rule.
+
+It is cheap for the same reason as everything else here: a merge group whose
+tree matches an already-validated one skips every stage, so the common case
+costs seconds. Where a repository cannot have a queue — availability depends on
+visibility and plan — gt says so and skips it rather than half-configuring the
+repository.
+
+Two ordering rules keep it from failing silently:
+
+- **Files before settings.** A queued pull request reports its required check
+  from the `merge_group` event and no other. `settings apply` reads
+  `ci-orchestration.yml` on the default branch and withholds the rule until the
+  trigger is actually there, saying why — otherwise every pull request would
+  enter a queue that can never build it, with the `governance` stage that would
+  have warned you sitting inside the check that no longer reports.
+- **Not both mechanisms.** `require_up_to_date` gives the same guarantee by
+  making authors rebase by hand, so enabling it alongside a queue pays for one
+  guarantee twice. gt rejects a spec that asks for both, and it is the fallback
+  where a queue is unavailable:
+
+  ```yaml
+  settings:
+    branch_protection:
+      merge_queue: false
+      require_up_to_date: true
+  ```
 
 ### What CI cannot do, and why
 

@@ -88,6 +88,19 @@ func newRepoSettingsApplyCommand(opts *options) *cobra.Command {
 				return err
 			}
 			opts.ui.Success("Applied settings to %s/%s", govOpts.RepoOwner, govOpts.RepoName)
+
+			// Said again, after the success line. Everything else in the list
+			// was just applied; this one thing was not, and a run that ends on
+			// "Applied settings" is exactly where a half-finished rollout stops
+			// being noticed.
+			for _, c := range changes {
+				if c.Field != repogov.MergeQueueChangeField {
+					continue
+				}
+				opts.ui.Warn("No merge queue on %s: %s", spec.Settings.BranchProtection.Branch, c.Got)
+				opts.ui.Info("Everything else was applied. To finish: %s",
+					strings.TrimPrefix(c.Want, "deferred — "))
+			}
 			return nil
 		},
 	}

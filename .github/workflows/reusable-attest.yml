@@ -60,6 +60,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
           REQUIRE: ${{ inputs.require }}
         run: |
           set -euo pipefail
@@ -89,6 +90,36 @@ jobs:
             prs=$(gh api "repos/${REPO}/commits/${lookup}/pulls" \
               --jq '.[].head.sha' 2>/dev/null || true)
             for head in $prs; do
+              more=$(gh api "repos/${REPO}/commits/${head}/statuses" --paginate \
+                --jq '.[] | select(.context == "gt/validated-tree" and .state == "success")
+                          | "\(.description) \(.target_url // "")"' || true)
+              attested="${attested}"$'\n'"${more}"
+            done
+          fi
+
+          # A merge_group commit is built by the queue on a throwaway
+          # gh-readonly-queue ref. It sits on no pull request's branch, so the
+          # /pulls lookup above finds nothing and the skip would be lost —
+          # every queued pull request would re-run a pipeline that had just
+          # passed on a byte-identical tree. That cost is what decides whether
+          # a queue is affordable, so the pull requests are recovered from the
+          # ref instead, which names them: refs/heads/gh-readonly-queue/main/
+          # pr-70-<base sha>, and pr-71-pr-70-<base sha> for a batch.
+          #
+          # Recovering the pull request only says where to LOOK. What decides
+          # the skip is still the tree comparison below, so a batched group —
+          # whose tree matches no single pull request's — finds no match and
+          # runs in full, exactly as it must.
+          if [[ "$EVENT" == "merge_group" ]]; then
+            # `|| true` on both: grep exits 1 on no match, and under
+            # `set -e` a bare `[[ ... ]] && continue` whose test is false is
+            # itself a failing command at the end of the loop body.
+            queued=$(grep -oE 'pr-[0-9]+' <<< "${QUEUE_REF:-}" | cut -d- -f2 | sort -u || true)
+            for pr in $queued; do
+              head=$(gh api "repos/${REPO}/pulls/${pr}" --jq '.head.sha' 2>/dev/null || true)
+              if [[ -z "$head" ]]; then
+                continue
+              fi
               more=$(gh api "repos/${REPO}/commits/${head}/statuses" --paginate \
                 --jq '.[] | select(.context == "gt/validated-tree" and .state == "success")
                           | "\(.description) \(.target_url // "")"' || true)

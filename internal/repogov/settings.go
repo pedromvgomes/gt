@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/repospec"
+	"gopkg.in/yaml.v3"
 )
 
 // GH runs the GitHub CLI. It is an interface so settings logic is testable
@@ -96,12 +97,290 @@ var githubSquashMessage = map[string]string{
 // repository-wide toggle a ruleset could silently contradict.
 const RulesetName = "gt"
 
+// Merge-queue tuning. Shared policy, so it lives here rather than in every
+// .gt-repo.yaml — changing an opinion for the whole fleet stays a one-line edit
+// in gt, and a repository cannot quietly pin an old value.
+//
+// The numbers are chosen against the fleet's actual CI: ci-gate takes about two
+// minutes, and an already-validated tree skips every stage and costs seconds.
+// That cheapness is what makes a queue affordable at all, and it is why the
+// batch sizes are small — batching exists to amortise expensive CI, and
+// amortising two minutes is not worth the ambiguity of a failed group nobody
+// can attribute to one pull request.
+const (
+	// queueGroupingStrategy: every entry in a group must be green, not just
+	// its head. HEADGREEN merges entries whose own checks never passed on the
+	// grounds that the tip is green, which is precisely the "it built once,
+	// somewhere" reasoning this whole change exists to remove.
+	queueGroupingStrategy = "ALLGREEN"
+	// queueMinEntriesToMerge: merge as soon as one entry is ready. Waiting to
+	// accumulate a batch would add latency to every single-PR day, which is
+	// most of them.
+	queueMinEntriesToMerge = 1
+	// queueMinEntriesToMergeWaitMinutes caps how long the queue may hold a
+	// ready entry hoping for company. With a minimum of one it is nearly
+	// always moot; it bounds the pathological case rather than shaping the
+	// common one.
+	queueMinEntriesToMergeWaitMinutes = 5
+	// queueMaxEntriesToBuild / queueMaxEntriesToMerge bound a group. Five is
+	// well above what any repository in the fleet merges concurrently, so it
+	// is a ceiling rather than a throttle.
+	queueMaxEntriesToBuild = 5
+	queueMaxEntriesToMerge = 5
+	// queueCheckResponseTimeoutMinutes is how long the queue waits for ci-gate
+	// to report before ejecting the entry. Generous against a two-minute
+	// pipeline on purpose: the cost of being too short is a pull request
+	// thrown out of the queue on a slow-runner day, and the cost of being too
+	// long is a few extra minutes on the rare run where a check never reports
+	// at all.
+	queueCheckResponseTimeoutMinutes = 15
+)
+
+// githubMergeMethod translates gt's merge vocabulary into the queue API's.
+// Kept as a map for the same reason as the squash-title one: GitHub renaming a
+// constant must not become a breaking change to every .gt-repo.yaml.
+var githubMergeMethod = map[string]string{
+	repospec.MergeMethodSquash: "SQUASH",
+	repospec.MergeMethodRebase: "REBASE",
+	repospec.MergeMethodMerge:  "MERGE",
+}
+
+// queueParameters is the merge_queue rule body.
+//
+// merge_method is derived from the repository's allowed methods rather than
+// configured separately, because the queue merges on the repository's behalf:
+// a queue landing something a human could not is the same policy hole twice.
+// Validation has already refused the one combination that cannot work — a
+// merge-commit queue under required_linear_history.
+func queueParameters(spec repospec.Spec) map[string]any {
+	return map[string]any{
+		"merge_method":                      githubMergeMethod[spec.Settings.QueueMergeMethod()],
+		"grouping_strategy":                 queueGroupingStrategy,
+		"min_entries_to_merge":              queueMinEntriesToMerge,
+		"min_entries_to_merge_wait_minutes": queueMinEntriesToMergeWaitMinutes,
+		"max_entries_to_build":              queueMaxEntriesToBuild,
+		"max_entries_to_merge":              queueMaxEntriesToMerge,
+		"check_response_timeout_minutes":    queueCheckResponseTimeoutMinutes,
+	}
+}
+
+// MergeQueueChangeField is the Field a deferral is reported under. Named so
+// the command layer can pick it out of a change list and say the queue was not
+// applied *after* the apply, where an aborted rollout is easiest to miss.
+const MergeQueueChangeField = "merge queue"
+
+// mergeQueueState is what gt has decided to do about the merge_queue rule on
+// this repository, once the spec, the platform and the rendered workflow have
+// all been consulted.
+type mergeQueueState int
+
+const (
+	// mergeQueueOff: the repository declined a queue, or has no CI for one to
+	// gate. gt owns the rule and removes it if it is there.
+	mergeQueueOff mergeQueueState = iota
+	// mergeQueueOn: gt renders and enforces the rule.
+	mergeQueueOn
+	// mergeQueueDeferred: the repository wants a queue and gt will not apply
+	// one yet. The rule becomes unmanaged, so whatever is live is carried
+	// through untouched — a transient API failure or a half-finished rollout
+	// must never dismantle a queue that is already working.
+	mergeQueueDeferred
+)
+
+// mergeQueueDecision is a state plus, when it is not simply on or off, the
+// sentence explaining it. The reason is reported as a setting change so a
+// deferred repository reads as incomplete rather than as compliant.
+type mergeQueueDecision struct {
+	State  mergeQueueState
+	Reason string
+	// Remedy is what the person reading the diff should do about it.
+	Remedy string
+}
+
+// resolveMergeQueue decides whether gt applies the merge_queue rule here.
+//
+// The order matters. Cheapest and most certain first — the spec, then whether
+// there is a pipeline to gate — before anything that costs an API call, and the
+// workflow check last because it is the one whose answer changes as a rollout
+// proceeds.
+func resolveMergeQueue(
+	ctx context.Context, gh GH, spec repospec.Spec, owner, name string,
+) mergeQueueDecision {
+	bp := spec.Settings.BranchProtection
+	if !bp.MergeQueue {
+		return mergeQueueDecision{State: mergeQueueOff}
+	}
+
+	// A queue with nothing to build is a queue in name only: it would serialise
+	// merges and verify nothing, while still costing every pull request a trip
+	// through it. The required-status-checks rule is omitted for the same
+	// reason a few lines up.
+	if !spec.Pipeline.CI.Enabled {
+		return mergeQueueDecision{
+			State:  mergeQueueOff,
+			Reason: "pipeline.ci is disabled, so a queue would have no check to build against",
+		}
+	}
+
+	if reason := mergeQueueUnsupported(ctx, gh, owner, name, bp.Branch); reason != "" {
+		return mergeQueueDecision{
+			State:  mergeQueueDeferred,
+			Reason: reason,
+			Remedy: "set branch_protection.merge_queue: false and " +
+				"require_up_to_date: true in " + repospec.FileName,
+		}
+	}
+
+	// The ordering gate, and the reason this function exists rather than a bare
+	// boolean. A merge queue only works if the required check reports on
+	// merge_group events. Add the rule to a repository whose orchestrator has
+	// not been synced and every pull request enters the queue and sits there
+	// forever, because ci-gate never runs — and the governance stage that would
+	// have said "you are out of date" is itself inside the check that no longer
+	// reports. Files first, settings second, enforced here rather than left to
+	// whoever is doing the rollout.
+	triggered, err := mergeGroupTriggered(ctx, gh, owner, name, bp.Branch)
+	if err != nil {
+		return mergeQueueDecision{
+			State:  mergeQueueDeferred,
+			Reason: "could not read " + orchestrationWorkflow + " on " + bp.Branch + ": " + firstLine(err.Error()),
+			Remedy: "render it with 'gt repo sync' if the repository has none, " +
+				"then re-run once it is readable on " + bp.Branch,
+		}
+	}
+	if !triggered {
+		return mergeQueueDecision{
+			State: mergeQueueDeferred,
+			Reason: orchestrationWorkflow + " on " + bp.Branch +
+				" has no merge_group trigger, so ci-gate would never report for a queued pull request",
+			Remedy: "run 'gt repo sync', then land the workflow change on " + bp.Branch +
+				" before applying settings again",
+		}
+	}
+
+	return mergeQueueDecision{State: mergeQueueOn}
+}
+
+// orchestrationWorkflow is the file whose merge_group trigger the queue depends
+// on. Named here rather than rebuilt from parts, because the settings layer
+// checks for it on GitHub while the render layer writes it locally, and the two
+// must be talking about the same path.
+const orchestrationWorkflow = WorkflowDir + "/ci-orchestration.yml"
+
+// mergeQueueUnsupported returns why GitHub will not give this repository a
+// merge queue, or "" when it will.
+//
+// Availability varies by visibility and plan, so it is established rather than
+// assumed. The probe is a GraphQL read of the branch's queue: it resolves —
+// returning null for a branch with no queue configured — where queues exist at
+// all, and errors where they do not.
+//
+// Any error is read as unsupported, which makes a transient failure look like
+// an unavailable feature. That is deliberate and it is safe, because the state
+// this returns is *deferred*, not off: the live rule is carried through
+// untouched, so the worst a blip can do is postpone a decision.
+func mergeQueueUnsupported(ctx context.Context, gh GH, owner, name, branch string) string {
+	const query = `query($owner:String!,$name:String!,$branch:String!){` +
+		`repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id}}}`
+	out, err := gh.Run(ctx, "api", "graphql",
+		"-f", "query="+query,
+		"-F", "owner="+owner,
+		"-F", "name="+name,
+		"-F", "branch="+branch,
+	)
+	if err != nil {
+		return "GitHub does not offer a merge queue on this repository " +
+			"(merge queues need a public repository, or a private one on a plan that includes them): " +
+			firstLine(err.Error())
+	}
+	// A resolved query still has to have found the repository. `data.repository:
+	// null` is what a token without access returns, and reading that as "queues
+	// are supported" would send the apply on to fail at the ruleset write with a
+	// far less useful message.
+	var resp struct {
+		Data struct {
+			Repository *struct {
+				MergeQueue json.RawMessage `json:"mergeQueue"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "could not read the merge-queue probe response: " + err.Error()
+	}
+	if resp.Data.Repository == nil {
+		return "the merge-queue probe could not see " + owner + "/" + name +
+			"; the token may not have access to it"
+	}
+	return ""
+}
+
+// mergeGroupTriggered reports whether the orchestration workflow *on the
+// default branch* triggers on merge_group.
+//
+// The default branch, not the working tree, is the thing that matters: a
+// locally synced file that has not landed yet is not what GitHub will run for a
+// queued pull request. Checking the wrong one would let a repository pass this
+// gate and still hang.
+func mergeGroupTriggered(ctx context.Context, gh GH, owner, name, branch string) (bool, error) {
+	raw, err := gh.Run(ctx, "api",
+		fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s", owner, name, orchestrationWorkflow, branch),
+		"--header", "Accept: application/vnd.github.raw",
+	)
+	if err != nil {
+		return false, err
+	}
+	return hasMergeGroupTrigger(raw)
+}
+
+// hasMergeGroupTrigger parses a workflow and reports whether merge_group is
+// among its triggers.
+//
+// `on:` accepts three shapes — a mapping of events, a sequence of event names,
+// and a bare scalar — and all three are handled rather than assumed, because
+// getting this wrong in the permissive direction is what lets a pull request
+// into a queue that can never build it.
+func hasMergeGroupTrigger(workflow []byte) (bool, error) {
+	const event = "merge_group"
+	var parsed struct {
+		// yaml.v3 reads `on` as the string key, not a YAML 1.1 boolean, so the
+		// tag is enough.
+		On yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(workflow, &parsed); err != nil {
+		return false, fmt.Errorf("parse %s: %w", orchestrationWorkflow, err)
+	}
+	switch parsed.On.Kind {
+	case yaml.MappingNode:
+		for i := 0; i < len(parsed.On.Content); i += 2 {
+			if parsed.On.Content[i].Value == event {
+				return true, nil
+			}
+		}
+	case yaml.SequenceNode:
+		for _, n := range parsed.On.Content {
+			if n.Value == event {
+				return true, nil
+			}
+		}
+	case yaml.ScalarNode:
+		return parsed.On.Value == event, nil
+	}
+	return false, nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 // desiredRuleset is the ruleset gt renders from the spec.
 //
 // Everything is in one object on purpose: the required check, the pull-request
 // requirement, the merge methods, and the history guarantees. A repository
 // either matches it or does not.
-func desiredRuleset(spec repospec.Spec) map[string]any {
+func desiredRuleset(spec repospec.Spec, mq mergeQueueState) map[string]any {
 	bp := spec.Settings.BranchProtection
 	m := spec.Settings.Merge
 
@@ -146,6 +425,13 @@ func desiredRuleset(spec repospec.Spec) map[string]any {
 					{"context": repospec.GateCheckJob},
 				},
 			},
+		})
+	}
+
+	if mq == mergeQueueOn {
+		rules = append(rules, map[string]any{
+			"type":       "merge_queue",
+			"parameters": queueParameters(spec),
 		})
 	}
 
@@ -197,6 +483,13 @@ type liveRule struct {
 		RequiredStatusChecks             []struct {
 			Context string `json:"context"`
 		} `json:"required_status_checks"`
+		MergeMethod                  string `json:"merge_method"`
+		GroupingStrategy             string `json:"grouping_strategy"`
+		MinEntriesToMerge            int    `json:"min_entries_to_merge"`
+		MaxEntriesToBuild            int    `json:"max_entries_to_build"`
+		MaxEntriesToMerge            int    `json:"max_entries_to_merge"`
+		MinEntriesToMergeWaitMinutes int    `json:"min_entries_to_merge_wait_minutes"`
+		CheckResponseTimeoutMinutes  int    `json:"check_response_timeout_minutes"`
 	} `json:"parameters"`
 	raw json.RawMessage
 }
@@ -284,8 +577,21 @@ var gtRuleTypes = map[string]bool{
 
 // managedRuleTypes is the set gt owns, and so the set it will remove when it
 // does not want it.
-func managedRuleTypes(repospec.Spec) map[string]bool {
-	return gtRuleTypes
+//
+// merge_queue is the one member that is not fixed: gt owns it once it has
+// settled the question — enforced or declined — and deliberately disowns it
+// while the answer is "wanted, not yet possible". Disowned means carried
+// through verbatim, so a deferral cannot tear down a queue that is already
+// working; see mergeQueueDeferred.
+func managedRuleTypes(_ repospec.Spec, mq mergeQueueState) map[string]bool {
+	managed := make(map[string]bool, len(gtRuleTypes)+1)
+	for t := range gtRuleTypes {
+		managed[t] = true
+	}
+	if mq == mergeQueueOff {
+		managed["merge_queue"] = true
+	}
+	return managed
 }
 
 // unmanagedRules returns the rules in `other` that gt does not render itself —
@@ -295,13 +601,13 @@ func managedRuleTypes(repospec.Spec) map[string]bool {
 // apply copies them verbatim into gt's own ruleset and then removes the old
 // one, so the branch ends up governed by exactly one object with the same
 // protections it had before.
-func unmanagedRules(other liveRuleset, spec repospec.Spec) []liveRule {
+func unmanagedRules(other liveRuleset, spec repospec.Spec, mq mergeQueueState) []liveRule {
 	// See findRuleset: a disabled ruleset contributes nothing, because its rules
 	// are not in force and copying them would enable them.
 	if other.Enforcement != "active" {
 		return nil
 	}
-	return unmanagedRulesOf(other, spec)
+	return unmanagedRulesOf(other, spec, mq)
 }
 
 // unmanagedRulesOf is unmanagedRules without the enforcement gate, for gt's
@@ -312,8 +618,8 @@ func unmanagedRules(other liveRuleset, spec repospec.Spec) []liveRule {
 // which apply always re-activates: skipping it there meant a ruleset paused in
 // the UI came back active minus every rule gt had previously absorbed into it,
 // on a run whose only reported change was the enforcement flag.
-func unmanagedRulesOf(other liveRuleset, spec repospec.Spec) []liveRule {
-	managed := managedRuleTypes(spec)
+func unmanagedRulesOf(other liveRuleset, spec repospec.Spec, mq mergeQueueState) []liveRule {
+	managed := managedRuleTypes(spec, mq)
 	var out []liveRule
 	for _, r := range other.Rules {
 		if !managed[r.Type] {
@@ -325,9 +631,9 @@ func unmanagedRulesOf(other liveRuleset, spec repospec.Spec) []liveRule {
 }
 
 // rulesetChanges compares gt's ruleset against what the spec asks for.
-func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
+func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision) []SettingChange {
 	bp := spec.Settings.BranchProtection
-	want := desiredRuleset(spec)
+	want := desiredRuleset(spec, mq.State)
 
 	if live == nil {
 		return []SettingChange{{
@@ -355,6 +661,15 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
 	gotTypes := map[string]bool{}
 	for _, r := range live.Rules {
 		gotTypes[r.Type] = true
+	}
+	// A deferred queue is not drift in either direction: gt is not adding the
+	// rule and not removing one. Reporting it here would either nag for a rule
+	// gt is deliberately withholding, or announce the removal of a live queue
+	// that apply will in fact carry through. The deferral itself is reported
+	// once, below.
+	if mq.State == mergeQueueDeferred {
+		delete(wantTypes, "merge_queue")
+		delete(gotTypes, "merge_queue")
 	}
 	for t := range wantTypes {
 		if !gotTypes[t] {
@@ -398,6 +713,30 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
 					strings.Join(wm, ", "),
 					strings.Join(r.Parameters.AllowedMergeMethods, ", "))
 			}
+		case "merge_queue":
+			// Only when gt owns the rule. Under a deferral the live parameters
+			// are somebody else's, or gt's own from before the deferral, and
+			// either way apply is about to write them back unchanged.
+			if mq.State != mergeQueueOn {
+				break
+			}
+			p := queueParameters(spec)
+			add("ruleset.merge_queue.merge_method",
+				fmt.Sprint(p["merge_method"]), r.Parameters.MergeMethod)
+			add("ruleset.merge_queue.grouping_strategy",
+				fmt.Sprint(p["grouping_strategy"]), r.Parameters.GroupingStrategy)
+			add("ruleset.merge_queue.min_entries_to_merge",
+				fmt.Sprint(p["min_entries_to_merge"]), fmt.Sprint(r.Parameters.MinEntriesToMerge))
+			add("ruleset.merge_queue.min_entries_to_merge_wait_minutes",
+				fmt.Sprint(p["min_entries_to_merge_wait_minutes"]),
+				fmt.Sprint(r.Parameters.MinEntriesToMergeWaitMinutes))
+			add("ruleset.merge_queue.max_entries_to_build",
+				fmt.Sprint(p["max_entries_to_build"]), fmt.Sprint(r.Parameters.MaxEntriesToBuild))
+			add("ruleset.merge_queue.max_entries_to_merge",
+				fmt.Sprint(p["max_entries_to_merge"]), fmt.Sprint(r.Parameters.MaxEntriesToMerge))
+			add("ruleset.merge_queue.check_response_timeout_minutes",
+				fmt.Sprint(p["check_response_timeout_minutes"]),
+				fmt.Sprint(r.Parameters.CheckResponseTimeoutMinutes))
 		case "required_status_checks":
 			var got []string
 			for _, c := range r.Parameters.RequiredStatusChecks {
@@ -475,7 +814,20 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 	if err != nil {
 		return nil, err
 	}
-	changes = append(changes, rulesetChanges(spec, mine)...)
+	mq := resolveMergeQueue(ctx, gh, spec, owner, name)
+	changes = append(changes, rulesetChanges(spec, mine, mq)...)
+
+	// A repository that wants a queue and cannot have one yet reads as
+	// incomplete rather than compliant, every time, until somebody resolves it.
+	// Silence here is the failure this whole rule exists to prevent, one level
+	// up: a repository that looks governed and is not.
+	if mq.State == mergeQueueDeferred {
+		changes = append(changes, SettingChange{
+			Field: MergeQueueChangeField,
+			Want:  "deferred — " + mq.Remedy,
+			Got:   mq.Reason,
+		})
+	}
 
 	// Reported, never removed. A second ruleset on the same branch is somebody's
 	// deliberate decision, and gt deleting it would be exactly the kind of
@@ -487,7 +839,7 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		if o.Enforcement != "active" {
 			want = "removed (disabled; its rules are not carried over)"
 		}
-		if extra := unmanagedRules(o, spec); len(extra) > 0 {
+		if extra := unmanagedRules(o, spec, mq.State); len(extra) > 0 {
 			var types []string
 			for _, r := range extra {
 				types = append(types, r.Type)
@@ -537,7 +889,12 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		return err
 	}
 
-	payload := desiredRuleset(spec)
+	// Resolved here rather than taken from the caller's earlier diff: the
+	// question this answers — is the merge_group trigger on the default branch
+	// yet? — is exactly the one whose answer changes while a rollout is in
+	// flight, and the write is what must not race it.
+	mq := resolveMergeQueue(ctx, gh, spec, owner, name)
+	payload := desiredRuleset(spec, mq.State)
 
 	// Carry through everything gt does not model, from gt's own ruleset and
 	// from the ones it is about to absorb: rule types gt has no opinion about,
@@ -553,9 +910,9 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 	for i, src := range sources {
 		// sources[0] is gt's own ruleset when it exists; its absorbed rules
 		// survive even while it is paused. See unmanagedRulesOf.
-		rules := unmanagedRules(src, spec)
+		rules := unmanagedRules(src, spec, mq.State)
 		if i == 0 && mine != nil {
-			rules = unmanagedRulesOf(src, spec)
+			rules = unmanagedRulesOf(src, spec, mq.State)
 		}
 		for _, r := range rules {
 			if _, seen := carried[r.Type]; !seen {

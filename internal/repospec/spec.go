@@ -153,10 +153,6 @@ type Pipeline struct {
 type PipelineCI struct {
 	Enabled bool     `yaml:"enabled" json:"enabled"`
 	Stages  []string `yaml:"stages" json:"stages"`
-	// MergeQueue adds the merge_group trigger. Without it a queued PR waits
-	// forever for a required check that never reports. Merge queues need an
-	// organization-owned repository, so this is off by default.
-	MergeQueue bool `yaml:"merge_queue" json:"merge_queue"`
 	// StagePermissions grants a named stage scopes beyond the CI baseline.
 	// See StagePermissions for why this exists and what it cannot do.
 	StagePermissions StagePermissions `yaml:"stage_permissions,omitempty" json:"stage_permissions,omitempty"`
@@ -251,7 +247,24 @@ type MergeSettings struct {
 type BranchProtection struct {
 	Branch            string `yaml:"branch" json:"branch"`
 	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
-	RequireUpToDate   bool   `yaml:"require_up_to_date" json:"require_up_to_date"`
+	// MergeQueue puts a merge queue in front of the branch, so every pull
+	// request is built against the branch it will actually land on rather than
+	// the one it was opened from. Default true.
+	//
+	// This is the one guarantee neither the required check nor the
+	// validated-tree attestation can give. Both answer "did this pass?" about a
+	// tree that was already fixed; neither answers "does it still pass against
+	// what landed while it sat open?". Two pull requests touching disjoint
+	// files — one adding a caller, the other bumping the API it calls — are
+	// each green, conflict-free to git, and break the default branch the moment
+	// the second lands. Nothing before this stopped that.
+	//
+	// Off only where a queue cannot be had at all, which is a fact about the
+	// repository's plan and visibility rather than a preference. Set
+	// require_up_to_date there instead; see that field for why the two are
+	// alternatives rather than layers.
+	MergeQueue      bool `yaml:"merge_queue" json:"merge_queue"`
+	RequireUpToDate bool `yaml:"require_up_to_date" json:"require_up_to_date"`
 	// DismissStaleReviews drops approvals when new commits land. Default true:
 	// an approval is of a diff, and a review of code that has since changed is
 	// a rubber stamp wearing a reviewer's name.
@@ -282,6 +295,37 @@ const (
 	SquashMessagePRBody  = "pr_body"
 	SquashMessageCommits = "commit_messages"
 )
+
+// Merge methods, in gt's own vocabulary. The GitHub spellings these map to are
+// an implementation detail of the settings layer.
+const (
+	MergeMethodSquash = "squash"
+	MergeMethodRebase = "rebase"
+	MergeMethodMerge  = "merge"
+)
+
+// QueueMergeMethod is how a merge queue must land what it builds.
+//
+// It is derived rather than configured: the queue merges on the repository's
+// behalf, so offering it a method the ruleset's allowed_merge_methods forbids
+// would let a queue land what a human could not. Squash is preferred because
+// it is what the fleet merges with, and because it collapses a group into one
+// commit per pull request — rebase would replay every WIP commit onto the
+// default branch.
+//
+// Returns "" only for a spec with no merge method at all, which validation
+// rejects before this is ever asked.
+func (s Settings) QueueMergeMethod() string {
+	switch {
+	case s.Merge.Squash:
+		return MergeMethodSquash
+	case s.Merge.Rebase:
+		return MergeMethodRebase
+	case s.Merge.MergeCommit:
+		return MergeMethodMerge
+	}
+	return ""
+}
 
 // Conventional-commit enforcement scopes.
 const (
@@ -384,10 +428,16 @@ func Default() Spec {
 			},
 			BranchProtection: BranchProtection{
 				Branch: "main",
-				// False by design. Requiring branches to be up to date turns
-				// every other open PR red on each merge; the validated-tree
-				// attestation proves the same property after the fact, without
-				// anyone having to rebase.
+				// Every governed repository gets a queue. It is the only
+				// mechanism that builds a pull request against the branch it
+				// will actually land on.
+				MergeQueue: true,
+				// False by design, and it stays false where the queue is on:
+				// the two are alternatives, not layers. Requiring branches to
+				// be up to date blocks the merge button until the author
+				// rebases, which serialises concurrent pull requests into
+				// manual update-and-wait cycles — the same serialisation the
+				// queue performs by itself, at the cost of the churn.
 				RequireUpToDate: false,
 				// The two opinions worth holding: an approval is of a diff, and
 				// an unresolved thread is an unanswered question.
@@ -741,6 +791,46 @@ func validateSettings(s Settings) error {
 	default:
 		return fmt.Errorf("settings.merge.squash_message %q is not one of %s, %s, %s",
 			m.SquashMessage, SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits)
+	}
+	return validateMergeQueue(s)
+}
+
+// validateMergeQueue rejects the two ways a queue and the rest of the ruleset
+// can be asked to contradict each other.
+//
+// Both are refused at parse time rather than reported at apply time, because
+// each renders a repository that looks configured and does not work: the first
+// pays for one guarantee twice, and the second builds merges the same ruleset
+// then rejects.
+func validateMergeQueue(s Settings) error {
+	bp := s.BranchProtection
+	if !bp.MergeQueue {
+		return nil
+	}
+
+	// GitHub advises against running both, and the advice is not stylistic. A
+	// strict check blocks the merge button until the author rebases; the queue
+	// then rebases and rebuilds the same pull request itself. Turning both on
+	// pays the rebase churn and the queue latency for a single guarantee.
+	if bp.RequireUpToDate {
+		return fmt.Errorf(
+			"settings.branch_protection: require_up_to_date and merge_queue are " +
+				"alternatives, not layers — both build a pull request against the branch " +
+				"it will land on, so enabling both costs a manual rebase cycle and a queue " +
+				"wait for one guarantee. Keep the queue, or turn it off and keep " +
+				"require_up_to_date where a queue cannot be had")
+	}
+
+	// The ruleset always requires linear history. A queue configured to produce
+	// merge commits would build a group, then have the ruleset refuse the very
+	// commit it produced — a queue that can never merge anything.
+	if method := s.QueueMergeMethod(); method == MergeMethodMerge {
+		return fmt.Errorf(
+			"settings.merge: a merge queue needs a merge method that produces linear "+
+				"history, but only %s is enabled — the queue would build merge commits "+
+				"the ruleset's required_linear_history then rejects. Enable squash or "+
+				"rebase, or set branch_protection.merge_queue: false",
+			MergeMethodMerge)
 	}
 	return nil
 }

@@ -108,6 +108,18 @@ func compliantRulesetJSON(t *testing.T, checks ...string) string {
 				"strict_required_status_checks_policy": false,
 				"required_status_checks":               required,
 			}},
+			// The queue every governed repository gets. Its parameters are
+			// spelled out rather than read back from gt so that changing one of
+			// gt's numbers has to be a deliberate edit here too.
+			{"type": "merge_queue", "parameters": map[string]any{
+				"merge_method":                      "SQUASH",
+				"grouping_strategy":                 "ALLGREEN",
+				"min_entries_to_merge":              1,
+				"min_entries_to_merge_wait_minutes": 5,
+				"max_entries_to_build":              5,
+				"max_entries_to_merge":              5,
+				"check_response_timeout_minutes":    15,
+			}},
 		},
 	})
 	if err != nil {
@@ -116,15 +128,33 @@ func compliantRulesetJSON(t *testing.T, checks ...string) string {
 	return string(body)
 }
 
+// queueReadyWorkflow is an orchestrator whose triggers include merge_group,
+// which is what gt requires on the default branch before it will apply the
+// merge_queue rule.
+const queueReadyWorkflow = `name: gt CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+`
+
+// queueSupportedGraphQL is what the availability probe gets back from a
+// repository where merge queues exist but none is configured yet.
+const queueSupportedGraphQL = `{"data":{"repository":{"mergeQueue":null}}}`
+
 // alignedGH is a fake whose repository, ruleset list and ruleset detail all
 // match repospec.Default(), and whose branch has no classic protection.
 func alignedGH(t *testing.T) *fakeGH {
 	t.Helper()
 	return &fakeGH{
 		responses: map[string]string{
-			"repos/pedromvgomes/demo":              compliantRepoJSON,
-			"repos/pedromvgomes/demo/rulesets":     rulesetListJSON(repogov.RulesetName),
-			"repos/pedromvgomes/demo/rulesets/100": compliantRulesetJSON(t),
+			"repos/pedromvgomes/demo":                         compliantRepoJSON,
+			"repos/pedromvgomes/demo/rulesets":                rulesetListJSON(repogov.RulesetName),
+			"repos/pedromvgomes/demo/rulesets/100":            compliantRulesetJSON(t),
+			"api graphql":                                     queueSupportedGraphQL,
+			"contents/.github/workflows/ci-orchestration.yml": queueReadyWorkflow,
 		},
 		errors: map[string]error{
 			"branches/main/protection": errors.New("gh: Branch not protected (HTTP 404)"),
@@ -796,4 +826,177 @@ func TestSettingsApplyKeepsAbsorbedRulesFromAPausedGtRuleset(t *testing.T) {
 	if !strings.Contains(string(body), "code_quality") {
 		t.Errorf("re-activating a paused gt ruleset dropped its absorbed rule:\n%s", body)
 	}
+}
+
+// lastRulesetBody is the payload apply PUT or POSTed, which is where the rules
+// gt actually wrote can be read back.
+func lastRulesetBody(gh *fakeGH) string {
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	return string(body)
+}
+
+// The ordering gate. A merge queue only works if the required check reports on
+// merge_group events, and ci-gate only does that once the synced orchestrator
+// has landed on the default branch. Applying the rule first puts every pull
+// request into a queue that can never build it — and the governance stage that
+// would have said "you are out of date" is itself inside the check that no
+// longer reports, so the failure hides itself.
+func TestSettingsWithholdsTheQueueUntilTheWorkflowCanReport(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["contents/.github/workflows/ci-orchestration.yml"] = `name: gt CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+`
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+
+	var reported repogov.SettingChange
+	for _, c := range changes {
+		if c.Field == repogov.MergeQueueChangeField {
+			reported = c
+		}
+		if strings.Contains(c.Field, "rules.merge_queue") {
+			t.Errorf("diff asked for the queue rule anyway: %s", c)
+		}
+	}
+	if reported.Got == "" {
+		t.Fatalf("the withheld queue was not reported at all: %v", changes)
+	}
+	// Saying why is half the requirement: a silent skip is the same
+	// self-concealing failure in a different place.
+	if !strings.Contains(reported.Got, "merge_group") {
+		t.Errorf("reason = %q, want it to name the missing trigger", reported.Got)
+	}
+	if !strings.Contains(reported.Want, "gt repo sync") {
+		t.Errorf("remedy = %q, want it to say how to fix it", reported.Want)
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	if strings.Contains(lastRulesetBody(gh), "merge_queue") {
+		t.Errorf("apply wrote the queue rule despite the workflow being unable to report:\n%s",
+			lastRulesetBody(gh))
+	}
+}
+
+// Withholding must never become dismantling. A repository whose queue already
+// works, hitting a transient probe failure or a momentarily unreadable
+// workflow, must come out of apply with the queue it had — otherwise a blip
+// removes the protection instead of postponing it.
+func TestSettingsCarriesAnExistingQueueThroughADeferral(t *testing.T) {
+	gh := alignedGH(t)
+	gh.errors["api graphql"] = errors.New("gh: something went wrong (HTTP 502)")
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	for _, c := range changes {
+		if strings.Contains(c.Field, "rules.merge_queue") {
+			t.Errorf("diff proposed touching the live queue during a deferral: %s", c)
+		}
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	body := lastRulesetBody(gh)
+	if !strings.Contains(body, "merge_queue") || !strings.Contains(body, "ALLGREEN") {
+		t.Errorf("the live queue was dropped rather than carried through:\n%s", body)
+	}
+}
+
+// An unavailable queue is a fact about the repository's plan and visibility,
+// not a reason to fail. It is skipped with a diagnostic that names the way out.
+func TestSettingsSkipsTheQueueWhereGitHubHasNone(t *testing.T) {
+	gh := alignedGH(t)
+	gh.errors["api graphql"] = errors.New(
+		"gh: Field 'mergeQueue' doesn't exist on type 'Repository'")
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v, want the repository skipped rather than the run failed", err)
+	}
+	var reported repogov.SettingChange
+	for _, c := range changes {
+		if c.Field == repogov.MergeQueueChangeField {
+			reported = c
+		}
+	}
+	if !strings.Contains(reported.Got, "does not offer a merge queue") {
+		t.Errorf("reason = %q, want it to say the platform has none", reported.Got)
+	}
+	if !strings.Contains(reported.Want, "require_up_to_date") {
+		t.Errorf("remedy = %q, want it to name the fallback mechanism", reported.Want)
+	}
+}
+
+// Declining a queue is a decision gt owns, so it removes one that is there.
+// This is what separates "off" from "wanted but not yet possible".
+func TestSettingsRemovesTheQueueWhenTheSpecDeclinesIt(t *testing.T) {
+	gh := alignedGH(t)
+	spec := repospec.Default()
+	spec.Settings.BranchProtection.MergeQueue = false
+	spec.Settings.BranchProtection.RequireUpToDate = true
+
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	if strings.Contains(lastRulesetBody(gh), "merge_queue") {
+		t.Errorf("a declined queue was carried through instead of removed:\n%s", lastRulesetBody(gh))
+	}
+}
+
+// The queue's merge method has to satisfy required_linear_history, which the
+// ruleset asks for unconditionally. Squash is what the fleet merges with.
+func TestSettingsApplyQueuesWithALinearMergeMethod(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	body := lastRulesetBody(gh)
+	if !strings.Contains(body, `"merge_method":"SQUASH"`) {
+		t.Errorf("queue merge method is not linear-safe:\n%s", body)
+	}
+	if !strings.Contains(body, "required_linear_history") {
+		t.Errorf("linear history is no longer required, so the pairing means nothing:\n%s", body)
+	}
+}
+
+// compliantRulesetWithoutQueue is the aligned ruleset as it looked before this
+// change: everything else in place, no merge_queue rule.
+func compliantRulesetWithoutQueue(t *testing.T) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(compliantRulesetJSON(t)), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var kept []any
+	for _, r := range parsed["rules"].([]any) {
+		if r.(map[string]any)["type"] != "merge_queue" {
+			kept = append(kept, r)
+		}
+	}
+	parsed["rules"] = kept
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
 }
