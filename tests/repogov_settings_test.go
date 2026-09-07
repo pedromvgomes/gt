@@ -150,6 +150,9 @@ func queueCapableRepoJSON(t *testing.T) string {
 	}
 	parsed["private"] = false
 	parsed["owner"] = map[string]any{"type": "Organization"}
+	// Entering a queue goes through auto-merge, so a repository that is aligned
+	// with a queue has it on.
+	parsed["allow_auto_merge"] = true
 	body, err := json.Marshal(parsed)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -196,6 +199,7 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	  "squash_merge_commit_title": "PR_TITLE",
 	  "squash_merge_commit_message": "BLANK",
 	  "private": false,
+	  "allow_auto_merge": true,
 	  "owner": {"type": "Organization"}
 	}`
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
@@ -1074,5 +1078,67 @@ func TestTheRenderedOrchestratorSatisfiesTheOrderingGate(t *testing.T) {
 	if !strings.Contains(lastRulesetBody(gh), "merge_queue") {
 		t.Errorf("the settings layer did not recognise gt's own rendered trigger:\n%s",
 			lastRulesetBody(gh))
+	}
+}
+
+// A queue nobody can enter is not a queue. Entering one goes through the same
+// machinery as auto-merge — including gt's own Dependabot auto-merge job, which
+// merges with `gh pr merge` — so the toggle is part of the mechanism rather
+// than an unrelated repository preference.
+func TestSettingsEnablesAutoMergeForTheQueue(t *testing.T) {
+	gh := alignedGH(t)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(queueCapableRepoJSON(t)), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	parsed["allow_auto_merge"] = false
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	gh.responses["repos/pedromvgomes/demo"] = string(body)
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var found bool
+	for _, c := range changes {
+		if c.Field == "allow_auto_merge" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a queue was applied to a repository nothing could enter it through; changes = %v", changes)
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var patched bool
+	for _, c := range gh.calls {
+		if strings.Contains(c, "PATCH") && strings.Contains(c, "allow_auto_merge=true") {
+			patched = true
+		}
+	}
+	if !patched {
+		t.Errorf("apply did not enable auto-merge; calls = %v", gh.calls)
+	}
+}
+
+// ...and never turned off elsewhere. gt has not managed this toggle before, so
+// a repository on the strict fallback may be using it for something gt knows
+// nothing about.
+func TestSettingsLeavesAutoMergeAloneWithoutAQueue(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo"] = compliantRepoJSON // user-owned: strict fallback
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	for _, c := range gh.calls {
+		if strings.Contains(c, "allow_auto_merge") {
+			t.Errorf("apply touched auto-merge on a repository with no queue: %s", c)
+		}
 	}
 }

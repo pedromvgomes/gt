@@ -69,6 +69,7 @@ type repoSettings struct {
 	AllowMergeCommit         bool   `json:"allow_merge_commit"`
 	AllowRebaseMerge         bool   `json:"allow_rebase_merge"`
 	DeleteBranchOnMerge      bool   `json:"delete_branch_on_merge"`
+	AllowAutoMerge           bool   `json:"allow_auto_merge"`
 	SquashMergeCommitTitle   string `json:"squash_merge_commit_title"`
 	SquashMergeCommitMessage string `json:"squash_merge_commit_message"`
 }
@@ -866,6 +867,21 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		return nil, err
 	}
 	mq := resolveMergeQueue(ctx, gh, spec, owner, name)
+
+	// Required by the queue, and only by the queue. Entering a queue goes
+	// through the same machinery as auto-merge — `gh pr merge` on a queued
+	// branch answers "Auto merge is not allowed for this repository" without
+	// it — so a repository could hold a perfectly configured queue that nobody,
+	// including gt's own Dependabot auto-merge job, can put anything into.
+	//
+	// Asserted only where the queue is the mechanism. gt has never managed this
+	// toggle and turning it off elsewhere would silently break whatever a
+	// repository is already using it for.
+	if mq.State == mergeQueueOn && !live.AllowAutoMerge {
+		changes = append(changes, SettingChange{
+			Field: "allow_auto_merge", Want: "true (the merge queue is entered through it)", Got: "false",
+		})
+	}
 	changes = append(changes, rulesetChanges(spec, mine, mq)...)
 
 	// Reported whenever gt chose rather than being told, so nobody has to infer
@@ -925,6 +941,10 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		return fmt.Errorf("could not determine the GitHub repository from origin")
 	}
 
+	// Resolved before the repository PATCH, not after, because the mechanism
+	// decides whether that PATCH must also enable auto-merge.
+	mq := resolveMergeQueue(ctx, gh, spec, owner, name)
+
 	m := spec.Settings.Merge
 	repoArgs := []string{
 		"api", "--method", "PATCH", fmt.Sprintf("repos/%s/%s", owner, name),
@@ -934,6 +954,11 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		"-F", fmt.Sprintf("delete_branch_on_merge=%t", m.DeleteBranchOnMerge),
 		"-f", fmt.Sprintf("squash_merge_commit_title=%s", githubSquashTitle[m.SquashTitle]),
 		"-f", fmt.Sprintf("squash_merge_commit_message=%s", githubSquashMessage[m.SquashMessage]),
+	}
+	// See SettingsDiff: the queue is entered through auto-merge, and only ever
+	// turned on, never off.
+	if mq.State == mergeQueueOn {
+		repoArgs = append(repoArgs, "-F", "allow_auto_merge=true")
 	}
 	if _, err := gh.Run(ctx, repoArgs...); err != nil {
 		return err
@@ -945,11 +970,6 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		return err
 	}
 
-	// Resolved here rather than taken from the caller's earlier diff: the
-	// question this answers — is the merge_group trigger on the default branch
-	// yet? — is exactly the one whose answer changes while a rollout is in
-	// flight, and the write is what must not race it.
-	mq := resolveMergeQueue(ctx, gh, spec, owner, name)
 	payload := desiredRuleset(spec, mq.State)
 
 	// Carry through everything gt does not model, from gt's own ruleset and

@@ -394,6 +394,16 @@ Everything else — grouping strategy, batch sizes, the check-response timeout �
 is shared policy in `internal/repogov/settings.go`, chosen against a fleet where
 `ci-gate` takes about two minutes.
 
+#### `allow_auto_merge`
+
+Entering a queue goes through the same machinery as auto-merge: without the
+toggle, `gh pr merge` on a queued branch answers *"Auto merge is not allowed for
+this repository"*. A repository can therefore hold a perfectly configured queue
+that nobody — including gt's own Dependabot auto-merge job, which merges with
+`gh pr merge` — can put anything into. `settings apply` turns it on where the
+queue is the mechanism, and never off anywhere else, since gt has not managed
+this toggle before and a repository may be using it for something of its own.
+
 #### Ordering: files before settings, enforced
 
 A queue only works if the required check reports on `merge_group` events. Apply

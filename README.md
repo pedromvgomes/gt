@@ -301,6 +301,10 @@ the rebase churn *and* the queue latency for a single guarantee is structurally
 impossible. `base_freshness` replaces the released `require_up_to_date`; a spec
 still carrying that key parses to `auto`.
 
+Where the queue is the mechanism, `settings apply` also enables
+`allow_auto_merge` — a queue is entered through it, and without it nobody can
+put anything into one.
+
 The queue is cheap for the same reason as everything else here: a merge group
 whose tree matches an already-validated one skips every stage, so the common
 case costs seconds.
