@@ -30,6 +30,25 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 		wantSub string
 	}{
 		{
+			name: "an unknown freshness mode",
+			mutate: func(s *repospec.Spec) {
+				s.Settings.BranchProtection.BaseFreshness = "sometimes"
+			},
+			wantSub: "is not one of",
+		},
+		{
+			// required_linear_history is unconditional, so a queue that can
+			// only produce merge commits would build groups the same ruleset
+			// then refuses.
+			name: "a queue that can only merge-commit",
+			mutate: func(s *repospec.Spec) {
+				s.Settings.Merge.Squash = false
+				s.Settings.Merge.Rebase = false
+				s.Settings.Merge.MergeCommit = true
+			},
+			wantSub: "linear history",
+		},
+		{
 			name: "unknown ecosystem",
 			mutate: func(s *repospec.Spec) {
 				s.Dependabot = []repospec.DependabotEntry{{Ecosystem: "maven", Directory: "/"}}
@@ -194,5 +213,59 @@ func TestConventionalCommitScopeHelpers(t *testing.T) {
 				t.Errorf("EnforcesCommits() = %v, want %v", got, tc.wantCommits)
 			}
 		})
+	}
+}
+
+// The queue merges on the repository's behalf, so it must use a method the
+// repository actually allows — otherwise the queue lands what a human could
+// not, which is the same policy hole reintroduced one level down.
+func TestQueueMergeMethodFollowsTheAllowedMethods(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*repospec.Spec)
+		want   string
+	}{
+		{"squash-only, the fleet default", func(*repospec.Spec) {}, repospec.MergeMethodSquash},
+		{"rebase where squash is off", func(s *repospec.Spec) {
+			s.Settings.Merge.Squash = false
+			s.Settings.Merge.Rebase = true
+		}, repospec.MergeMethodRebase},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := repospec.Default()
+			tc.mutate(&spec)
+			if err := repospec.Validate(spec); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if got := spec.Settings.QueueMergeMethod(); got != tc.want {
+				t.Errorf("QueueMergeMethod() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Every governed repository gets a queue without asking for one. That is the
+// whole change: the guarantee is policy, not a per-repository opt-in.
+func TestBaseFreshnessDefaultsToAuto(t *testing.T) {
+	spec, err := repospec.Parse([]byte("dependabot: []\n"), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
+		t.Errorf("base_freshness = %q, want %q — the guarantee is not opt-in",
+			got, repospec.FreshnessAuto)
+	}
+}
+
+// The released spelling. A repository still carrying it must keep parsing, and
+// must land on auto — which on any repository where it could have been set
+// computes to strict, the behaviour it already had.
+func TestTheRetiredRequireUpToDateKeyStillParses(t *testing.T) {
+	spec, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    require_up_to_date: true\n"), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
+		t.Errorf("base_freshness = %q, want %q", got, repospec.FreshnessAuto)
 	}
 }

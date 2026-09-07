@@ -227,7 +227,7 @@ func TestPruningKeepsOnlyTheOverriddenNestedField(t *testing.T) {
 	}
 	// Its siblings under branch_protection, and the whole sibling merge block,
 	// are still defaults and must not be dragged in.
-	for _, key := range []string{"dismiss_stale_reviews:", "require_up_to_date:", "merge:", "squash:"} {
+	for _, key := range []string{"dismiss_stale_reviews:", "base_freshness:", "merge:", "squash:"} {
 		if strings.Contains(raw, key) {
 			t.Errorf("default %q was kept because a sibling was overridden:\n%s", key, raw)
 		}

@@ -75,8 +75,9 @@ on:
   # Push to the default branch, so an already-validated tree can skip.
   push:
     branches: [main]
-  # merge_group only when pipeline.ci.merge_queue is set; without it a queued
-  # PR waits forever for a required check that never reports.
+  # Always. A queued PR reports its required check from this event and no
+  # other, and the rule that queues it is only applied once this is live.
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -233,9 +234,10 @@ state:       success
 
 Anything downstream then compares that against the tree actually in hand.
 
-### This replaces `require_up_to_date` and the freshness job
+### This replaces the freshness job
 
-Both existed only to make "tested against current base" *true by construction*.
+Both it and `require_up_to_date` existed only to make "tested against current
+base" *true by construction*.
 The attestation makes it *checkable*, which is better on every axis:
 
 - No one has to rebase, so a merge never turns other open PRs red.
@@ -243,12 +245,14 @@ The attestation makes it *checkable*, which is better on every axis:
   the trees differ and CI runs. If it somehow does not, nothing was missed.
 - It fails safe: no attestation, or a mismatch, means run CI. The check can only
   ever be conservative.
-- It works everywhere, including `pedromvgomes/*`, where merge queues cannot be
-  enabled at all.
 
-`settings apply` therefore leaves `require_up_to_date` false, and there is no
-CI/CD coupling rule to validate — the guarantee is carried by evidence rather
-than configuration.
+There is no CI/CD coupling rule to validate — this half of the guarantee is
+carried by evidence rather than configuration.
+
+What the attestation cannot do is answer a question about a tree that does not
+exist yet. It reports what *was* tested; it says nothing about what happens when
+two open pull requests land minutes apart. That is the merge queue's job, and it
+is why the two are complementary rather than alternatives.
 
 ### Skipping CI on the default branch
 
@@ -291,19 +295,147 @@ finally lands on the default branch is ever compared against.
 
 ### Merge queues
 
-A merge queue remains available and is now orthogonal rather than an
-alternative. It tests each PR against the base tip plus those ahead of it, so
-it prevents semantic conflicts between PRs that pass individually — something
-attestation does not do, since it only reports what *was* tested.
+Every governed repository gets one. It is the default, not an opt-in, because
+it closes the one hole nothing else in this design reaches.
 
-It cannot be a default: merge queue requires an organization-owned
-repository — public, or private on Enterprise Cloud — so `pedromvgomes/gt`,
-`agentic-toolkit` and `boma` can never have one.
+The hole is concrete. In `agentic-toolkit`, PR #69 merged at 10:15:24 and #70
+eighteen seconds later. They touched disjoint files, so git saw no conflict, and
+each was green against its own base — but #70 bumped a dependency whose API #69
+had just started calling, and nothing ever built #70 against the `main` that #69
+created. `main` stopped compiling and stayed broken until someone branched off
+it. The repository was fully compliant throughout: eight managed files matching,
+settings matching, the `governance` stage green on both pull requests. This was
+never drift. gt's declared policy simply had no rule requiring a pull request to
+be built against the `main` it would actually land on. #63/#64 merged 22 seconds
+apart, #60/#61 the same; any owner working this way hits it.
 
-With `pipeline.ci.merge_queue: true`, `ci-orchestration.yml` also triggers on
-`merge_group`; without that trigger a queued PR waits forever for a required
-check that never reports. Attestation continues to work unchanged, recording
-whatever tree the queue actually validated.
+A queue builds each entry against the base tip plus the entries ahead of it, so
+the second of those two pull requests is rejected rather than merged.
+
+#### One guarantee, two mechanisms, never both
+
+GitHub offers a second mechanism for the same guarantee — `strict_required_status_checks_policy`,
+"require branches to be up to date before merging". It is a substitute, not a
+complement: it blocks the merge button until the author rebases, so concurrent
+pull requests serialise into manual update-and-wait cycles, which is exactly the
+serialisation the queue performs automatically. Applying both pays the rebase
+churn *and* the queue latency for one guarantee, and GitHub advises against it.
+
+So the spec names the **guarantee**, not the mechanism:
+
+```yaml
+settings:
+  branch_protection:
+    base_freshness: auto   # auto | queue | strict | none
+```
+
+`auto` is the default and gt picks. Because the mechanism is one choice rather
+than two booleans, applying both is structurally impossible rather than a
+validation rule. This replaces the released `require_up_to_date`; a spec still
+carrying that key parses to `auto`, which on every repository where it could
+have been set computes to `strict` — the behaviour it already had.
+
+#### Which repositories can actually have a queue
+
+Measured, not read off the documentation. The same rule payload, four
+repositories:
+
+| ownership | visibility | plan | result |
+|---|---|---|---|
+| user | public | — | `422 Invalid rule 'merge_queue': ` (no detail) |
+| organization | public | free | accepted |
+| organization | private | free | `403 Upgrade ... or make this repository public` |
+| organization | private | team | `422 Invalid rule 'merge_queue': ` |
+
+**Organization-owned and public.** `pedromvgomes/gt`, `agentic-toolkit` and
+`boma` are user-owned, so they can never hold one — which is why the fallback
+had to be automatic rather than a per-repository edit. They get `strict`: a
+worse experience, someone has to rebase, and the identical guarantee.
+
+There is no feature probe for this. GraphQL's `repository.mergeQueue(branch:)`
+resolves on a user-owned repository and returns `null`, which is also what it
+returns for an organization repository with no queue configured yet — so
+believing it makes gt apply a rule GitHub refuses, on exactly the repositories
+that most need the guarantee. gt reads ownership and visibility instead.
+
+Private repositories are said to work under Enterprise Cloud, which there was
+nothing to test against, so they take the fallback; `base_freshness: queue` asks
+for one by name.
+
+#### The queue is cheap because `attest` keys on trees
+
+A queue that re-ran the full pipeline on every entry would roughly double CI
+cost. It does not, because `attest` compares *trees*: a merge group whose tree
+matches an already-validated one skips every stage, and one that differs — the
+base moved, or the group batches several pull requests — runs in full. That is
+exactly the behaviour a queue needs, and the common case costs seconds.
+
+One adjustment was needed. A `merge_group` commit is built on a throwaway
+`gh-readonly-queue` ref and sits on no pull request's branch, so
+`commits/<sha>/pulls` finds nothing and the skip would have been lost.
+`reusable-attest.yml` recovers the pull request numbers from the ref, which
+names them, and looks up the attestations recorded on their heads. The tree
+comparison still decides; recovering the pull request only says where to look.
+
+#### Merge method
+
+The ruleset requires linear history unconditionally, so the queue's merge method
+has to produce it or the two rules fight — the queue would build groups the
+ruleset then refuses. The method is therefore derived from the repository's own
+`allowed_merge_methods` rather than configured separately, preferring squash,
+and a spec whose only method is `merge` is rejected at parse time.
+
+GitHub enforces the same coupling from its side: the rule with no parameters
+defaults to `MERGE` and is refused with *"Invalid merge method 'merge'. Not
+allowed for this repository."* on a squash-only repository. Deriving it is the
+only way the two can never disagree.
+
+Everything else — grouping strategy, batch sizes, the check-response timeout —
+is shared policy in `internal/repogov/settings.go`, chosen against a fleet where
+`ci-gate` takes about two minutes.
+
+#### `allow_auto_merge`
+
+Entering a queue goes through the same machinery as auto-merge: without the
+toggle, `gh pr merge` on a queued branch answers *"Auto merge is not allowed for
+this repository"*. A repository can therefore hold a perfectly configured queue
+that nobody — including gt's own Dependabot auto-merge job, which merges with
+`gh pr merge` — can put anything into. `settings apply` turns it on where the
+queue is the mechanism, and never off anywhere else, since gt has not managed
+this toggle before and a repository may be using it for something of its own.
+
+#### Ordering: files before settings, enforced
+
+A queue only works if the required check reports on `merge_group` events. Apply
+the `merge_queue` rule to a repository whose orchestrator has not been synced and
+every pull request enters the queue and sits there forever, because `ci-gate`
+never runs — and the `governance` stage that would have said "you are out of
+date" is itself inside the check that no longer reports. The failure is silent
+and self-concealing.
+
+Propagation of the workflow half needs no new machinery. `governance` blocks
+every pull request, and the reusable workflows are pinned to a moving `@v1`, so
+the moment gt ships a new template every governed repository's next pull request
+reports drift and stays red until someone runs `gt repo sync` and commits the
+result.
+
+The settings half is where the gate lives. `gt repo settings apply` reads
+`ci-orchestration.yml` **on the default branch** — not the working tree, which
+may hold a sync nobody has landed — and withholds the `merge_queue` rule until
+its `merge_group` trigger is there, reporting why. Withholding is never
+dismantling: a withheld rule is treated as unmanaged, so a live queue is carried
+through untouched and a transient API failure postpones a decision instead of
+removing a protection.
+
+Availability is established, not assumed — from ownership and visibility, since
+no probe answers the question. A repository that cannot hold a queue takes the
+`strict` fallback automatically rather than failing the sync or being left with
+neither mechanism.
+
+Worth naming as an operational cost: a fleet-wide template change turns every
+repository's next pull request red at once. That is the gate working as
+designed, but it is felt all at once, so a release carrying one is worth
+announcing or staging.
 
 
 ## The preflight contract
@@ -403,7 +535,6 @@ pipeline:
   ci:
     enabled: true
     stages: [preflight, build, test, end2end]
-    merge_queue: false      # org-owned repos only; adds the merge_group trigger
   cd:
     enabled: true
     stages: [preflight, publish, deploy, verify]
@@ -512,8 +643,11 @@ they run on push until a `ci-main.yml` covers it.
 ## What this deletes
 
 - The Checks API polling loop and `checks.timeout_minutes`
-- `require_up_to_date` as a load-bearing setting, and the freshness job that
-  backed it up — replaced by an attestation that is checked rather than assumed
+- The freshness job — replaced by an attestation that is checked rather than
+  assumed, and by a merge queue for the one thing an attestation cannot cover
+- `pipeline.ci.merge_queue` as an opt-in, and `require_up_to_date` as a separate
+  switch — both fold into `base_freshness`, which names the guarantee and lets
+  gt pick the mechanism the repository can actually have
 - The absent-versus-not-started ambiguity
 - `internal/repogov/lint.go` in full — the trigger lint exists only to make that
   ambiguity statically detectable

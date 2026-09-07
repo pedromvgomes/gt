@@ -627,3 +627,38 @@ func TestFakeRunnerCanReturnErrors(t *testing.T) {
 		t.Fatalf("Run() error = %v, want %v", err, expected)
 	}
 }
+
+// Cloning is not idempotent, so an unusable --profile has to fail before the
+// folder exists; otherwise the obvious retry reports "folder already exists"
+// instead of the real error.
+func TestRunRejectsBadProfileBeforeCloning(t *testing.T) {
+	cfg := config.Default()
+	cfg.Profiles = []config.Profile{{Name: "work", Env: map[string]string{"CODEX_HOME": "/w"}}}
+	cases := map[string]clone.Options{
+		"unknown name":              {Profile: "typo"},
+		"profile without auth step": {Profile: "work", NoSetupAuth: true},
+		"opt-out without auth step": {NoProfile: true, NoSetupAuth: true},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Chdir(dir)
+			opts.RepoURL = "git@github.com:pedromvgomes/gt.git"
+			printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+			runner := &fakeGitRunner{}
+			err := clone.Run(context.Background(), runner, printer, cfg, opts)
+			if err == nil {
+				t.Fatal("Run() succeeded, want error")
+			}
+			if ui.ExitCode(err) != ui.ExitUser {
+				t.Fatalf("ExitCode() = %d, want %d", ui.ExitCode(err), ui.ExitUser)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("ran %#v, want nothing before validation", runner.calls)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Fatalf("created %#v, want nothing on disk", entries)
+			}
+		})
+	}
+}

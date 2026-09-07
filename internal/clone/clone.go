@@ -24,6 +24,8 @@ type Options struct {
 	NoSSH       bool
 	NoSetupAuth bool
 	User        string
+	Profile     string
+	NoProfile   bool
 	AuthRunner  setauth.Runner
 
 	SetupNames  []string
@@ -33,12 +35,31 @@ type Options struct {
 	DryRunSetup bool
 }
 
+// checkProfileSelection rejects a profile selection before anything lands on
+// disk. Cloning is not idempotent: a name validated only at the post-clone auth
+// step fails with the folder already created, and the obvious retry then dies
+// on "folder already exists" instead of repeating the real error.
+func checkProfileSelection(cfg config.Config, opts Options) error {
+	selected := strings.TrimSpace(opts.Profile)
+	if opts.NoSetupAuth && (selected != "" || opts.NoProfile) {
+		return ui.Errorf(ui.ExitUser, "--profile and --no-profile need the post-clone auth step; drop --no-setup-auth")
+	}
+	if selected == "" {
+		return nil
+	}
+	_, err := setauth.ResolveProfile(cfg.Profiles, "", selected, opts.NoProfile)
+	return err
+}
+
 func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, opts Options) error {
 	if strings.TrimSpace(opts.RepoURL) == "" {
 		return ui.Errorf(ui.ExitUser, "repository URL is required")
 	}
 	if opts.ForceSSH && opts.NoSSH {
 		return ui.Errorf(ui.ExitUser, "--ssh and --no-ssh are mutually exclusive")
+	}
+	if err := checkProfileSelection(cfg, opts); err != nil {
+		return err
 	}
 	repoURL, err := ResolveRepoURL(printer, cfg, opts)
 	if err != nil {
@@ -127,8 +148,12 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 			authRunner = setauth.ExecRunner{}
 		}
 		if err := setauth.Run(ctx, authRunner, printer, setauth.Options{
-			CWD:  folder,
-			User: opts.User,
+			CWD:       folder,
+			User:      opts.User,
+			Profiles:  cfg.Profiles,
+			RepoURL:   repoURL,
+			Profile:   opts.Profile,
+			NoProfile: opts.NoProfile,
 		}); err != nil {
 			return err
 		}

@@ -355,7 +355,6 @@ type ciData struct {
 	Branch          string
 	GateJob         string
 	PRTitleEnforced bool
-	MergeQueue      bool
 	Bulwark         bool
 	BulwarkDir      string
 	BulwarkCoverage bool
@@ -412,7 +411,6 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		Branch:          in.Spec.Settings.BranchProtection.Branch,
 		GateJob:         repospec.GateCheckJob,
 		PRTitleEnforced: in.Spec.ConventionalCommits.EnforcesPRTitle(),
-		MergeQueue:      in.Spec.Pipeline.CI.MergeQueue,
 		Bulwark:         in.Spec.Bulwark.Enabled,
 		BulwarkDir:      in.Spec.Bulwark.Dir,
 		BulwarkCoverage: in.Spec.Bulwark.Coverage,

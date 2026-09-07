@@ -78,7 +78,8 @@ Other flags to be aware of:
   agent contexts pass `--ssh` (convert to SSH) or `--no-ssh` (keep HTTPS) to
   avoid hanging on the prompt.
 - Pass `--no-setup-auth` only if the user has explicitly said not to wire up
-  direnv auth.
+  direnv auth. `--profile <name>` picks the environment profile explicitly when
+  the user's config has more than one; `--no-profile` exports none.
 - After clone, gt may run user-configured setup templates (e.g. dropping in
   CLAUDE.md, cloning agentic-toolkit). It prints the plan and prompts before
   running. In agent contexts pass `--yes` to accept the plan non-interactively,
@@ -177,6 +178,16 @@ the configured SSH host alias for a specific GitHub user:
 gt set-auth --user <gh-username>        # idempotent .envrc + direnv allow
 gt set-ssh-remote --user <gh-username>  # rewrite origin to ssh alias
 ```
+
+`gt set-auth` also applies the user's configured **environment profile** for the
+repo — a named set of env vars (typically `CLAUDE_CONFIG_DIR` / `CODEX_HOME`)
+exported from the same `.envrc`, so anything you shell out to from the checkout
+resolves the same credentials regardless of which shell started the session. Run
+a bare `gt set-auth` (no flags) in an already-cloned repo to retrofit it: the gh
+user is recovered from the existing `.envrc`, so it neither prompts nor changes
+the identity. Add `--yes` in non-interactive contexts, and `--no-profile` if the
+user wants the ambient environment left alone. A repo with no matching profile
+keeps its `.envrc` byte-for-byte, so this is safe to run anywhere.
 
 ## Inspecting the user's setup config
 

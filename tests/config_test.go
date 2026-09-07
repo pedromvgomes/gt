@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/pedromvgomes/gt/internal/config"
@@ -274,5 +275,115 @@ setup:
 	}
 	if got["repo-only"] != "echo repo" {
 		t.Fatalf("per-repo template missing: repo-only = %q", got["repo-only"])
+	}
+}
+
+func TestValidateProfilesRejectsBadShapes(t *testing.T) {
+	cases := map[string][]config.Profile{
+		"missing-name":       {{Env: map[string]string{"A": "1"}}},
+		"bad-name":           {{Name: "work profile", Env: map[string]string{"A": "1"}}},
+		"reserved-name":      {{Name: "none", Env: map[string]string{"A": "1"}}},
+		"duplicate-names":    {{Name: "w", Env: map[string]string{"A": "1"}}, {Name: "w", Env: map[string]string{"B": "2"}}},
+		"empty-env":          {{Name: "w"}},
+		"empty-match":        {{Name: "w", Match: []string{""}, Env: map[string]string{"A": "1"}}},
+		"bad-env-name":       {{Name: "w", Env: map[string]string{"A-B": "1"}}},
+		"leading-digit-name": {{Name: "w", Env: map[string]string{"1A": "1"}}},
+		"newline-in-value":   {{Name: "w", Env: map[string]string{"A": "one\ntwo"}}},
+	}
+	for name, profiles := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := config.ValidateProfiles(profiles); err == nil {
+				t.Fatalf("ValidateProfiles(%#v) succeeded, want error", profiles)
+			}
+		})
+	}
+}
+
+func TestValidateProfilesAcceptsValid(t *testing.T) {
+	profiles := []config.Profile{
+		{Name: "work", Match: []string{"github.com:acme/*"}, Env: map[string]string{"CLAUDE_CONFIG_DIR": "~/.claude"}},
+		{Name: "personal.2", Env: map[string]string{"_X1": "anything at all"}},
+	}
+	if err := config.ValidateProfiles(profiles); err != nil {
+		t.Fatalf("ValidateProfiles() error = %v", err)
+	}
+}
+
+func TestLoadParsesProfiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "gt", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `worktree_types: [feature]
+profiles:
+  - name: work
+    match: ["github.com:acme/*"]
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude
+  - name: personal
+    env:
+      CODEX_HOME: ~/.codex
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(t.TempDir())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Profiles) != 2 {
+		t.Fatalf("len(Profiles) = %d, want 2", len(cfg.Profiles))
+	}
+	if cfg.Profiles[0].Name != "work" || cfg.Profiles[0].Env["CLAUDE_CONFIG_DIR"] != "~/.claude" {
+		t.Fatalf("Profiles[0] = %#v", cfg.Profiles[0])
+	}
+	if len(cfg.Profiles[1].Match) != 0 {
+		t.Fatalf("Profiles[1].Match = %#v, want none", cfg.Profiles[1].Match)
+	}
+}
+
+// A malformed profile must fail the load with a message naming the profile,
+// not surface later as an .envrc missing a variable.
+func TestLoadRejectsMalformedProfiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path := filepath.Join(dir, "gt", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "worktree_types: [feature]\nprofiles:\n  - name: work\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(t.TempDir())
+	if err == nil {
+		t.Fatal("Load() succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "work") {
+		t.Fatalf("Load() error = %v, want the profile name", err)
+	}
+}
+
+// Profiles layer like setup templates: a same-named profile is replaced in
+// place, keeping its position, because selection is first-match-wins.
+func TestMergeProfilesReplacesInPlaceAndAppends(t *testing.T) {
+	base := []config.Profile{
+		{Name: "work", Env: map[string]string{"A": "1"}},
+		{Name: "personal", Env: map[string]string{"B": "1"}},
+	}
+	override := []config.Profile{
+		{Name: "personal", Env: map[string]string{"B": "2"}},
+		{Name: "client", Env: map[string]string{"C": "3"}},
+	}
+	got := config.MergeProfiles(base, override)
+	want := []config.Profile{
+		{Name: "work", Env: map[string]string{"A": "1"}},
+		{Name: "personal", Env: map[string]string{"B": "2"}},
+		{Name: "client", Env: map[string]string{"C": "3"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("MergeProfiles() = %#v, want %#v", got, want)
 	}
 }
