@@ -263,13 +263,29 @@ func findRuleset(ctx context.Context, gh GH, owner, name, branch string) (*liveR
 	return mine, others, nil
 }
 
-// managedRuleTypes is the set gt renders itself.
-func managedRuleTypes(spec repospec.Spec) map[string]bool {
-	managed := map[string]bool{}
-	for _, r := range desiredRuleset(spec)["rules"].([]map[string]any) {
-		managed[r["type"].(string)] = true
-	}
-	return managed
+// gtRuleTypes is every rule type gt owns — the ones it renders when it wants
+// them AND the ones it deliberately omits.
+//
+// Fixed rather than derived from desiredRuleset(spec), which is the point.
+// required_status_checks is conditional there: with pipeline.ci disabled gt
+// renders no gate, because requiring a context nothing reports would block
+// every pull request forever. Deriving the owned set from that output made the
+// rule look *unmanaged* the moment it was omitted, so apply carried a live
+// `ci-gate` requirement through verbatim and the repository kept the very gate
+// the omission exists to remove — permanently, because diff asked for a
+// removal apply would never perform.
+var gtRuleTypes = map[string]bool{
+	"deletion":                true,
+	"non_fast_forward":        true,
+	"required_linear_history": true,
+	"pull_request":            true,
+	"required_status_checks":  true,
+}
+
+// managedRuleTypes is the set gt owns, and so the set it will remove when it
+// does not want it.
+func managedRuleTypes(repospec.Spec) map[string]bool {
+	return gtRuleTypes
 }
 
 // unmanagedRules returns the rules in `other` that gt does not render itself —
@@ -285,6 +301,18 @@ func unmanagedRules(other liveRuleset, spec repospec.Spec) []liveRule {
 	if other.Enforcement != "active" {
 		return nil
 	}
+	return unmanagedRulesOf(other, spec)
+}
+
+// unmanagedRulesOf is unmanagedRules without the enforcement gate, for gt's
+// OWN ruleset.
+//
+// That gate exists so absorbing a ruleset somebody switched off does not
+// silently switch its rules back on. It must not apply to gt's own ruleset,
+// which apply always re-activates: skipping it there meant a ruleset paused in
+// the UI came back active minus every rule gt had previously absorbed into it,
+// on a run whose only reported change was the enforcement flag.
+func unmanagedRulesOf(other liveRuleset, spec repospec.Spec) []liveRule {
 	managed := managedRuleTypes(spec)
 	var out []liveRule
 	for _, r := range other.Rules {
@@ -333,11 +361,12 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
 			add("ruleset.rules."+t, "present", "absent")
 		}
 	}
-	for t := range gotTypes {
-		if !wantTypes[t] {
-			add("ruleset.rules."+t, "absent", "present")
-		}
-	}
+	// Deliberately no converse loop. A live rule gt does not model is one it
+	// absorbed from a ruleset it superseded, and apply carries those through
+	// every time — including out of gt's own ruleset on a later run. Reporting
+	// one as surplus would describe a removal that never happens and leave
+	// `settings diff` permanently dirty for any repository that had a rule to
+	// absorb. See unmanagedRules.
 
 	for _, r := range live.Rules {
 		switch r.Type {
@@ -521,8 +550,14 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 	}
 	carried := map[string]json.RawMessage{}
 	var bypass []json.RawMessage
-	for _, src := range sources {
-		for _, r := range unmanagedRules(src, spec) {
+	for i, src := range sources {
+		// sources[0] is gt's own ruleset when it exists; its absorbed rules
+		// survive even while it is paused. See unmanagedRulesOf.
+		rules := unmanagedRules(src, spec)
+		if i == 0 && mine != nil {
+			rules = unmanagedRulesOf(src, spec)
+		}
+		for _, r := range rules {
 			if _, seen := carried[r.Type]; !seen {
 				carried[r.Type] = r.raw
 			}

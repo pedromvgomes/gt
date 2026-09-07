@@ -319,7 +319,7 @@ const StagePreflight = "preflight"
 var (
 	PermissionScopes = []string{
 		"actions", "attestations", "checks", "contents", "deployments",
-		"discussions", "id-token", "issues", "packages", "pages",
+		"discussions", "id-token", "issues", "models", "packages", "pages",
 		"pull-requests", "repository-projects", "security-events", "statuses",
 	}
 	PermissionLevels = []string{"read", "write", "none"}
