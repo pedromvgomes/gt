@@ -252,16 +252,14 @@ func TestCDTriggersOnConfiguredTags(t *testing.T) {
 func TestMergeGroupTriggerAlwaysRendered(t *testing.T) {
 	for _, queued := range []bool{false, true} {
 		spec := repospec.Default()
-		spec.Settings.BranchProtection.MergeQueue = queued
+		spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessQueue
 		if !queued {
-			// The alternative mechanism, and only legal alongside a queue that
-			// is off; see repospec.validateMergeQueue.
-			spec.Settings.BranchProtection.RequireUpToDate = true
+			spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessStrict
 		}
 
 		content := string(pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
 		if !strings.Contains(content, "merge_group:") {
-			t.Errorf("merge_queue = %v: no merge_group trigger rendered", queued)
+			t.Errorf("base_freshness queue = %v: no merge_group trigger rendered", queued)
 		}
 	}
 }

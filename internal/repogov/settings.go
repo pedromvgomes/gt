@@ -169,65 +169,106 @@ func queueParameters(spec repospec.Spec) map[string]any {
 // applied *after* the apply, where an aborted rollout is easiest to miss.
 const MergeQueueChangeField = "merge queue"
 
-// mergeQueueState is what gt has decided to do about the merge_queue rule on
-// this repository, once the spec, the platform and the rendered workflow have
-// all been consulted.
+// mergeQueueState is the mechanism gt has settled on for holding a pull request
+// to the branch it will land on, once the spec, the platform and the rendered
+// workflow have all been consulted.
+//
+// Exactly one is ever applied. GitHub offers two and advises against combining
+// them, and the advice is not stylistic: strict checks block the merge button
+// until the author rebases, and a queue then rebases and rebuilds the same pull
+// request itself. Running both pays the rebase churn and the queue latency for
+// a single guarantee. Making this a choice of one rather than two booleans is
+// what makes that structural instead of a validation rule.
 type mergeQueueState int
 
 const (
-	// mergeQueueOff: the repository declined a queue, or has no CI for one to
-	// gate. gt owns the rule and removes it if it is there.
+	// mergeQueueOff: neither mechanism. The repository gave the guarantee up,
+	// or has no CI for either to act on. gt owns both and removes them.
 	mergeQueueOff mergeQueueState = iota
-	// mergeQueueOn: gt renders and enforces the rule.
+	// mergeQueueOn: the merge_queue rule.
 	mergeQueueOn
-	// mergeQueueDeferred: the repository wants a queue and gt will not apply
+	// mergeQueueStrict: strict_required_status_checks_policy, the fallback
+	// where a queue is impossible. Weaker on ergonomics — somebody has to
+	// rebase — and identical on the guarantee.
+	mergeQueueStrict
+	// mergeQueueDeferred: a queue is possible and wanted, and gt will not apply
 	// one yet. The rule becomes unmanaged, so whatever is live is carried
 	// through untouched — a transient API failure or a half-finished rollout
 	// must never dismantle a queue that is already working.
+	//
+	// Strict is deliberately NOT applied in the meantime. The window is one
+	// sync and one merge long, and switching it on and back off again would
+	// turn every open pull request red twice for a gap that closes by itself.
 	mergeQueueDeferred
 )
 
-// mergeQueueDecision is a state plus, when it is not simply on or off, the
-// sentence explaining it. The reason is reported as a setting change so a
-// deferred repository reads as incomplete rather than as compliant.
+// mergeQueueDecision is a mechanism plus, where gt chose it rather than being
+// told, the sentence explaining why. The reason is reported as a setting change
+// so nobody has to infer which mechanism a repository ended up with.
 type mergeQueueDecision struct {
 	State  mergeQueueState
 	Reason string
-	// Remedy is what the person reading the diff should do about it.
+	// Remedy is what the person reading the diff should do about it, where
+	// there is anything to do.
 	Remedy string
 }
 
-// resolveMergeQueue decides whether gt applies the merge_queue rule here.
+// resolveMergeQueue picks the mechanism for this repository.
 //
-// The order matters. Cheapest and most certain first — the spec, then whether
-// there is a pipeline to gate — before anything that costs an API call, and the
-// workflow check last because it is the one whose answer changes as a rollout
-// proceeds.
+// The order matters. The spec first, because an explicit choice is not gt's to
+// second-guess; then whether there is a pipeline for either mechanism to act
+// on; then the platform, which decides what is even possible; and the workflow
+// check last, because it is the one whose answer changes as a rollout proceeds.
 func resolveMergeQueue(
 	ctx context.Context, gh GH, spec repospec.Spec, owner, name string,
 ) mergeQueueDecision {
 	bp := spec.Settings.BranchProtection
-	if !bp.MergeQueue {
+	if bp.BaseFreshness == repospec.FreshnessNone {
 		return mergeQueueDecision{State: mergeQueueOff}
 	}
 
-	// A queue with nothing to build is a queue in name only: it would serialise
-	// merges and verify nothing, while still costing every pull request a trip
-	// through it. The required-status-checks rule is omitted for the same
-	// reason a few lines up.
+	// Neither mechanism means anything without a required check. A queue would
+	// serialise merges and build nothing; strict would compare a pull request
+	// against a base for the benefit of no check at all. Both are omitted for
+	// the same reason the required-status-checks rule is.
 	if !spec.Pipeline.CI.Enabled {
 		return mergeQueueDecision{
 			State:  mergeQueueOff,
-			Reason: "pipeline.ci is disabled, so a queue would have no check to build against",
+			Reason: "pipeline.ci is disabled, so neither mechanism has a check to hold a pull request to",
 		}
 	}
 
-	if reason := mergeQueueUnsupported(ctx, gh, owner, name, bp.Branch); reason != "" {
+	if bp.BaseFreshness == repospec.FreshnessStrict {
+		return mergeQueueDecision{State: mergeQueueStrict}
+	}
+
+	// Established, not assumed — and established from the repository's own
+	// facts rather than from a feature probe, because there is no probe that
+	// answers this. See queueImpossible.
+	impossible, err := queueImpossible(ctx, gh, owner, name)
+	switch {
+	case err != nil:
+		// Unknown is not the same as unavailable. Falling back to strict on a
+		// failed read would turn every open pull request red over a blip, so
+		// the decision waits instead.
 		return mergeQueueDecision{
 			State:  mergeQueueDeferred,
-			Reason: reason,
-			Remedy: "set branch_protection.merge_queue: false and " +
-				"require_up_to_date: true in " + repospec.FileName,
+			Reason: "could not read the repository to decide which mechanism it can have: " + firstLine(err.Error()),
+			Remedy: "re-run, or pin the mechanism with branch_protection.base_freshness",
+		}
+	case impossible != "" && bp.BaseFreshness == repospec.FreshnessQueue:
+		// Asked for by name. Substituting silently would leave somebody
+		// believing they have a queue, so say so and change nothing.
+		return mergeQueueDecision{
+			State:  mergeQueueDeferred,
+			Reason: "base_freshness is " + repospec.FreshnessQueue + ", but " + impossible,
+			Remedy: "use base_freshness: " + repospec.FreshnessAuto + " to take the fallback, or " +
+				repospec.FreshnessStrict + " to ask for it by name",
+		}
+	case impossible != "":
+		return mergeQueueDecision{
+			State:  mergeQueueStrict,
+			Reason: impossible + ", so the guarantee is held by strict required checks instead",
 		}
 	}
 
@@ -267,51 +308,51 @@ func resolveMergeQueue(
 // must be talking about the same path.
 const orchestrationWorkflow = WorkflowDir + "/ci-orchestration.yml"
 
-// mergeQueueUnsupported returns why GitHub will not give this repository a
-// merge queue, or "" when it will.
+// queueImpossible returns why GitHub will not give this repository a merge
+// queue, or "" when it will.
 //
-// Availability varies by visibility and plan, so it is established rather than
-// assumed. The probe is a GraphQL read of the branch's queue: it resolves —
-// returning null for a branch with no queue configured — where queues exist at
-// all, and errors where they do not.
+// Read from ownership and visibility rather than from a feature probe, because
+// no probe answers the question. GraphQL's `repository.mergeQueue(branch:)`
+// resolves on a repository that then rejects the rule outright — it returns
+// null both for "no queue configured" and for "no queue possible" — so
+// believing it would have gt apply a rule GitHub refuses, on exactly the
+// repositories that most need the guarantee.
 //
-// Any error is read as unsupported, which makes a transient failure look like
-// an unavailable feature. That is deliberate and it is safe, because the state
-// this returns is *deferred*, not off: the live rule is carried through
-// untouched, so the worst a blip can do is postpone a decision.
-func mergeQueueUnsupported(ctx context.Context, gh GH, owner, name, branch string) string {
-	const query = `query($owner:String!,$name:String!,$branch:String!){` +
-		`repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id}}}`
-	out, err := gh.Run(ctx, "api", "graphql",
-		"-f", "query="+query,
-		"-F", "owner="+owner,
-		"-F", "name="+name,
-		"-F", "branch="+branch,
-	)
+// The rule below is measured, not documented. The same rule payload against
+// four repositories:
+//
+//	user-owned, public                      422, "Invalid rule 'merge_queue': "
+//	organization-owned, public, free plan    accepted
+//	organization-owned, private, free plan   403, "Upgrade ... or make this repository public"
+//	organization-owned, private, team plan   422, "Invalid rule 'merge_queue': "
+//
+// So: organization-owned and public. Private repositories are said to work on
+// Enterprise Cloud, which there was nothing here to test against, so they are
+// reported as impossible and take the strict fallback — a weaker experience
+// carrying the identical guarantee. A repository that knows better says
+// base_freshness: queue and gets the queue.
+func queueImpossible(ctx context.Context, gh GH, owner, name string) (string, error) {
+	raw, err := gh.Run(ctx, "api", fmt.Sprintf("repos/%s/%s", owner, name))
 	if err != nil {
-		return "GitHub does not offer a merge queue on this repository " +
-			"(merge queues need a public repository, or a private one on a plan that includes them): " +
-			firstLine(err.Error())
+		return "", err
 	}
-	// A resolved query still has to have found the repository. `data.repository:
-	// null` is what a token without access returns, and reading that as "queues
-	// are supported" would send the apply on to fail at the ruleset write with a
-	// far less useful message.
-	var resp struct {
-		Data struct {
-			Repository *struct {
-				MergeQueue json.RawMessage `json:"mergeQueue"`
-			} `json:"repository"`
-		} `json:"data"`
+	var live struct {
+		Private bool `json:"private"`
+		Owner   struct {
+			Type string `json:"type"`
+		} `json:"owner"`
 	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return "could not read the merge-queue probe response: " + err.Error()
+	if err := json.Unmarshal(raw, &live); err != nil {
+		return "", fmt.Errorf("parse repository: %w", err)
 	}
-	if resp.Data.Repository == nil {
-		return "the merge-queue probe could not see " + owner + "/" + name +
-			"; the token may not have access to it"
+	if live.Owner.Type != "Organization" {
+		return "GitHub offers merge queues only on organization-owned repositories, and " +
+			owner + "/" + name + " belongs to a user account", nil
 	}
-	return ""
+	if live.Private {
+		return "GitHub offers merge queues on a private repository only under Enterprise Cloud", nil
+	}
+	return "", nil
 }
 
 // mergeGroupTriggered reports whether the orchestration workflow *on the
@@ -419,7 +460,9 @@ func desiredRuleset(spec repospec.Spec, mq mergeQueueState) map[string]any {
 		rules = append(rules, map[string]any{
 			"type": "required_status_checks",
 			"parameters": map[string]any{
-				"strict_required_status_checks_policy": bp.RequireUpToDate,
+				// Never true alongside the merge_queue rule below: the two are
+				// branches of one decision, not two switches.
+				"strict_required_status_checks_policy": mq == mergeQueueStrict,
 				"do_not_enforce_on_create":             false,
 				"required_status_checks": []map[string]any{
 					{"context": repospec.GateCheckJob},
@@ -588,7 +631,10 @@ func managedRuleTypes(_ repospec.Spec, mq mergeQueueState) map[string]bool {
 	for t := range gtRuleTypes {
 		managed[t] = true
 	}
-	if mq == mergeQueueOff {
+	// Managed under every settled mechanism, so falling back to strict removes
+	// a queue rather than leaving both in place. Unmanaged only while the
+	// decision is still open.
+	if mq != mergeQueueDeferred {
 		managed["merge_queue"] = true
 	}
 	return managed
@@ -750,9 +796,14 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision
 				add("ruleset.required_status_checks",
 					strings.Join(wantChecks, ", "), strings.Join(got, ", "))
 			}
-			add("ruleset.strict_required_status_checks_policy",
-				fmt.Sprint(bp.RequireUpToDate),
-				fmt.Sprint(r.Parameters.StrictRequiredStatusChecksPolicy))
+			// Left alone during a deferral, for the same reason the queue
+			// rule is: gt has not settled the mechanism yet, so it changes
+			// neither.
+			if mq.State != mergeQueueDeferred {
+				add("ruleset.strict_required_status_checks_policy",
+					fmt.Sprint(mq.State == mergeQueueStrict),
+					fmt.Sprint(r.Parameters.StrictRequiredStatusChecksPolicy))
+			}
 		}
 	}
 	return changes
@@ -817,10 +868,15 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 	mq := resolveMergeQueue(ctx, gh, spec, owner, name)
 	changes = append(changes, rulesetChanges(spec, mine, mq)...)
 
-	// A repository that wants a queue and cannot have one yet reads as
-	// incomplete rather than compliant, every time, until somebody resolves it.
+	// Reported whenever gt chose rather than being told, so nobody has to infer
+	// which mechanism a repository ended up with — and every time, so a
+	// repository stuck mid-rollout reads as incomplete rather than compliant.
 	// Silence here is the failure this whole rule exists to prevent, one level
 	// up: a repository that looks governed and is not.
+	// Only a deferral is a change. An auto-chosen strict fallback is a settled,
+	// correct outcome — reporting it every run would mean a user-owned
+	// repository could never read as compliant, and the flip it causes is
+	// already visible as strict_required_status_checks_policy above.
 	if mq.State == mergeQueueDeferred {
 		changes = append(changes, SettingChange{
 			Field: MergeQueueChangeField,

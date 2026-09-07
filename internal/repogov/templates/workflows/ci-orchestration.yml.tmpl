@@ -31,10 +31,12 @@ on:
   # it would sit in the queue forever waiting on a check nothing can report —
   # and the governance stage that would have said so is inside that same check.
   #
-  # Rendered even where the queue is off, so the file is ready before the rule
-  # that needs it. `gt repo settings apply` refuses to add the queue rule until
-  # this trigger is on the default branch, which is what makes that ordering a
-  # guarantee rather than a habit. An unused trigger costs nothing.
+  # Rendered even where there is no queue — most repositories cannot have one,
+  # since GitHub offers them only on organization-owned public repositories —
+  # so the file is ready before the rule that needs it. `gt repo settings apply`
+  # withholds the queue rule until this trigger is on the default branch, which
+  # is what makes that ordering a guarantee rather than a habit. An unused
+  # trigger costs nothing.
   merge_group:
   workflow_dispatch:
 

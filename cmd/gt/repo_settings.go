@@ -97,7 +97,8 @@ func newRepoSettingsApplyCommand(opts *options) *cobra.Command {
 				if c.Field != repogov.MergeQueueChangeField {
 					continue
 				}
-				opts.ui.Warn("No merge queue on %s: %s", spec.Settings.BranchProtection.Branch, c.Got)
+				opts.ui.Warn("%s is not held to its base yet: %s",
+					spec.Settings.BranchProtection.Branch, c.Got)
 				opts.ui.Info("Everything else was applied. To finish: %s",
 					strings.TrimPrefix(c.Want, "deferred — "))
 			}

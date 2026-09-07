@@ -30,14 +30,11 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 		wantSub string
 	}{
 		{
-			// The two mechanisms are alternatives. Running both pays a manual
-			// rebase cycle and a queue wait for one guarantee.
-			name: "a queue alongside require_up_to_date",
+			name: "an unknown freshness mode",
 			mutate: func(s *repospec.Spec) {
-				s.Settings.BranchProtection.MergeQueue = true
-				s.Settings.BranchProtection.RequireUpToDate = true
+				s.Settings.BranchProtection.BaseFreshness = "sometimes"
 			},
-			wantSub: "alternatives, not layers",
+			wantSub: "is not one of",
 		},
 		{
 			// required_linear_history is unconditional, so a queue that can
@@ -249,15 +246,26 @@ func TestQueueMergeMethodFollowsTheAllowedMethods(t *testing.T) {
 
 // Every governed repository gets a queue without asking for one. That is the
 // whole change: the guarantee is policy, not a per-repository opt-in.
-func TestMergeQueueIsOnByDefault(t *testing.T) {
+func TestBaseFreshnessDefaultsToAuto(t *testing.T) {
 	spec, err := repospec.Parse([]byte("dependabot: []\n"), "t.yaml")
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if !spec.Settings.BranchProtection.MergeQueue {
-		t.Error("a spec that says nothing about merge queues did not get one")
+	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
+		t.Errorf("base_freshness = %q, want %q — the guarantee is not opt-in",
+			got, repospec.FreshnessAuto)
 	}
-	if spec.Settings.BranchProtection.RequireUpToDate {
-		t.Error("require_up_to_date defaulted on alongside the queue; they are alternatives")
+}
+
+// The released spelling. A repository still carrying it must keep parsing, and
+// must land on auto — which on any repository where it could have been set
+// computes to strict, the behaviour it already had.
+func TestTheRetiredRequireUpToDateKeyStillParses(t *testing.T) {
+	spec, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    require_up_to_date: true\n"), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
+		t.Errorf("base_freshness = %q, want %q", got, repospec.FreshnessAuto)
 	}
 }

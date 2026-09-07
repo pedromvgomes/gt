@@ -279,36 +279,38 @@ tree that does not exist yet — and two pull requests that touch disjoint files
 are each green, and are semantically incompatible will both merge, breaking the
 default branch with nothing out of compliance anywhere.
 
-So every governed repository gets a merge queue. It builds each entry against
-the base tip plus the entries ahead of it, and rejects the second of that pair
-instead of merging it. `ci-orchestration.yml` triggers on `merge_group`, and
-`gt repo settings apply` adds the `merge_queue` ruleset rule.
+So every governed repository is held to its base. You declare the **guarantee**,
+and gt picks a mechanism the repository can actually have:
 
-It is cheap for the same reason as everything else here: a merge group whose
-tree matches an already-validated one skips every stage, so the common case
-costs seconds. Where a repository cannot have a queue — availability depends on
-visibility and plan — gt says so and skips it rather than half-configuring the
-repository.
+```yaml
+settings:
+  branch_protection:
+    base_freshness: auto   # auto | queue | strict | none
+```
 
-Two ordering rules keep it from failing silently:
+- **`queue`** — a merge queue, which builds each entry against the base tip plus
+  the entries ahead of it and rejects the second of that pair. GitHub offers
+  these only on **organization-owned public** repositories.
+- **`strict`** — "require branches to be up to date", which blocks the merge
+  button until the author rebases. Same guarantee, worse ergonomics, works
+  everywhere.
 
-- **Files before settings.** A queued pull request reports its required check
-  from the `merge_group` event and no other. `settings apply` reads
-  `ci-orchestration.yml` on the default branch and withholds the rule until the
-  trigger is actually there, saying why — otherwise every pull request would
-  enter a queue that can never build it, with the `governance` stage that would
-  have warned you sitting inside the check that no longer reports.
-- **Not both mechanisms.** `require_up_to_date` gives the same guarantee by
-  making authors rebase by hand, so enabling it alongside a queue pays for one
-  guarantee twice. gt rejects a spec that asks for both, and it is the fallback
-  where a queue is unavailable:
+`auto` reads the repository's ownership and visibility and chooses. Exactly one
+is ever applied: they are branches of one decision, not two switches, so paying
+the rebase churn *and* the queue latency for a single guarantee is structurally
+impossible. `base_freshness` replaces the released `require_up_to_date`; a spec
+still carrying that key parses to `auto`.
 
-  ```yaml
-  settings:
-    branch_protection:
-      merge_queue: false
-      require_up_to_date: true
-  ```
+The queue is cheap for the same reason as everything else here: a merge group
+whose tree matches an already-validated one skips every stage, so the common
+case costs seconds.
+
+One ordering rule keeps it from failing silently. A queued pull request reports
+its required check from the `merge_group` event and no other, so `settings apply`
+reads `ci-orchestration.yml` **on the default branch** and withholds the queue
+rule until the trigger is actually there, saying why — otherwise every pull
+request would enter a queue that can never build it, with the `governance` stage
+that would have warned you sitting inside the check that no longer reports.
 
 ### What CI cannot do, and why
 

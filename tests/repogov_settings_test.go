@@ -140,9 +140,22 @@ on:
   workflow_dispatch:
 `
 
-// queueSupportedGraphQL is what the availability probe gets back from a
-// repository where merge queues exist but none is configured yet.
-const queueSupportedGraphQL = `{"data":{"repository":{"mergeQueue":null}}}`
+// queueCapableRepoJSON is compliantRepoJSON plus the two facts that decide
+// whether a merge queue is possible at all: organization-owned and public.
+func queueCapableRepoJSON(t *testing.T) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(compliantRepoJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	parsed["private"] = false
+	parsed["owner"] = map[string]any{"type": "Organization"}
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
 
 // alignedGH is a fake whose repository, ruleset list and ruleset detail all
 // match repospec.Default(), and whose branch has no classic protection.
@@ -150,10 +163,9 @@ func alignedGH(t *testing.T) *fakeGH {
 	t.Helper()
 	return &fakeGH{
 		responses: map[string]string{
-			"repos/pedromvgomes/demo":                         compliantRepoJSON,
+			"repos/pedromvgomes/demo":                         queueCapableRepoJSON(t),
 			"repos/pedromvgomes/demo/rulesets":                rulesetListJSON(repogov.RulesetName),
 			"repos/pedromvgomes/demo/rulesets/100":            compliantRulesetJSON(t),
-			"api graphql":                                     queueSupportedGraphQL,
 			"contents/.github/workflows/ci-orchestration.yml": queueReadyWorkflow,
 		},
 		errors: map[string]error{
@@ -182,7 +194,9 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	  "allow_rebase_merge": false,
 	  "delete_branch_on_merge": true,
 	  "squash_merge_commit_title": "PR_TITLE",
-	  "squash_merge_commit_message": "BLANK"
+	  "squash_merge_commit_message": "BLANK",
+	  "private": false,
+	  "owner": {"type": "Organization"}
 	}`
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
@@ -898,7 +912,10 @@ on:
 // removes the protection instead of postponing it.
 func TestSettingsCarriesAnExistingQueueThroughADeferral(t *testing.T) {
 	gh := alignedGH(t)
-	gh.errors["api graphql"] = errors.New("gh: something went wrong (HTTP 502)")
+	// The orchestrator momentarily unreadable — a rate limit, a blip — on a
+	// repository whose queue is already live and working.
+	gh.errors["contents/.github/workflows/ci-orchestration.yml"] = errors.New(
+		"gh: API rate limit exceeded (HTTP 403)")
 
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
@@ -919,39 +936,72 @@ func TestSettingsCarriesAnExistingQueueThroughADeferral(t *testing.T) {
 	}
 }
 
-// An unavailable queue is a fact about the repository's plan and visibility,
-// not a reason to fail. It is skipped with a diagnostic that names the way out.
-func TestSettingsSkipsTheQueueWhereGitHubHasNone(t *testing.T) {
+// A repository that cannot have a queue still gets the guarantee, via the other
+// mechanism. This is the whole point of naming the guarantee rather than the
+// mechanism: user-owned repositories — gt's own among them — can never hold a
+// queue, and leaving them with nothing is what let main break in the first
+// place.
+func TestSettingsFallsBackToStrictWhereAQueueIsImpossible(t *testing.T) {
 	gh := alignedGH(t)
-	gh.errors["api graphql"] = errors.New(
-		"gh: Field 'mergeQueue' doesn't exist on type 'Repository'")
+	// The measured boundary: user-owned repositories are refused the rule
+	// outright, whatever their visibility.
+	gh.responses["repos/pedromvgomes/demo"] = compliantRepoJSON
 	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
 
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
-		t.Fatalf("SettingsDiff() error = %v, want the repository skipped rather than the run failed", err)
+		t.Fatalf("SettingsDiff() error = %v, want a fallback rather than a failed run", err)
 	}
-	var reported repogov.SettingChange
+	var strict bool
 	for _, c := range changes {
+		if c.Field == "ruleset.strict_required_status_checks_policy" && c.Want == "true" {
+			strict = true
+		}
 		if c.Field == repogov.MergeQueueChangeField {
-			reported = c
+			t.Errorf("a settled fallback was reported as an outstanding change: %s", c)
 		}
 	}
-	if !strings.Contains(reported.Got, "does not offer a merge queue") {
-		t.Errorf("reason = %q, want it to say the platform has none", reported.Got)
+	if !strict {
+		t.Fatalf("no mechanism at all was applied; changes = %v", changes)
 	}
-	if !strings.Contains(reported.Want, "require_up_to_date") {
-		t.Errorf("remedy = %q, want it to name the fallback mechanism", reported.Want)
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	body := lastRulesetBody(gh)
+	if strings.Contains(body, "merge_queue") {
+		t.Errorf("the queue rule was written to a repository that cannot hold it:\n%s", body)
+	}
+	if !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
+		t.Errorf("the fallback was not applied:\n%s", body)
 	}
 }
 
-// Declining a queue is a decision gt owns, so it removes one that is there.
-// This is what separates "off" from "wanted but not yet possible".
+// Never both. GitHub advises against it and the cost is real: strict blocks the
+// merge button until the author rebases, and the queue then rebases and
+// rebuilds the same pull request itself.
+func TestSettingsNeverAppliesBothMechanisms(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	body := lastRulesetBody(gh)
+	if !strings.Contains(body, "merge_queue") {
+		t.Fatalf("expected the queue on a capable repository:\n%s", body)
+	}
+	if !strings.Contains(body, `"strict_required_status_checks_policy":false`) {
+		t.Errorf("strict was applied alongside the queue:\n%s", body)
+	}
+}
+
+// Declining the guarantee is a decision gt owns, so it removes a queue that is
+// there. This is what separates "off" from "wanted but not yet possible".
 func TestSettingsRemovesTheQueueWhenTheSpecDeclinesIt(t *testing.T) {
 	gh := alignedGH(t)
 	spec := repospec.Default()
-	spec.Settings.BranchProtection.MergeQueue = false
-	spec.Settings.BranchProtection.RequireUpToDate = true
+	spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessNone
 
 	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
 		t.Fatalf("SettingsApply() error = %v", err)

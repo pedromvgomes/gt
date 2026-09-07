@@ -247,9 +247,9 @@ type MergeSettings struct {
 type BranchProtection struct {
 	Branch            string `yaml:"branch" json:"branch"`
 	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
-	// MergeQueue puts a merge queue in front of the branch, so every pull
-	// request is built against the branch it will actually land on rather than
-	// the one it was opened from. Default true.
+	// BaseFreshness demands that a pull request be built against the branch it
+	// will actually land on, rather than the one it was opened from. Default
+	// auto.
 	//
 	// This is the one guarantee neither the required check nor the
 	// validated-tree attestation can give. Both answer "did this pass?" about a
@@ -257,14 +257,21 @@ type BranchProtection struct {
 	// what landed while it sat open?". Two pull requests touching disjoint
 	// files — one adding a caller, the other bumping the API it calls — are
 	// each green, conflict-free to git, and break the default branch the moment
-	// the second lands. Nothing before this stopped that.
+	// the second lands.
 	//
-	// Off only where a queue cannot be had at all, which is a fact about the
-	// repository's plan and visibility rather than a preference. Set
-	// require_up_to_date there instead; see that field for why the two are
-	// alternatives rather than layers.
-	MergeQueue      bool `yaml:"merge_queue" json:"merge_queue"`
-	RequireUpToDate bool `yaml:"require_up_to_date" json:"require_up_to_date"`
+	// It names the guarantee, not the mechanism, because GitHub offers two and
+	// which one a repository may use is a fact about the repository rather than
+	// a preference: merge queues need an organization-owned public repository.
+	// Under `auto` gt establishes that and picks — a queue where one is
+	// possible, `strict` where it is not — so the guarantee holds everywhere
+	// and the two mechanisms can never both be applied at once, which would pay
+	// the rebase churn and the queue latency for a single guarantee.
+	//
+	// Replaces the released `require_up_to_date`, which named one mechanism and
+	// defaulted off. A spec still carrying that key parses to `auto`, which on
+	// the repositories where it could have been set computes to `strict`
+	// anyway.
+	BaseFreshness string `yaml:"base_freshness" json:"base_freshness"`
 	// DismissStaleReviews drops approvals when new commits land. Default true:
 	// an approval is of a diff, and a review of code that has since changed is
 	// a rubber stamp wearing a reviewer's name.
@@ -295,6 +302,31 @@ const (
 	SquashMessagePRBody  = "pr_body"
 	SquashMessageCommits = "commit_messages"
 )
+
+// How a pull request is held to the branch it will land on.
+//
+// FreshnessAuto is the answer for almost every repository: gt reads the
+// repository's ownership and visibility and picks the mechanism it can have.
+// The explicit values exist for the case where somebody knows better than the
+// detection — an Enterprise Cloud private repository, which can hold a queue
+// that gt's conservative rule would not offer it.
+const (
+	// FreshnessAuto picks a queue where the repository can have one and strict
+	// required checks where it cannot.
+	FreshnessAuto = "auto"
+	// FreshnessQueue demands a merge queue. gt reports rather than silently
+	// substituting where the repository cannot have one: asking for a specific
+	// mechanism and getting another is worth being told about.
+	FreshnessQueue = "queue"
+	// FreshnessStrict demands GitHub's "require branches to be up to date",
+	// which blocks the merge button until the author rebases.
+	FreshnessStrict = "strict"
+	// FreshnessNone asks for neither, and gives up the guarantee.
+	FreshnessNone = "none"
+)
+
+// FreshnessModes is the accepted vocabulary, in the order the docs present it.
+var FreshnessModes = []string{FreshnessAuto, FreshnessQueue, FreshnessStrict, FreshnessNone}
 
 // Merge methods, in gt's own vocabulary. The GitHub spellings these map to are
 // an implementation detail of the settings layer.
@@ -428,17 +460,9 @@ func Default() Spec {
 			},
 			BranchProtection: BranchProtection{
 				Branch: "main",
-				// Every governed repository gets a queue. It is the only
-				// mechanism that builds a pull request against the branch it
-				// will actually land on.
-				MergeQueue: true,
-				// False by design, and it stays false where the queue is on:
-				// the two are alternatives, not layers. Requiring branches to
-				// be up to date blocks the merge button until the author
-				// rebases, which serialises concurrent pull requests into
-				// manual update-and-wait cycles — the same serialisation the
-				// queue performs by itself, at the cost of the churn.
-				RequireUpToDate: false,
+				// Every governed repository gets the guarantee; gt works
+				// out which mechanism it can actually have.
+				BaseFreshness: FreshnessAuto,
 				// The two opinions worth holding: an approval is of a diff, and
 				// an unresolved thread is an unanswered question.
 				DismissStaleReviews:     true,
@@ -792,45 +816,37 @@ func validateSettings(s Settings) error {
 		return fmt.Errorf("settings.merge.squash_message %q is not one of %s, %s, %s",
 			m.SquashMessage, SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits)
 	}
-	return validateMergeQueue(s)
+	return validateBaseFreshness(s)
 }
 
-// validateMergeQueue rejects the two ways a queue and the rest of the ruleset
-// can be asked to contradict each other.
+// validateBaseFreshness rejects a freshness setting that could not work.
 //
-// Both are refused at parse time rather than reported at apply time, because
-// each renders a repository that looks configured and does not work: the first
-// pays for one guarantee twice, and the second builds merges the same ruleset
-// then rejects.
-func validateMergeQueue(s Settings) error {
+// Refused at parse time rather than reported at apply time, because each of
+// these renders a repository that looks configured and is not.
+func validateBaseFreshness(s Settings) error {
 	bp := s.BranchProtection
-	if !bp.MergeQueue {
-		return nil
-	}
-
-	// GitHub advises against running both, and the advice is not stylistic. A
-	// strict check blocks the merge button until the author rebases; the queue
-	// then rebases and rebuilds the same pull request itself. Turning both on
-	// pays the rebase churn and the queue latency for a single guarantee.
-	if bp.RequireUpToDate {
-		return fmt.Errorf(
-			"settings.branch_protection: require_up_to_date and merge_queue are " +
-				"alternatives, not layers — both build a pull request against the branch " +
-				"it will land on, so enabling both costs a manual rebase cycle and a queue " +
-				"wait for one guarantee. Keep the queue, or turn it off and keep " +
-				"require_up_to_date where a queue cannot be had")
+	if !contains(FreshnessModes, bp.BaseFreshness) {
+		return fmt.Errorf("settings.branch_protection.base_freshness %q is not one of %s",
+			bp.BaseFreshness, strings.Join(FreshnessModes, ", "))
 	}
 
 	// The ruleset always requires linear history. A queue configured to produce
 	// merge commits would build a group, then have the ruleset refuse the very
 	// commit it produced — a queue that can never merge anything.
+	//
+	// Checked for auto as well as queue: auto reaches the queue on any
+	// organization-owned public repository, so letting it through here would
+	// move a parse-time error to whichever repository happened to qualify.
+	if bp.BaseFreshness == FreshnessNone || bp.BaseFreshness == FreshnessStrict {
+		return nil
+	}
 	if method := s.QueueMergeMethod(); method == MergeMethodMerge {
 		return fmt.Errorf(
 			"settings.merge: a merge queue needs a merge method that produces linear "+
 				"history, but only %s is enabled — the queue would build merge commits "+
 				"the ruleset's required_linear_history then rejects. Enable squash or "+
-				"rebase, or set branch_protection.merge_queue: false",
-			MergeMethodMerge)
+				"rebase, or set branch_protection.base_freshness: %s",
+			MergeMethodMerge, FreshnessStrict)
 	}
 	return nil
 }
