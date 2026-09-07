@@ -17,3 +17,9 @@ skills:
   - use-gt
 rules:
   - worktree-per-session
+
+# Curation provider for the memory store. `agtk memory curate` refuses to run
+# without one, since promoting a candidate into notes/ is a model judgement and
+# the store has exactly one writer.
+memory:
+  agent: claudecode
