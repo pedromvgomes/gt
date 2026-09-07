@@ -1,0 +1,19 @@
+# Entry-point stack manifest. `agtk sync` renders .claude/, CLAUDE.md and
+# .mcp.json from this file plus the stacks it extends; those outputs are
+# generated and gitignored, while this file and the lockfile are committed.
+root: agentic
+
+extends:
+  - github.com/pedromvgomes/agentic-toolkit.git/stacks/default.yaml
+  - github.com/pedromvgomes/agentic-toolkit.git/stacks/plannotator.yaml
+  - github.com/pedromvgomes/agentic-toolkit.git/stacks/serena.yaml
+  - github.com/pedromvgomes/agentic-toolkit.git/stacks/rtk.yaml
+
+# gt's own agent guidance, resolved as bare names under root: agentic. These
+# are the definitions agentic/ exists to hold — an agent working in any repo
+# cloned with gt should reach for 'gt wt add' rather than 'git worktree add',
+# and that instruction lives with the tool that enforces it.
+skills:
+  - use-gt
+rules:
+  - worktree-per-session
