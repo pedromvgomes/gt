@@ -358,6 +358,8 @@ func newCloneCommand(opts *options) *cobra.Command {
 	cmd.Flags().BoolVar(&cloneOpts.NoSSH, "no-ssh", false, "keep HTTPS repository URLs without prompting")
 	cmd.Flags().BoolVar(&cloneOpts.NoSetupAuth, "no-setup-auth", false, "skip post-clone direnv authentication setup")
 	cmd.Flags().StringVar(&cloneOpts.User, "user", "", "GitHub user (selects ssh.user_aliases entry and post-clone GH_TOKEN)")
+	cmd.Flags().StringVar(&cloneOpts.Profile, "profile", "", "environment profile to export from .envrc (overrides match patterns)")
+	cmd.Flags().BoolVar(&cloneOpts.NoProfile, "no-profile", false, "export no environment profile even if a match pattern applies")
 	cmd.Flags().StringVar(&setupNames, "setup", "", "comma-separated setup template names to run after clone")
 	cmd.Flags().BoolVar(&cloneOpts.NoSetup, "no-setup", false, "skip post-clone setup templates")
 	cmd.Flags().BoolVar(&cloneOpts.YesSetup, "yes", false, "skip the setup confirmation prompt")
@@ -365,6 +367,7 @@ func newCloneCommand(opts *options) *cobra.Command {
 	cmd.Flags().BoolVar(&cloneOpts.DryRunSetup, "dry-run-setup", false, "print the setup plan without executing it")
 	cmd.MarkFlagsMutuallyExclusive("ssh", "no-ssh")
 	cmd.MarkFlagsMutuallyExclusive("setup", "no-setup")
+	cmd.MarkFlagsMutuallyExclusive("profile", "no-profile")
 	return cmd
 }
 
@@ -515,8 +518,8 @@ func newScratchCommand(opts *options) *cobra.Command {
 func newSetAuthCommand(opts *options) *cobra.Command {
 	var authOpts setauth.Options
 	cmd := &cobra.Command{
-		Use:   "set-auth [--user <name>]",
-		Short: "Scope gh authentication to this gt-managed repository with direnv",
+		Use:   "set-auth [--user <name>] [--profile <name>]",
+		Short: "Scope gh authentication and an environment profile to this repository with direnv",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -524,10 +527,15 @@ func newSetAuthCommand(opts *options) *cobra.Command {
 				return fmt.Errorf("resolve current directory: %w", err)
 			}
 			authOpts.CWD = cwd
+			authOpts.Profiles = opts.cfg.Profiles
 			return setauth.Run(context.Background(), setauth.ExecRunner{}, opts.ui, authOpts)
 		},
 	}
-	cmd.Flags().StringVar(&authOpts.User, "user", "", "GitHub user to bind GH_TOKEN to")
+	cmd.Flags().StringVar(&authOpts.User, "user", "", "GitHub user to bind GH_TOKEN to (default: the user already in .envrc)")
+	cmd.Flags().StringVar(&authOpts.Profile, "profile", "", "environment profile to export from .envrc (overrides match patterns)")
+	cmd.Flags().BoolVar(&authOpts.NoProfile, "no-profile", false, "export no environment profile even if a match pattern applies")
+	cmd.Flags().BoolVar(&authOpts.Yes, "yes", false, "overwrite a differing .envrc without confirming")
+	cmd.MarkFlagsMutuallyExclusive("profile", "no-profile")
 	return cmd
 }
 

@@ -24,6 +24,8 @@ type Options struct {
 	NoSSH       bool
 	NoSetupAuth bool
 	User        string
+	Profile     string
+	NoProfile   bool
 	AuthRunner  setauth.Runner
 
 	SetupNames  []string
@@ -127,8 +129,12 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 			authRunner = setauth.ExecRunner{}
 		}
 		if err := setauth.Run(ctx, authRunner, printer, setauth.Options{
-			CWD:  folder,
-			User: opts.User,
+			CWD:       folder,
+			User:      opts.User,
+			Profiles:  cfg.Profiles,
+			RepoURL:   repoURL,
+			Profile:   opts.Profile,
+			NoProfile: opts.NoProfile,
 		}); err != nil {
 			return err
 		}
