@@ -1000,3 +1000,29 @@ func compliantRulesetWithoutQueue(t *testing.T) string {
 	}
 	return string(body)
 }
+
+// The two halves have to agree about the same file. The render layer writes the
+// merge_group trigger; the settings layer reads it back off the default branch
+// and decides whether the queue may be applied. A disagreement between them —
+// a template reshuffle the parser stops recognising, say — would silently
+// withhold the queue from every repository in the fleet, which is why this test
+// feeds the *rendered* orchestrator to the real check rather than a fixture
+// written to match it.
+func TestTheRenderedOrchestratorSatisfiesTheOrderingGate(t *testing.T) {
+	rendered := pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"]
+	if len(rendered) == 0 {
+		t.Fatal("no orchestrator was rendered")
+	}
+
+	gh := alignedGH(t)
+	gh.responses["contents/.github/workflows/ci-orchestration.yml"] = string(rendered)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	if !strings.Contains(lastRulesetBody(gh), "merge_queue") {
+		t.Errorf("the settings layer did not recognise gt's own rendered trigger:\n%s",
+			lastRulesetBody(gh))
+	}
+}
