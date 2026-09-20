@@ -17,9 +17,12 @@ workflow, so aggregation goes back to `needs:` and `needs.*.result` — free,
 immediate, unambiguous. The polling loop, its timeout, and the trigger lint all
 stop existing.
 
-The same move fixes double-running tests: the orchestrator sequences tests
-before bulwark and hands the coverage artifact across, so bulwark never re-runs
-a suite the repo already ran.
+The same move keeps tests from running twice, but not by handing an artifact
+across a job boundary: coverage gating, affected-test selection, mutation
+testing and the PR comment all live inside lydite's own commands (`lydite
+test`, `lydite review`, `lydite publish`). `ci-test` is optional and fully
+decoupled — an escape hatch for a suite lydite doesn't already run, not
+something the `lydite` job consumes.
 
 ## Two constraints that shape the design
 
@@ -113,9 +116,12 @@ jobs:
     uses: ./.github/workflows/ci-end2end.yml
     secrets: inherit
 
-  bulwark:
-    needs: [attest, test]
+  lydite:
+    needs: [attest]
     if: needs.attest.outputs.validated != 'true'
+    # `reusable-bulwark.yml` keeps its name from before the job it wraps was
+    # renamed; the job itself has no steps of its own — it forwards entirely
+    # to lydite's own reusable pipeline (referral, scan, test, publish).
     uses: pedromvgomes/gt/.github/workflows/reusable-bulwark.yml@v0
     secrets: inherit
 
@@ -127,7 +133,7 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    needs: [attest, preflight, build, test, end2end, bulwark, conventional-commits, governance]
+    needs: [attest, preflight, build, test, end2end, lydite, conventional-commits, governance]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -459,11 +465,11 @@ missing one.
 ## `ci-gate` is a job, not a file
 
 It is tempting to give the gate its own `ci-gate.yml`, since it serves a
-different purpose from the stages: it is the one check branch protection names.
-It cannot be a separate file, because **`needs:` does not cross workflows.** A
-standalone gate workflow could only learn the stages' results by polling the
-Checks API — reintroducing the timeout, the ambiguity and the lint this design
-exists to delete.
+different purpose from the stages: it is the check branch protection names for
+every real job failure. It cannot be a separate file, because **`needs:` does
+not cross workflows.** A standalone gate workflow could only learn the stages'
+results by polling the Checks API — reintroducing the timeout, the ambiguity
+and the lint this design exists to delete.
 
 This is what wardnet already does: `all-checks-passed` is a job at
 `pr.yml:220`, alongside `preflight` and the build leaves, not a workflow of its
@@ -485,31 +491,49 @@ Branch protection has to move in the same window as the merge, or PRs block on a
 check that can never report. `gt repo settings apply` handles it; the ordering
 is not optional.
 
+### A second required context for a referral verdict
+
+Wherever lydite is enabled, branch protection requires `lydite/referral`
+alongside `ci-gate`. A referral verdict leaves the `lydite` job itself green —
+it is a commit status lydite's referral step publishes directly, not a job
+result — so `ci-gate` never sees it, and requiring `ci-gate` alone would let a
+referred pull request merge with nothing red anywhere. `ci-gate` covers a real
+job failure and is unclearable: fix it and push. `lydite/referral` covers a
+refer verdict and clears through the existing `/lydite clear` PR-comment path,
+not by re-running anything.
+
 ## Coverage contract
 
-`ci-test.yml` uploads an artifact named `gt-coverage` containing whatever
-profiles it produced. The bulwark stage downloads it when present, and falls
-back to running the suite itself when absent.
+There is no artifact hand-off between `ci-test.yml` and `lydite`. Coverage
+gating, affected-test selection, mutation testing and the PR comment all live
+inside lydite's own commands (`lydite test`, `lydite review`, `lydite
+publish`), which discover and run each unit's suite themselves — `lydite`
+never downloads a `gt-coverage` artifact, and `ci-test.yml` never has to
+produce one.
 
-That is the whole double-run fix, and it is a convention rather than
-configuration: nothing to wire beyond uploading under the agreed name, laid out
-the way the repository is laid out.
+That settles the `.bulwark.yml` question the other way from an artifact
+convention: gt scaffolds no coverage configuration at all. `bulwark.enabled`
+and `bulwark.dir` (the scan root — the `dir` input `reusable-bulwark.yml`
+forwards to lydite) are the only knobs gt's own spec carries; everything else
+about what gets scanned, gated and reported is lydite's own config, read from
+the scan root once lydite runs there.
 
-The layout matters because bulwark finds each report next to the unit that
-produced it rather than at one agreed path — `<moduleDir>/coverage.out` per Go
-module, `<crateDir>/coverage/` per Rust crate,
-`<packageDir>/coverage/{coverage-summary.json,lcov.info}` per TypeScript package
-— and the TypeScript pair has no override at all, deliberately, because those
-locations are Vitest convention rather than a project's choice. So the stage
-mirrors the artifact's tree into the scan root instead of lifting named files
-out of it. A repo with one module still uploads one `coverage.out` and it still
-lands at the root; a repo with nine TypeScript packages uploads nine pairs and
-each lands where discovery already looks.
+Scanning itself runs token-less by design: gt does not forward a
+`SEMGREP_APP_TOKEN` to the lydite pipeline. Supplying that token is a single
+on/off switch for both diff-aware scanning *and* uploading every finding to
+Semgrep's own AppSec Platform — the two are not separable — and token-less
+scanning already gets equivalent diff-aware scoping from `--diff-base`.
+Forwarding it by default would silently hand every governed repository a
+second findings dashboard, against the point of a single lydite ledger. A
+repository that wants the platform upload anyway configures it itself, outside
+gt's rendered workflow.
 
-It also settles the `.bulwark.yml` question. `report` becomes the normal path
-and `run` the fallback, decided by the orchestrator rather than per repo — so
-gt's spec keeps only `bulwark.enabled` and `bulwark.dir` (the scan root, which
-bulwark must know before it can read `.bulwark.yml` at that root).
+### Release ordering
+
+Nothing in this pipeline can run end to end yet. No lydite release carries
+`test@v1`, `review@v1` and `publish@v1` at a tag `lydite/actions@v1` resolves
+to, so gt must not cut a release until lydite 0.2 is tagged and
+`lydite/actions@v1` points at it.
 
 ## Scaffold files are a genuine addition
 
@@ -545,7 +569,9 @@ pipeline:
 rendered orchestrator. Adding a stage is a re-render — a workflow-file change,
 so a local `gt repo fleet sync`. Rare by design.
 
-Ordering is fixed: preflight → build → (test, end2end) → bulwark. Deliberately
+Ordering is fixed: preflight → build → (test, end2end). `lydite` needs only
+`attest`, not the outcome of the repo's own stages — it runs its own tests,
+scan and referral independently rather than waiting on `ci-test`. Deliberately
 not configurable; a central pipeline every repo can rearrange is not a central
 pipeline.
 
@@ -626,10 +652,9 @@ edge that does not exist.
 ## Migration
 
 Per repo: move build and test jobs out of the existing `ci.yml` into
-`ci-build.yml` and `ci-test.yml`, have the test stage upload `gt-coverage`, and
-delete what the orchestrator now owns. Real work per repository — considerably
-more than the current gate, which sits beside the existing pipeline rather than
-replacing it.
+`ci-build.yml` and `ci-test.yml`, and delete what the orchestrator now owns.
+Real work per repository — considerably more than the current gate, which sits
+beside the existing pipeline rather than replacing it.
 
 wardnet is no longer the outlier it was: `ci-preflight.yml` is exactly its
 `detect-changes` job, and its build leaves map onto `ci-build.yml`. Its
