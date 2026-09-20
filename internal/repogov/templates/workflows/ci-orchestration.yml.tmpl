@@ -125,21 +125,17 @@ jobs:
 
   lydite:
     needs: [{{ .BulwarkNeeds }}]
-    # `!cancelled()` because a job whose needs were skipped is skipped too, and
-    # ci-gate counts skipped as a pass. Without it a preflight that skips tests
-    # would silently disable the security gate while the required check stayed
-    # green.
-    #
-    # The skip guard is safe here even though this job is what publishes the
-    # required lydite/referral status: `validated` only reports true on a push
-    # to the default branch whose tree already carries a passing attestation —
-    # a squash-merge landing what the PR already validated. Branch protection
-    # enforces required checks against the pull_request/merge_group run for
-    # that tree, and attestation cannot exist yet the first time a tree is
-    # seen, so `validated` is false there and this job runs, publishing
-    # lydite/referral before the check is ever evaluated. The skip only ever
-    # elides a redundant re-run after the gate already passed.
-    if: "!cancelled() && {{ .SkipGuard }}"
+    # No skip guard, unlike the stages above: this job is the only publisher
+    # of the required lydite/referral status, and that status has to be fresh
+    # for whatever SHA branch protection is evaluating. reusable-attest.yml
+    # walks a merge_group ref back to its queued PR's head, so an
+    # already-validated PR tree can report `validated` true on the queue's own
+    # commit too — skipping on that would leave lydite/referral unpublished
+    # for a SHA no earlier run ever reported it under, stalling the queue
+    # entry on a check nothing can report. `!cancelled()` alone: still runs
+    # when a dependency fails, since a real referral verdict on a failing tree
+    # is more useful than none.
+    if: "!cancelled()"
     uses: {{ .BulwarkWorkflowRef }}
     permissions:
       contents: read
