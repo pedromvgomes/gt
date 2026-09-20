@@ -458,6 +458,15 @@ func desiredRuleset(spec repospec.Spec, mq mergeQueueState, strict bool) map[str
 	// is no ci-orchestration.yml, so requiring the context would block every PR
 	// forever on a check nothing can report.
 	if spec.Pipeline.CI.Enabled {
+		checks := []map[string]any{
+			{"context": repospec.GateCheckJob},
+		}
+		// A referral verdict leaves the lydite job green, so the gate never
+		// sees it. Requiring the status it publishes instead is what stops a
+		// referred pull request merging.
+		if spec.Bulwark.Enabled {
+			checks = append(checks, map[string]any{"context": repospec.BulwarkReferralContext})
+		}
 		rules = append(rules, map[string]any{
 			"type": "required_status_checks",
 			"parameters": map[string]any{
@@ -467,9 +476,7 @@ func desiredRuleset(spec repospec.Spec, mq mergeQueueState, strict bool) map[str
 				// rather than the decision gt has not made yet.
 				"strict_required_status_checks_policy": strict,
 				"do_not_enforce_on_create":             false,
-				"required_status_checks": []map[string]any{
-					{"context": repospec.GateCheckJob},
-				},
+				"required_status_checks":               checks,
 			},
 		})
 	}
@@ -817,6 +824,9 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision
 			var wantChecks []string
 			if spec.Pipeline.CI.Enabled {
 				wantChecks = []string{repospec.GateCheckJob}
+				if spec.Bulwark.Enabled {
+					wantChecks = append(wantChecks, repospec.BulwarkReferralContext)
+				}
 			}
 			if !sameStrings(wantChecks, got) {
 				add("ruleset.required_status_checks",
@@ -837,10 +847,12 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision
 
 // SettingsDiff reports what `SettingsApply` would change.
 //
-// The ruleset always requires exactly one check — gt's gate. The checks a repo
-// actually cares about are declared in .gt-repo.yaml and enforced by the gate
-// aggregating them, which is what keeps this list stable forever instead of
-// needing an update every time a CI job is renamed.
+// The ruleset requires gt's gate, and — wherever bulwark is enabled — lydite's
+// referral status alongside it. The checks a repo actually cares about are
+// declared in .gt-repo.yaml and enforced by the gate aggregating them, which is
+// what keeps this list stable instead of needing an update every time a CI job
+// is renamed. The referral status is the exception: it is not a job the gate
+// can aggregate, because a referred pull request leaves its job green.
 func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name string) ([]SettingChange, error) {
 	if owner == "" || name == "" {
 		return nil, fmt.Errorf("could not determine the GitHub repository from origin")

@@ -406,6 +406,17 @@ var (
 // check name carries no "<caller> / " prefix.
 const GateCheckJob = "ci-gate"
 
+// BulwarkReferralContext is the commit-status context lydite's referral step
+// publishes its verdict under, and the second check branch protection requires
+// wherever bulwark is enabled. A "refer" verdict never fails the job, so this
+// status is the only thing that holds a referred pull request; a `/lydite
+// clear` comment flips it without re-running anything.
+//
+// It mirrors internal/clearance.Context in the separate lydite/lydite module,
+// which nothing here can import. The two are not kept in sync mechanically, so
+// a rename on either side needs a matching change on the other.
+const BulwarkReferralContext = "lydite/referral"
+
 // Ecosystems gt can render a Dependabot entry for. Keys match Dependabot's
 // package-ecosystem values.
 var Ecosystems = []string{
