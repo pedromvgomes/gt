@@ -35,7 +35,15 @@ jobs:
       statuses: write
       id-token: write
       pull-requests: write
-    uses: ./.github/workflows/reusable-lydite.yml
+    # Fully qualified, not `./...`: this file is called by a foreign
+    # repository, and whether a relative `uses:` inside a chained reusable
+    # workflow resolves against the caller or against gt is exactly the
+    # ambiguity docs/pipeline-design.md already flags as inconsistently
+    # documented upstream. An explicit external ref has no such question —
+    # it always resolves in gt's own repository, at this tag, the same
+    # deliberately-moving `@v1` the other reusable-workflow calls track.
+    # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: pedromvgomes/gt/.github/workflows/reusable-lydite.yml@v1
     with:
       dir: ${{ inputs.dir }}
       coverage: ${{ inputs.coverage }}
