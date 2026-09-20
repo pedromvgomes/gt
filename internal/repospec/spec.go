@@ -30,7 +30,7 @@ type Spec struct {
 
 	Dependabot          []DependabotEntry   `yaml:"dependabot" json:"dependabot"`
 	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge" json:"dependabot_auto_merge"`
-	Bulwark             Bulwark             `yaml:"bulwark" json:"bulwark"`
+	Bulwark             Bulwark             `yaml:"lydite" json:"lydite"`
 	Pipeline            Pipeline            `yaml:"pipeline" json:"pipeline"`
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
@@ -124,9 +124,9 @@ type DependabotAutoMerge struct {
 // generically reproduce.
 type Bulwark struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
-	// Dir scopes bulwark to a subdirectory. It stays an input rather than
-	// moving into .bulwark.yml because that file lives *at* the scan root, so
-	// bulwark must know the root before it can read its own config.
+	// Dir scopes the scan to a subdirectory, forwarded as reusable-lydite.yml's
+	// `dir` input — lydite reads its own config from that root, so gt has to
+	// know it before lydite can find `.lydite/` there at all.
 	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
 	// Coverage runs bulwark's coverage gate. Default true.
 	//
@@ -540,6 +540,7 @@ func Read(path string) (Spec, error) {
 // Parse unmarshals and validates manifest bytes. path is used only for error
 // messages.
 func Parse(data []byte, path string) (Spec, error) {
+	data = aliasLegacyBulwarkKey(data)
 	spec := Default()
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return Spec{}, fmt.Errorf("parse %s: %w", path, err)
@@ -548,6 +549,45 @@ func Parse(data []byte, path string) (Spec, error) {
 		return Spec{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return spec, nil
+}
+
+// aliasLegacyBulwarkKey renames a top-level `bulwark:` key to `lydite:` when
+// the manifest carries no `lydite:` of its own. Parsing is non-strict, so an
+// unrecognized top-level key is dropped without an error: a manifest that
+// disabled the scan, or pointed it at a non-default dir, would otherwise parse
+// back to the enabled-by-default Spec and silently re-enable it. `lydite:`
+// always wins; a stray `bulwark:` beside it is ignored.
+//
+// Malformed input is returned unchanged so the caller's yaml.Unmarshal reports
+// the parse error once, in its own words.
+func aliasLegacyBulwarkKey(data []byte) []byte {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
+		return data
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return data
+	}
+	hasLydite := false
+	var bulwarkKey *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		switch root.Content[i].Value {
+		case "lydite":
+			hasLydite = true
+		case "bulwark":
+			bulwarkKey = root.Content[i]
+		}
+	}
+	if hasLydite || bulwarkKey == nil {
+		return data
+	}
+	bulwarkKey.Value = "lydite"
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return data
+	}
+	return out
 }
 
 // Validate reports the first problem that would make a spec unrenderable.

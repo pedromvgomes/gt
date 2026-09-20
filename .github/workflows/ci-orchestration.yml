@@ -157,7 +157,7 @@ jobs:
     # when a dependency fails, since a real referral verdict on a failing tree
     # is more useful than none.
     if: "!cancelled()"
-    uses: ./.github/workflows/reusable-bulwark.yml
+    uses: ./.github/workflows/reusable-lydite.yml
     permissions:
       contents: read
       statuses: write

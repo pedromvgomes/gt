@@ -30,7 +30,7 @@ func TestSaveSpecOmitsDefaults(t *testing.T) {
 	// Nothing that merely restates a default survives.
 	for _, key := range []string{
 		"conventional_commits:", "settings:", "merge:", "branch_protection:",
-		"dependabot_auto_merge:", "bulwark:", "files:", "squash_title:",
+		"dependabot_auto_merge:", "lydite:", "files:", "squash_title:",
 		"dismiss_stale_reviews:", "require_thread_resolution:", "max_bump:",
 	} {
 		if strings.Contains(raw, key) {
@@ -256,8 +256,8 @@ func TestSavedSpecKeepsStructFieldOrder(t *testing.T) {
 	}
 	raw := readSpecFile(t, root)
 
-	// Declaration order in repospec.Spec: bulwark, conventional_commits, settings.
-	want := []string{"bulwark:", "conventional_commits:", "settings:"}
+	// Declaration order in repospec.Spec: lydite, conventional_commits, settings.
+	want := []string{"lydite:", "conventional_commits:", "settings:"}
 	at := -1
 	for _, key := range want {
 		i := strings.Index(raw, "\n"+key)

@@ -381,7 +381,7 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		BulwarkNeeds:    strings.Join(bulwarkNeeds, ", "),
 
 		AttestWorkflowRef:              workflowRef("attest.yml", major, in.RepoOwner, in.RepoName),
-		BulwarkWorkflowRef:             workflowRef("bulwark.yml", major, in.RepoOwner, in.RepoName),
+		BulwarkWorkflowRef:             workflowRef("lydite.yml", major, in.RepoOwner, in.RepoName),
 		ConventionalCommitsWorkflowRef: workflowRef("conventional-commits.yml", major, in.RepoOwner, in.RepoName),
 		GovernanceWorkflowRef:          workflowRef("governance.yml", major, in.RepoOwner, in.RepoName),
 	}, nil

@@ -1,4 +1,4 @@
-name: gt bulwark
+name: gt lydite
 
 # Reusable code-quality and security gate. Every governed repo carries it by
 # default; it is the quality gate, and ci-gate waits on it.
@@ -24,7 +24,7 @@ on:
           Defaults to "." rather than "". A value passed explicitly overrides a
           default even when it is empty — so forwarding "" hands the pipeline
           `--dir ""` and it dies on `open : no such file or directory`, on every
-          repository that does not set bulwark.dir.
+          repository that does not set lydite.dir.
         type: string
         default: "."
       coverage:

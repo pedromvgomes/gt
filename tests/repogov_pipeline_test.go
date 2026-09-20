@@ -146,8 +146,8 @@ func TestLyditeJobCallsGtsOwnReusableWorkflow(t *testing.T) {
 	if !ok {
 		t.Fatal("lydite job was not rendered")
 	}
-	if !strings.Contains(lydite.Uses, "reusable-bulwark.yml") {
-		t.Errorf("lydite uses = %q, want gt's own reusable-bulwark.yml", lydite.Uses)
+	if !strings.Contains(lydite.Uses, "reusable-lydite.yml") {
+		t.Errorf("lydite uses = %q, want gt's own reusable-lydite.yml", lydite.Uses)
 	}
 	if strings.Contains(lydite.Uses, "lydite/actions") {
 		t.Errorf("lydite uses = %q, want the call to go through gt so the pipeline can be repointed in one file",
@@ -155,7 +155,7 @@ func TestLyditeJobCallsGtsOwnReusableWorkflow(t *testing.T) {
 	}
 }
 
-// The `with:` keys have to be the ones reusable-bulwark.yml declares: a key it
+// The `with:` keys have to be the ones reusable-lydite.yml declares: a key it
 // does not accept fails the workflow on every governed repository at once.
 func TestLyditeJobForwardsTheScanDirAndCoverageGate(t *testing.T) {
 	spec := repospec.Default()
@@ -168,10 +168,10 @@ func TestLyditeJobForwardsTheScanDirAndCoverageGate(t *testing.T) {
 		t.Fatal("lydite job was not rendered")
 	}
 	if got := lydite.With["dir"]; got != "source" {
-		t.Errorf("with.dir = %#v, want the spec's bulwark.dir", got)
+		t.Errorf("with.dir = %#v, want the spec's lydite.dir", got)
 	}
 	if got := lydite.With["coverage"]; got != false {
-		t.Errorf("with.coverage = %#v, want false from bulwark.coverage", got)
+		t.Errorf("with.coverage = %#v, want false from lydite.coverage", got)
 	}
 
 	// With the defaults there is nothing to say: the callee already defaults to
@@ -642,7 +642,7 @@ func TestLyditeConfigIsNeverScaffolded(t *testing.T) {
 	}
 }
 
-// reusable-bulwark.yml declares no `secrets:` input, and a caller passing a
+// reusable-lydite.yml declares no `secrets:` input, and a caller passing a
 // secret a reusable workflow does not accept is an error actionlint reports on
 // every rendered consumer at once.
 //
