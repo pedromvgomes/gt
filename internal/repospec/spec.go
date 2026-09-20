@@ -415,6 +415,13 @@ const GateCheckJob = "ci-gate"
 // It mirrors internal/clearance.Context in the separate lydite/lydite module,
 // which nothing here can import. The two are not kept in sync mechanically, so
 // a rename on either side needs a matching change on the other.
+//
+// Required unscoped by integration_id: anything with write access to the repo
+// can post a status under this context and satisfy the check without going
+// through /lydite clear. Scoping it needs the numeric App ID of whatever
+// GitHub App actually publishes it — tracked as pedromvgomes/gt#71 rather than
+// guessed at here, since a wrong ID creates a required check nothing can ever
+// satisfy, which is worse than this gap.
 const BulwarkReferralContext = "lydite/referral"
 
 // Ecosystems gt can render a Dependabot entry for. Keys match Dependabot's

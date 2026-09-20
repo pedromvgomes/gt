@@ -514,10 +514,12 @@ func orNone(s string) string {
 	return s
 }
 
-// A stage skipped by preflight must not take lydite down with it: GitHub skips
-// a job whose needs were skipped, and ci-gate counts skipped as a pass — so the
+// attest being skipped must not take lydite down with it: GitHub skips a job
+// whose needs were skipped, and ci-gate counts skipped as a pass — so the
 // security gate would silently vanish while the required check stayed green.
-func TestBulwarkSurvivesASkippedTestStage(t *testing.T) {
+// lydite needs only attest now, not a test stage — there is nothing else it
+// could be dragged down by.
+func TestLyditeSurvivesASkippedDependency(t *testing.T) {
 	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
 	lydite, ok := jobs["lydite"]
 	if !ok {

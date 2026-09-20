@@ -59,6 +59,14 @@ jobs:
     # silently repointed at code we never reviewed. lydite is ours: the floating
     # major alias is its intended delivery channel, moved deliberately on each
     # release so consumers pick up scanner fixes without a bump PR each time.
+    #
+    # That tag still grants real authority on every governed repository at
+    # once — id-token: write for publish's relay auth, statuses: write for the
+    # referral verdict. lydite.yml running step-security/harden-runner first,
+    # the way every other reusable workflow gt calls does, is therefore a
+    # contract this call depends on, not an assumption: whoever can move the
+    # v1 tag replaces every step lydite.yml runs, egress audit included, and
+    # that first-party trust is what this suppression accepts.
     # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
     uses: lydite/actions/.github/workflows/lydite.yml@v1
     with:
