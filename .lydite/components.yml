@@ -1,0 +1,5 @@
+components:
+  - name: gt
+    dir: .
+    runner: go-test
+    args: ["./tests/...", "-coverpkg=./internal/..."]
