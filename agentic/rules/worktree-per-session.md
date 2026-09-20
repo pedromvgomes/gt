@@ -1,3 +1,7 @@
+---
+description: One worktree per agent session in gt's bare-repo layout — use gt rather than raw git, and fetch before reporting what is on the default branch.
+---
+
 # Rule: one worktree per agent session
 
 This repository uses a **bare-repo + typed-worktree** layout managed by the

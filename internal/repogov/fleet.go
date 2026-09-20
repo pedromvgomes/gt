@@ -25,6 +25,9 @@ type PendingPR struct {
 	Eligible bool
 	// Reason explains an ineligible verdict.
 	Reason string
+	// BaseRefName is the branch the PR would land on. The merge needs it
+	// because a merge queue is a property of a branch, not of a repository.
+	BaseRefName string
 }
 
 // pullRequest is the subset of the PR list API the fleet commands read.
@@ -37,6 +40,7 @@ type pullRequest struct {
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
 	IsDraft          bool   `json:"isDraft"`
+	BaseRefName      string `json:"baseRefName"`
 }
 
 // ListRepos enumerates the repositories in an owner, excluding archived ones.
@@ -78,7 +82,7 @@ func PendingWorkflowPRs(ctx context.Context, gh GH, repo, maxBump string) ([]Pen
 		// --limit is required: gh defaults to 30, which would silently cap the
 		// sweep this command exists to make exhaustive.
 		"--limit", "200",
-		"--json", "number,title,files,mergeable,mergeStateStatus,isDraft")
+		"--json", "number,title,files,mergeable,mergeStateStatus,isDraft,baseRefName")
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +96,7 @@ func PendingWorkflowPRs(ctx context.Context, gh GH, repo, maxBump string) ([]Pen
 		if pr.IsDraft || !TouchesWorkflows(pathsOf(pr)) {
 			continue
 		}
-		p := PendingPR{Repo: repo, Number: pr.Number, Title: pr.Title}
+		p := PendingPR{Repo: repo, Number: pr.Number, Title: pr.Title, BaseRefName: pr.BaseRefName}
 		p.Bump, p.Eligible, p.Reason = eligibility(pr, maxBump)
 		out = append(out, p)
 	}
@@ -137,8 +141,26 @@ func eligibility(pr pullRequest, maxBump string) (bump string, eligible bool, re
 // classify — they are the ones that touch .github/workflows/** and so can
 // never be merged in CI. Demanding a full semver made merge-pending a no-op
 // for its entire reason for existing.
+//
+// The leading operator is optional for the same class of reason. Where a
+// manifest pins a *requirement* rather than a version, Dependabot titles the
+// PR "update <pkg> requirement from =0.9.143 to =0.9.144" — cargo's exact-version
+// operator, and Ruby's "~> 1.2", and npm's "^1.2.3". Requiring a bare digit after
+// "from " skipped every one of them as unparseable, which for a repository that
+// pins its toolchain in cargo manifests is most of what Dependabot opens.
+//
+// A compound range ("from >=1.0,<2.0") still does not match, and that is
+// deliberate: its two halves cannot be reduced to one old/new pair, and a
+// wrong answer here merges a bump nobody classified. No match means the PR is
+// reported as needing a human, which is the safe direction.
 var dependabotTitle = regexp.MustCompile(
-	`from v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-[A-Za-z0-9.\-]+)? to v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-[A-Za-z0-9.\-]+)?`)
+	`from ` + versionOperator + ` *v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-[A-Za-z0-9.\-]+)?` +
+		` to ` + versionOperator + ` *v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-[A-Za-z0-9.\-]+)?`)
+
+// versionOperator is the optional requirement operator a version may carry in
+// a Dependabot title. Non-capturing, so the version group numbers the rest of
+// dependabotTitle depends on are unchanged.
+const versionOperator = `(?:>=|<=|==|!=|~>|[=<>~^])?`
 
 // ParseBump classifies a Dependabot PR title as a patch, minor or major bump.
 // An omitted component counts as zero, so "from 4 to 5" is a major bump and
@@ -199,14 +221,72 @@ func TouchesWorkflows(paths []string) bool {
 	return false
 }
 
+// mergeQueueQuery asks whether one branch of a repository is behind a merge
+// queue. There is no REST equivalent and no `gh pr` field that answers it: the
+// queue is reachable only through GraphQL's Repository.mergeQueue(branch:),
+// which is null where the branch has none.
+const mergeQueueQuery = `query($owner:String!,$name:String!,$branch:String!){` +
+	`repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id}}}`
+
+// MergeQueueEnabled reports whether the given branch is behind a merge queue.
+//
+// It is asked of GitHub rather than computed from the spec because the spec
+// does not know. `base_freshness: auto` — the default — names the guarantee
+// and leaves gt to pick the mechanism from the repository's ownership and
+// visibility at `settings apply` time, and the queue is withheld again until
+// ci-orchestration.yml carries a merge_group trigger on the default branch. So
+// the only place the answer exists is the repository itself.
+func MergeQueueEnabled(ctx context.Context, gh GH, repo, branch string) (bool, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok {
+		return false, fmt.Errorf("%q is not owner/name", repo)
+	}
+	raw, err := gh.Run(ctx, "api", "graphql",
+		"-f", "query="+mergeQueueQuery,
+		"-f", "owner="+owner, "-f", "name="+name, "-f", "branch="+branch)
+	if err != nil {
+		return false, err
+	}
+	var resp struct {
+		Data struct {
+			Repository struct {
+				MergeQueue *struct {
+					ID string `json:"id"`
+				} `json:"mergeQueue"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return false, fmt.Errorf("parse merge queue for %s (%s): %w", repo, branch, err)
+	}
+	return resp.Data.Repository.MergeQueue != nil, nil
+}
+
 // MergePending squash-merges a pending PR using the caller's own credentials.
 // It refuses anything the policy gates rejected, so the escalation path cannot
 // be used to bypass them.
+//
+// `--delete-branch` is dropped where the base branch has a merge queue. gh
+// rejects the combination outright — "Cannot use `-d` or `--delete-branch` when
+// merge queue enabled" — and it rejects it before merging, so passing the flag
+// unconditionally did not merge-and-keep-the-branch, it failed every merge in
+// every queued repository. Nothing is lost by dropping it: `settings.merge.
+// delete_branch_on_merge` is a gt-managed repository setting that defaults to
+// true, and the queue honours it when it lands the group.
+//
+// A probe that cannot answer is treated as "queued" for the same reason. The
+// cost of being wrong that way is a branch left behind that the repository
+// setting deletes anyway; the cost of being wrong the other way is a refused
+// merge, which is the bug this replaces.
 func MergePending(ctx context.Context, gh GH, pr PendingPR) error {
 	if !pr.Eligible {
 		return fmt.Errorf("%s#%d is not eligible: %s", pr.Repo, pr.Number, pr.Reason)
 	}
-	_, err := gh.Run(ctx, "pr", "merge", fmt.Sprint(pr.Number),
-		"--repo", pr.Repo, "--squash", "--delete-branch")
+	args := []string{"pr", "merge", fmt.Sprint(pr.Number), "--repo", pr.Repo, "--squash"}
+	queued, err := MergeQueueEnabled(ctx, gh, pr.Repo, pr.BaseRefName)
+	if err == nil && !queued {
+		args = append(args, "--delete-branch")
+	}
+	_, err = gh.Run(ctx, args...)
 	return err
 }

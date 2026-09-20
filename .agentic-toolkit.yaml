@@ -1,25 +1,40 @@
-# Entry-point stack manifest. `agtk sync` renders .claude/, CLAUDE.md and
-# .mcp.json from this file plus the stacks it extends; those outputs are
-# generated and gitignored, while this file and the lockfile are committed.
+# Entry manifest for the agentic toolkit. `agtk sync` renders .claude/,
+# CLAUDE.md, .mcp.json, .agents/, AGENTS.md and .codex/ from this file plus the
+# stacks it composes; every one of those outputs is generated and gitignored,
+# while this file and the lockfile are committed.
+#
+# This is an entry manifest, not a stack: it composes stacks and finds gt's own
+# definitions by convention. Anything dropped under agentic/<category>/ renders
+# without being named here, which is why agentic/skills/use-gt,
+# agentic/rules/worktree-per-session and agentic/instructions/gt-repo.md appear
+# in no list below.
 root: agentic
 
-extends:
+stacks:
   - github.com/pedromvgomes/agentic-toolkit.git/stacks/default.yaml
   - github.com/pedromvgomes/agentic-toolkit.git/stacks/plannotator.yaml
   - github.com/pedromvgomes/agentic-toolkit.git/stacks/serena.yaml
   - github.com/pedromvgomes/agentic-toolkit.git/stacks/rtk.yaml
 
-# gt's own agent guidance, resolved as bare names under root: agentic. These
-# are the definitions agentic/ exists to hold — an agent working in any repo
-# cloned with gt should reach for 'gt wt add' rather than 'git worktree add',
-# and that instruction lives with the tool that enforces it.
-skills:
-  - use-gt
-rules:
-  - worktree-per-session
+# Both targets, so an agent working here reads the same instructions whichever
+# CLI it is. Rendering for a platform is what puts agentic/instructions/ where
+# that platform looks; a Codex session in a repo rendered for Claude alone
+# would be working with none of gt's guidance and no sign that it was missing.
+#
+# AGENTS.md is agtk's output under this setting, rewritten from
+# agentic/instructions/ on every render and indexing agentic/rules/. It is
+# gitignored for the same reason CLAUDE.md is — hand-editing either one is
+# writing into a file the next render overwrites.
+platforms:
+  - claude
+  - codex
 
-# Curation provider for the memory store. `agtk memory curate` refuses to run
-# without one, since promoting a candidate into notes/ is a model judgement and
-# the store has exactly one writer.
+# The store moved out of .agents/ when that directory became the Codex render
+# root: a repo ignores a rendered root wholesale, and the ignore rule would
+# have reached the committed notes underneath it.
+#
+# `agent` has no default because curation is the one operation that spends
+# money, so an unconfigured repo is refused rather than guessed at.
 memory:
+  root: .memory
   agent: claudecode

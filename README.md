@@ -400,7 +400,7 @@ this way.
 
 ## Coding-agent integration
 
-This repo ships an `agentic/` directory that lets coding agents (Claude Code, Cursor, etc.) discover and follow the bare-repo + worktree workflow without you having to re-explain it every session.
+This repo ships an `agentic/` directory that lets coding agents (Claude Code, Codex, etc.) discover and follow the bare-repo + worktree workflow without you having to re-explain it every session.
 
 ```
 agentic/
@@ -409,11 +409,17 @@ agentic/
     scripts/ensure-gt.sh        # idempotent installer the skill calls
   rules/
     worktree-per-session.md     # short "rules of the road" for agents
+  instructions/
+    gt-repo.md                  # what gt is, and a map of where the detail is
+  references/                   # the detail, one file per concern, read on demand
 ```
 
-- **`agentic/skills/use-gt/`** is a Claude Code skill (with the standard `name` + `description` frontmatter). Point your agent at it once and it will reach for `gt clone` / `gt wt add` / `gt wt rm` instead of raw `git`, install `gt` on demand via the helper script, and ask the right pre-clone questions (which `gh` user to authenticate as, SSH vs HTTPS, etc.).
+Everything under `agentic/` is the **source**; the files an agent actually reads — `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.agents/`, `.codex/`, `.mcp.json` — are rendered from it by [agentic-toolkit](https://github.com/pedromvgomes/agentic-toolkit) (`agtk sync`) and are gitignored. `.agentic-toolkit.yaml` opts this repo into both the `claude` and `codex` targets, which is why `AGENTS.md` is generated here rather than written by hand. Edit `agentic/`, never the rendered output.
+
+- **`agentic/skills/use-gt/`** is a skill (with the standard `name` + `description` frontmatter). Point your agent at it once and it will reach for `gt clone` / `gt wt add` / `gt wt rm` instead of raw `git`, install `gt` on demand via the helper script, and ask the right pre-clone questions (which `gh` user to authenticate as, SSH vs HTTPS, etc.).
 - **[Environment profiles](#environment-profiles)** close the other half of the loop: they pin which credential store the agent CLIs themselves read (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so a run launched from the checkout bills the account you chose rather than the one the launching shell happened to export.
 - **`agentic/rules/worktree-per-session.md`** captures the non-negotiables: always use the bare-repo layout, sessions start at the gt-managed root, and every session must `gt wt add` its own worktree before doing any work.
+- **`agentic/instructions/gt-repo.md`** is the entry point for an agent working on gt *itself* rather than with it. It stays short on purpose: it maps each area of the codebase to the reference in `agentic/references/` that governs it, so an agent reads the one that covers what it is about to change instead of all of them. Durable findings about the code live in `.memory/`, managed by `agtk memory`.
 
 Why bother:
 
