@@ -260,33 +260,6 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 			add("ci", st, gated)
 		}
 	}
-	// bulwark reads .bulwark.yml from its scan root. Scaffolded rather than
-	// managed: its contents are bulwark's business, but coverage.source has to
-	// say `report` or bulwark re-runs the suite ci-test already ran — and the
-	// default is `run`, so forgetting the file is silently expensive rather
-	// than loudly broken.
-	//
-	// Not scaffolded when the coverage gate is off: the file exists to declare
-	// where coverage comes from, and writing one to answer a question nobody
-	// asks is how a repository ends up with configuration it cannot explain.
-	// A repository that wants it for bulwark's other settings can add it; gt
-	// never deletes a scaffold.
-	if spec.Bulwark.Enabled && spec.Bulwark.Coverage &&
-		spec.Pipeline.CI.Enabled && contains(spec.Pipeline.CI.Stages, "test") {
-		path := ".bulwark.yml"
-		if spec.Bulwark.Dir != "" {
-			path = spec.Bulwark.Dir + "/.bulwark.yml"
-		}
-		out = append(out, fileSpec{
-			key:    "bulwark-config",
-			tmpl:   "templates/scaffolds/bulwark-config.yml.tmpl",
-			path:   path,
-			mode:   ModeScaffold,
-			wanted: func(repospec.Spec) bool { return true },
-			data:   func(Input, templateData) (any, error) { return struct{}{}, nil },
-		})
-	}
-
 	if spec.Pipeline.CD.Enabled {
 		gated := gatedStages(spec.Pipeline.CD.Stages, cdWiring)
 		for _, st := range spec.Pipeline.CD.Stages {
@@ -294,15 +267,6 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 		}
 	}
 	return out
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // gatedStages lists the enabled stages preflight can skip, which is what its
@@ -394,16 +358,11 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 	}
 
 	fixed := []string{"conventional-commits", "governance"}
-	// bulwark runs after tests so it can consume the coverage they uploaded
-	// rather than running the suite again.
+	// The job forwards to lydite's own pipeline, which runs the suites it needs
+	// itself — so it waits on attest alone, never on a stage of this one.
 	bulwarkNeeds := []string{"attest"}
 	if in.Spec.Bulwark.Enabled {
-		for _, s := range stages {
-			if s.Name == "test" {
-				bulwarkNeeds = append(bulwarkNeeds, "test")
-			}
-		}
-		fixed = append(fixed, "bulwark")
+		fixed = append(fixed, "lydite")
 	}
 
 	major := MajorTag(in.GTVersion)

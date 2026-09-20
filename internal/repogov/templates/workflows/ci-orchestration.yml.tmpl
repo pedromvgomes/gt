@@ -123,12 +123,12 @@ jobs:
     uses: {{ .GovernanceWorkflowRef }}
 {{- if .Bulwark }}
 
-  bulwark:
+  lydite:
     needs: [{{ .BulwarkNeeds }}]
     # `!cancelled()` because a job whose needs were skipped is skipped too, and
     # ci-gate counts skipped as a pass. Without it a preflight that skips tests
     # would silently disable the security gate while the required check stayed
-    # green. bulwark still runs *after* tests, to consume their coverage.
+    # green.
     if: "!cancelled() && {{ .SkipGuard }}"
     uses: {{ .BulwarkWorkflowRef }}
     # Named explicitly, NOT `inherit`. GitHub documents inherit as working for
@@ -149,7 +149,9 @@ jobs:
       CODECOV_TOKEN: ${{ "{{" }} secrets.CODECOV_TOKEN {{ "}}" }}
       SEMGREP_APP_TOKEN: ${{ "{{" }} secrets.SEMGREP_APP_TOKEN {{ "}}" }}
     permissions:
-      contents: write
+      contents: read
+      statuses: write
+      id-token: write
       pull-requests: write
 {{- if or .BulwarkDir (not .BulwarkCoverage) }}
     with:
