@@ -3,16 +3,14 @@ name: gt bulwark
 # Reusable code-quality and security gate. Every governed repo carries it by
 # default; it is the quality gate, and ci-gate waits on it.
 #
-# Coverage arrives by convention rather than configuration: ci-test uploads an
-# artifact named `gt-coverage`, and this workflow consumes it instead of running
-# the suite a second time. That is the entire double-run fix. With no artifact
-# it falls back to running the tests itself, which is correct but slower.
+# It has no steps of its own. The whole gate is lydite's own reusable pipeline —
+# referral, scan, test and publish, orchestrated as one — and this workflow only
+# forwards to it, so the shape of the gate is versioned in lydite/actions rather
+# than restated here.
 #
-# Which side produces coverage is bulwark's own setting now — `coverage.source`
-# in .bulwark.yml, which gt scaffolds as `run` and the repository flips to
-# `report` once ci-test actually uploads one. This workflow no longer tells
-# bulwark anything about it; it only lands the artifact where bulwark already
-# searches.
+# harden-runner lives in lydite.yml's jobs, not in this file: a job that is only
+# `uses:` cannot also carry `steps:`, so there is nowhere here to run it. It is
+# lydite's concern by design, not something dropped on the way.
 
 on:
   workflow_call:
@@ -20,271 +18,49 @@ on:
       dir:
         description: >-
           Subdirectory to scan, for repos whose source is not at the root. Stays
-          an input rather than moving into .bulwark.yml because that file lives
-          at the scan root, so bulwark must know the root to find it.
+          an input rather than moving into lydite's own config because that file
+          lives at the scan root, so lydite must know the root to find it.
 
-          Defaults to "." rather than "". bulwark's own `dir` input defaults to
-          ".", but a value passed explicitly overrides a default even when it is
-          empty — so forwarding "" handed bulwark `--dir ""` and it died on
-          `open : no such file or directory`, on every repository that did not
-          set bulwark.dir.
+          Defaults to "." rather than "". A value passed explicitly overrides a
+          default even when it is empty — so forwarding "" hands the pipeline
+          `--dir ""` and it dies on `open : no such file or directory`, on every
+          repository that does not set bulwark.dir.
         type: string
         default: "."
       coverage:
         description: >-
-          Run bulwark's coverage gate. Off for a repository with nothing it can
+          Run lydite's coverage gate. Off for a repository with nothing it can
           measure — left on there, it resolves a baseline for languages that do
           not exist and reports a number that means nothing.
         type: boolean
         default: true
-    secrets:
-      # Declared explicitly rather than relying on the caller's `secrets:
-      # inherit`. GitHub documents inherit as working for "reusable workflows in
-      # the same organization or enterprise", and gt lives under pedromvgomes
-      # while its consumers live under the wardnet and tumika orgs — so their
-      # organization secrets did not reach this workflow at all. bulwark then
-      # skipped its Codecov upload (`if: inputs.codecov-token != ''`) and fell
-      # back to token-less semgrep, silently: nothing failed, coverage simply
-      # stopped being recorded over time.
-      #
-      # Declaring them makes the caller resolve each value in its own context
-      # and pass it in, which works across owners.
-      CODECOV_TOKEN:
-        description: Enables the Codecov upload, and so coverage history.
-        required: false
-      SEMGREP_APP_TOKEN:
-        description: Switches semgrep to diff-aware `semgrep ci` and AppSec reporting.
-        required: false
+
+# No `secrets:` block, deliberately. SEMGREP_APP_TOKEN in particular is not
+# forwarded: supplying it is a single on/off switch for both diff-aware scanning
+# AND uploading every finding to Semgrep's own AppSec Platform — the two are not
+# separable. Token-less scanning already gets equivalent diff-aware scoping from
+# `--diff-base`, so forwarding the token by default would buy nothing and
+# silently hand every governed repository a second findings dashboard, against
+# the point of a single lydite ledger. A consumer who wants that upload anyway
+# configures it themselves, outside gt's rendered workflow.
 
 permissions:
   contents: read
 
 jobs:
-  scan:
-    name: scan
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  lydite:
+    name: lydite
     permissions:
-      # bulwark caches coverage baselines on the bulwark-state branch and posts
-      # a summary comment on the PR.
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # bulwark resolves the PR's base commit to scan the diff, which needs
-          # full history rather than a shallow clone.
-          fetch-depth: 0
-
-      # bulwark provisions a language toolchain itself when the ambient one does
-      # not satisfy what the repo declares — but it cannot cache. It is a
-      # composite action, so actions/cache is out of reach, and every run
-      # therefore re-downloads the dependency tree and compiles it from cold.
-      #
-      # That is survivable on a small repository and fatal on a large one. Every
-      # hand-rolled bulwark job did this setup before calling the action;
-      # dropping it when the job moved into this workflow was invisible on the
-      # only Go repositories that had migrated (gt and bulwark, six requires
-      # each) and killed the first big one: inforge's scan was reclaimed by the
-      # runner three times running, always mid-gosec on the Pulumi-heavy
-      # packages, on a 417-entry go.sum. The same scan passed in 3m32s from that
-      # repo's own job, whose only relevant difference was setup-go with
-      # cache: true.
-      #
-      # So the caller installs the declared toolchain and warms its caches, and
-      # bulwark's own probe then finds the ambient toolchain satisfactory and
-      # provisions nothing. The two are complementary, not competing.
-      - name: Detect ecosystems needing a toolchain
-        id: eco
-        env:
-          DIR: ${{ inputs.dir }}
-        run: |
-          set -euo pipefail
-          d="${DIR:-.}"
-
-          # Same skip set bulwark's own detection walk uses, so this cannot
-          # decide "Rust" from a vendored Cargo.toml bulwark will never scan.
-          first() {
-            find "$d" -name "$1" \
-              -not -path '*/node_modules/*' -not -path '*/target/*' \
-              -not -path '*/vendor/*' -not -path '*/.git/*' \
-              -not -path '*/dist/*' -not -path '*/build/*' \
-              -print -quit 2>/dev/null || true
-          }
-
-          gomod=$(first go.mod)
-          if [ -n "$gomod" ]; then
-            printf 'go=true\ngo-mod=%s\n' "$gomod" >> "$GITHUB_OUTPUT"
-            echo "go: $gomod"
-          fi
-
-          cargo=$(first Cargo.toml)
-          if [ -n "$cargo" ]; then
-            printf 'rust=true\nrust-dir=%s\n' "$(dirname "$cargo")" >> "$GITHUB_OUTPUT"
-            echo "rust: $cargo"
-          fi
-
-          pkg=$(first package.json)
-          if [ -n "$pkg" ]; then
-            echo "node=true" >> "$GITHUB_OUTPUT"
-            echo "node: $pkg"
-            # setup-node's cache input needs the package manager named, and it
-            # fails outright if the manager is absent — so pnpm is installed
-            # below rather than merely declared. An unrecognised lockfile means
-            # no cache rather than a broken run.
-            #
-            # The lockfile PATH is emitted too, not just the manager. setup-node
-            # resolves its default cache-dependency-path against the workspace
-            # root, so a lockfile anywhere below it — inforge keeps a Docusaurus
-            # site in website/ — makes the action exit with "Dependencies lock
-            # file is not found". Naming the file we actually found is what makes
-            # this work in a repo whose Node project is not at the top.
-            #
-            # yarn is deliberately detected but left uncached. setup-node asks
-            # the *global* yarn where its cache lives, and a project on Berry
-            # (`"packageManager": "yarn@4"`, which is the common case here) makes
-            # that global Yarn 1.22 refuse outright — the action exits non-zero
-            # and the security gate never runs. Skipping the cache costs a repo
-            # nothing bulwark measures; getting it wrong costs the whole scan.
-            root=$(dirname "$pkg")
-            if   [ -f "$root/pnpm-lock.yaml" ];    then pm=pnpm; lock="$root/pnpm-lock.yaml"
-            elif [ -f "$root/package-lock.json" ]; then pm=npm;  lock="$root/package-lock.json"
-            else pm=""; lock=""
-            fi
-            if [ -n "$pm" ]; then
-              printf 'node-pm=%s\nnode-lock=%s\n' "$pm" "$lock" >> "$GITHUB_OUTPUT"
-              echo "node package manager: $pm ($lock)"
-            fi
-          fi
-
-      # go-version-file rather than a version: the repo's own go.mod is the one
-      # statement of what it builds with, and reading it here is what keeps this
-      # from becoming a fifth place that drifts.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: steps.eco.outputs.go == 'true'
-        with:
-          go-version-file: ${{ steps.eco.outputs.go-mod }}
-          cache: true
-
-      # Caches the cargo registry and the target directory. Rust needs no
-      # toolchain action: the runners ship rustup, which honours a
-      # rust-toolchain.toml on first invocation, and bulwark provisions the
-      # channel when one is declared and missing.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.eco.outputs.rust == 'true'
-        with:
-          workspaces: ${{ steps.eco.outputs.rust-dir }}
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        if: steps.eco.outputs.node-pm == 'pnpm'
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.eco.outputs.node == 'true'
-        with:
-          cache: ${{ steps.eco.outputs.node-pm }}
-          cache-dependency-path: ${{ steps.eco.outputs.node-lock }}
-
-      - name: Download coverage from the test stage
-        id: coverage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          name: gt-coverage
-          path: ${{ runner.temp }}/gt-coverage
-
-      - name: Place the coverage report where bulwark looks
-        env:
-          COVERAGE_DIR: ${{ runner.temp }}/gt-coverage
-          DIR: ${{ inputs.dir }}
-        run: |
-          set -euo pipefail
-
-          # bulwark decides who produces coverage from `coverage.source` in
-          # .bulwark.yml, not from an action input — the tests-mode/go-report
-          # inputs were removed once that setting moved into the file. So this
-          # step no longer tells bulwark anything; it just puts the artifact
-          # where bulwark already searches.
-          #
-          # It mirrors the artifact's tree into the scan root rather than
-          # lifting two named files out of it, because bulwark finds reports
-          # relative to the UNIT that produced them, not at one agreed path:
-          # <moduleDir>/coverage.out per Go module, <crateDir>/coverage/ per
-          # Rust crate, and <packageDir>/coverage/coverage-summary.json plus
-          # <packageDir>/coverage/lcov.info per TypeScript package — the last
-          # of which has no override at all, deliberately, because those paths
-          # are Vitest convention rather than a project's choice.
-          #
-          # A flat copy therefore worked only for a repo with exactly one unit
-          # per language. Any monorepo with two TypeScript packages had nowhere
-          # to put the second one's report, so `coverage.source: report` fell
-          # back to measuring nothing for that language — silently, since an
-          # unmeasured language warns rather than failing. The repos hitting
-          # this were hand-rolling their own bulwark job to work around it.
-          #
-          # Mirroring is what the contract already said: "an artifact
-          # containing whatever profiles it produced" (docs/pipeline-design.md).
-          # ci-test lays the artifact out the way the repository is laid out,
-          # and every path lands where discovery already looks.
-          #
-          # Backwards compatible: an artifact holding only coverage.out or
-          # lcov.info at its top level still lands at the scan root, exactly as
-          # the flat copy left it.
-          if [[ ! -d "$COVERAGE_DIR" ]]; then
-            echo "no gt-coverage artifact — bulwark will find no report for this run"
-            echo "(a stage skipped by ci-preflight produces none, which is not an error)"
-            exit 0
-          fi
-
-          dest="${DIR:-.}"
-
-          # Every placed path is echoed rather than copied silently. This step
-          # writes into the tree that is about to be scanned, so which files it
-          # put where has to be answerable from the log alone — and a report
-          # that landed one directory away from where bulwark looks is
-          # otherwise indistinguishable from one that was never produced.
-          copied=0
-          while IFS= read -r -d '' src; do
-            rel="${src#"$COVERAGE_DIR"/}"
-            mkdir -p "${dest}/$(dirname "$rel")"
-            cp "$src" "${dest}/${rel}"
-            echo "placed ${rel}"
-            copied=$((copied + 1))
-          done < <(find "$COVERAGE_DIR" -type f -print0)
-
-          if [[ "$copied" -eq 0 ]]; then
-            echo "::warning::gt-coverage exists but is empty — bulwark will find no report"
-          else
-            echo "placed ${copied} file(s) under ${dest}/"
-          fi
-
-      # Every third-party action above is SHA-pinned, because a tag its owner
-      # controls can be silently repointed at code we never reviewed. bulwark is
-      # ours: the floating major alias is its intended delivery channel, moved
-      # deliberately on each release so consumers pick up scanner fixes without
-      # a bump PR each time.
-      #
-      # Tracking v2 since bulwark 2.0.0. The release only moves the tag matching
-      # its own major, so v1 stopped at 1.9.0 the moment 2.0.0 shipped: staying
-      # on it would have frozen this wrapper there for good while the binary it
-      # installs kept advancing, because `version` defaults to latest and gt
-      # does not pin it.
-      # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
-      - uses: wardnet/bulwark@v2
-        with:
-          dir: ${{ inputs.dir }}
-          run-coverage: ${{ inputs.coverage }}
-          # No coverage inputs: bulwark reads coverage.source from .bulwark.yml
-          # at its scan root. gt scaffolds that file with `source: run`, which
-          # is what is true while ci-test is still a stub. A repository flips it
-          # to `report` when ci-test starts uploading gt-coverage; doing so
-          # earlier makes bulwark exit on a report that was never produced.
-          #
-          # GitHub withholds secrets from Dependabot events, so those runs fall
-          # back to bulwark's token-less path automatically.
-          semgrep-app-token: ${{ secrets.SEMGREP_APP_TOKEN }}
-          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+      contents: read
+      statuses: write # referral's verdict
+      id-token: write # publish's relay auth
+      pull-requests: write # publish's fallback comment path
+    # Third-party actions are SHA-pinned, because a tag its owner controls can be
+    # silently repointed at code we never reviewed. lydite is ours: the floating
+    # major alias is its intended delivery channel, moved deliberately on each
+    # release so consumers pick up scanner fixes without a bump PR each time.
+    # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: lydite/actions/.github/workflows/lydite.yml@v1
+    with:
+      dir: ${{ inputs.dir }}
+      gate-coverage: ${{ inputs.coverage }}
