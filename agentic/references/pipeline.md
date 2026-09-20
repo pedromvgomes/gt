@@ -11,13 +11,19 @@ together and nothing else:
 
 ```
 attest
-  └─ ci-preflight
-       └─ ci-build
-            ├─ ci-test ─── bulwark
-            └─ ci-end2end
+  ├─ ci-preflight
+  │    └─ ci-build
+  │         ├─ ci-test
+  │         └─ ci-end2end
+  └─ lydite
 conventional-commits, governance
-  └─ ci-gate     ← the one required check
+  └─ ci-gate     ← the required check that aggregates every job above
 ```
+
+The `lydite` job hangs off `attest` alone, not off `ci-test`: it forwards to
+lydite's own reusable pipeline, which discovers and runs each unit's suite
+itself. There is no artifact hand-off between `ci-test` and `lydite` — see
+Coverage below.
 
 The `ci-*` and `cd-*` stage files are the **repository's**. gt writes each one
 once as an empty stub and never touches it again — not to update it, not to
@@ -29,10 +35,10 @@ deployment go.
 everything runs until a repository says otherwise. **A skipped stage passes the
 gate** — see the note of the same name in the memory store.
 
-## One required check, forever
+## The gate, and the second required check
 
-Branch protection requires exactly one check: **`ci-gate`**. It is a plain job
-in a workflow the repository owns, so its check name is just the job name, and
+Branch protection always requires **`ci-gate`**. It is a plain job in a
+workflow the repository owns, so its check name is just the job name, and
 because every stage is a job in that same workflow it aggregates them with
 `needs:` — no polling, no timeout, and no way to confuse "absent" with "not
 started yet". Renaming a CI job means editing `.gt-repo.yaml`, never the
@@ -40,7 +46,18 @@ protection rule.
 
 `gateNeeds` in `pipeline.go` builds that `needs:` list. It must name every
 stage the spec enabled plus the fixed jobs, or the gate goes green on work that
-never ran.
+never ran. `lydite` is one of those fixed jobs wherever `spec.Bulwark.Enabled`
+— but a referral verdict never fails the job, so `ci-gate` going green does not
+mean lydite cleared the tree.
+
+Wherever bulwark is enabled, `settings.go`'s `desiredRuleset` also requires a
+second, unrelated context: **`lydite/referral`** (`repospec.BulwarkReferralContext`),
+the commit status lydite's referral step publishes directly rather than a job
+in this workflow. That is what actually blocks a referred pull request from
+merging — see [`merge-queue.md`](merge-queue.md) for how required checks are
+assembled, and the comment on `BulwarkReferralContext` in `repospec/spec.go` for
+why it has to be kept in sync with `lydite/lydite`'s `internal/clearance.Context`
+by hand.
 
 ## The attestation
 
@@ -63,12 +80,15 @@ that fails closed on an unreadable status would block every release on a blip.
 
 ## Coverage
 
-`ci-test` uploads coverage as an artifact named `gt-coverage`
-(`CoverageArtifact`), and the bulwark stage extracts it instead of running the
-suite a second time. `.bulwark.yml` must then say `coverage.source: report`;
-`run` is not merely slower here, it is wrong, because bulwark's fallback runs
-the suite without `-coverpkg` and every test lives in `./tests` while the code
-lives in `./internal`.
+There is no artifact hand-off between `ci-test` and `lydite`. Testing, review
+and publishing all live inside lydite's own commands (`lydite test`, `lydite
+review`, `lydite publish`), which discover and run each unit's suite
+themselves; `lydite` never reads `ci-test`'s output. `.bulwark.yml` is gone —
+gt scaffolds no coverage configuration at all now, only the `bulwark.enabled`
+and `bulwark.dir` knobs in the spec. Everything about what gets scanned, gated
+and reported is lydite's own config, read from the scan root once lydite runs
+there. See [`docs/pipeline-design.md`](../../docs/pipeline-design.md) for the
+full rationale.
 
 ## Permissions
 

@@ -54,7 +54,6 @@ agentic/                # this directory — see the -repo instruction
 
 - **Tests live in `tests/`, code lives in `internal/`.** The suite is run with
   `-coverpkg=./internal/...` for exactly this reason; a plain `go test` measures
-  coverage on the test package and reports near zero. `.bulwark.yml` documents
-  the same trap.
+  coverage on the test package and reports near zero.
 - **`cmd/gt` holds no logic worth testing.** Anything with a decision in it
   belongs in `internal/`, where the suite can reach it without a process.
