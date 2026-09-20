@@ -118,12 +118,20 @@ jobs:
 
   lydite:
     needs: [attest]
-    if: needs.attest.outputs.validated != 'true'
+    # No skip guard: this is the sole publisher of the required
+    # lydite/referral status, which has to be fresh for whatever SHA branch
+    # protection is evaluating — see "A second required context for a
+    # referral verdict", below.
+    if: "!cancelled()"
     # `reusable-bulwark.yml` keeps its name from before the job it wraps was
     # renamed; the job itself has no steps of its own — it forwards entirely
     # to lydite's own reusable pipeline (referral, scan, test, publish).
     uses: pedromvgomes/gt/.github/workflows/reusable-bulwark.yml@v0
-    secrets: inherit
+    permissions:
+      contents: read
+      statuses: write
+      id-token: write
+      pull-requests: write
 
   conventional-commits:
     uses: pedromvgomes/gt/.github/workflows/reusable-conventional-commits.yml@v0
@@ -664,6 +672,23 @@ open question for that repo.
 
 Push-to-`main` CI is out of scope: the orchestrator is PR-only. Repos keep what
 they run on push until a `ci-main.yml` covers it.
+
+### A repo already running its test suite through `ci-test.yml` runs it twice
+
+`lydite` discovers and runs each declared component's suite itself, entirely
+independently of `ci-test.yml` — there is no artifact hand-off or ordering
+between them any more (see Coverage, above). A repository whose `ci-test.yml`
+already executes the same suites `.lydite/components.yml` declares therefore
+pays for that suite twice on every PR once this lands: once inside `lydite`
+and once inside `ci-test`, at full runner cost each time.
+
+`ci-test.yml` stays useful for a suite lydite doesn't cover — a smoke test, an
+integration suite outside lydite's language support, anything
+`.lydite/components.yml` doesn't declare. The migration step this forces:
+once a repository declares a component in `.lydite/components.yml`, remove
+that component's suite from `ci-test.yml` rather than leaving both to run.
+gt does not detect or warn about this overlap — `ci-test.yml` is the
+repository's own file, and gt scaffolds it once and never inspects it again.
 
 ## What this deletes
 

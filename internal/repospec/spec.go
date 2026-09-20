@@ -418,10 +418,11 @@ const GateCheckJob = "ci-gate"
 //
 // Required unscoped by integration_id: anything with write access to the repo
 // can post a status under this context and satisfy the check without going
-// through /lydite clear. Scoping it needs the numeric App ID of whatever
-// GitHub App actually publishes it — tracked as pedromvgomes/gt#71 rather than
-// guessed at here, since a wrong ID creates a required check nothing can ever
-// satisfy, which is worse than this gap.
+// through /lydite clear. Not fixable by adding one yet, either — as of this
+// writing lydite/lydite publishes this status and handles /lydite clear with
+// the plain per-run GITHUB_TOKEN, not any GitHub App identity, so there is no
+// App to scope the check to. Tracked as pedromvgomes/gt#71, blocked on
+// lydite/lydite (or lydite/actions) authenticating that path as an App first.
 const BulwarkReferralContext = "lydite/referral"
 
 // Ecosystems gt can render a Dependabot entry for. Keys match Dependabot's
