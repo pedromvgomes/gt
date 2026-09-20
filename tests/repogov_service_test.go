@@ -220,3 +220,80 @@ func TestVersionStaleIgnoresTheVPrefix(t *testing.T) {
 		})
 	}
 }
+
+// `check` warning "sync to re-render with current policy" is only useful if
+// sync then does something. A repository whose rendering did not change across
+// the releases between has every managed file byte-correct and a spec that
+// round-trips, so the two older conditions both say "nothing to write" while
+// gt_version still records the older gt — and the warning repeats forever.
+func TestNeedsWriteCoversAStaleVersionStampAlone(t *testing.T) {
+	for name, tc := range map[string]struct {
+		report        repogov.Report
+		skipWorkflows bool
+		want          bool
+	}{
+		"nothing stale":                {report: repogov.Report{}, want: false},
+		"version alone":                {report: repogov.Report{VersionStale: true}, want: true},
+		"spec alone":                   {report: repogov.Report{SpecStale: true}, want: true},
+		"drifted file":                 {report: repogov.Report{Results: []repogov.Result{{Status: repogov.StatusDrifted}}}, want: true},
+		"version alone, skipWorkflows": {report: repogov.Report{VersionStale: true}, skipWorkflows: true, want: false},
+		// Skipping workflows withholds the version stamp, not the rest of the
+		// write: a spec still restating defaults is slimmed on the weekly
+		// in-repo run, which is what rolls that out across the fleet.
+		"spec stale, skipWorkflows": {report: repogov.Report{SpecStale: true, VersionStale: true}, skipWorkflows: true, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.report.NeedsWrite(tc.skipWorkflows); got != tc.want {
+				t.Errorf("NeedsWrite(%v) = %v, want %v", tc.skipWorkflows, got, tc.want)
+			}
+		})
+	}
+}
+
+// The end-to-end shape of the same bug: a repository that is compliant in every
+// other respect must still be brought to the running version by one sync, and
+// must be clean on the next check.
+func TestSyncClearsAStaleVersionOnAnOtherwiseCompliantRepo(t *testing.T) {
+	root := t.TempDir()
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	if err := repogov.SaveSpec(root, spec); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+	// Render everything, so only the stamp can be out of date afterwards.
+	if _, _, err := repogov.Sync(testOptions(root)); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	loaded, err := repospec.Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	loaded.GTVersion = "v0.5.0"
+	if err := repogov.SaveSpec(root, loaded); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+
+	report, err := repogov.Check(testOptions(root))
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if len(repogov.Drifted(report.Results)) != 0 || report.SpecStale {
+		t.Fatalf("setup is not the case under test: drifted=%d specStale=%v",
+			len(repogov.Drifted(report.Results)), report.SpecStale)
+	}
+	if !report.NeedsWrite(false) {
+		t.Fatal("NeedsWrite(false) = false on a stale version stamp, so sync would write nothing and the warning could never clear")
+	}
+
+	if _, _, err := repogov.Sync(testOptions(root)); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	after, err := repogov.Check(testOptions(root))
+	if err != nil {
+		t.Fatalf("second Check() error = %v", err)
+	}
+	if after.VersionStale {
+		t.Error("VersionStale still set after sync; the warning would repeat forever")
+	}
+}

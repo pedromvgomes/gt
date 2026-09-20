@@ -69,6 +69,32 @@ func (r Report) Clean() bool {
 	return len(Drifted(r.Results)) == 0 && !r.SpecStale
 }
 
+// NeedsWrite reports whether Sync would change anything, and is what `sync`
+// gates its early return on.
+//
+// It is three conditions rather than one because each is a state the other two
+// miss. A drifted file is the obvious one. SpecStale is the case where every
+// managed file is byte-correct but .gt-repo.yaml still pins defaults sync would
+// now omit. VersionStale is the case where both of those are clean and
+// gt_version still records an older gt — a repository whose rendering did not
+// change across the releases between.
+//
+// Each was, at some point, left out and made its state permanently unfixable:
+// `check` reported it, `sync` wrote nothing, and the report never cleared.
+// Advice the tool itself cannot take is worse than no advice, because it
+// teaches its reader to ignore the signal.
+//
+// VersionStale does not count under skipWorkflows, where apply deliberately
+// withholds the stamp: the workflow files it describes were not rendered, so
+// claiming the version would suppress the only remaining signal that they are
+// behind. Counting it there would confirm a no-op on every weekly in-repo run.
+func (r Report) NeedsWrite(skipWorkflows bool) bool {
+	if len(Drifted(r.Results)) > 0 || r.SpecStale {
+		return true
+	}
+	return r.VersionStale && !skipWorkflows
+}
+
 // versionStale reports whether the spec was rendered by a different gt than the
 // one running, ignoring a leading "v".
 //

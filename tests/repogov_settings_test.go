@@ -605,6 +605,20 @@ func TestParseBump(t *testing.T) {
 		"bump serde from 1.2.3 to 1.2.4 in /source":         repospec.BumpPatch,
 		"chore(deps): bump x from 1.2.3-rc.1 to 1.2.4-rc.2": repospec.BumpPatch,
 		"bump the npm group with 3 updates":                 "",
+
+		// Requirement bumps, where the manifest pins a constraint rather than
+		// a version and Dependabot carries the operator into the title. Cargo
+		// writes "=", Ruby "~>", npm "^" — and a repository that pins its
+		// toolchain in cargo manifests opens mostly these, all of which were
+		// skipped as unparseable.
+		"build(deps): update cargo-nextest requirement from =0.9.143 to =0.9.144 in /source/cli/internal/runner/cargo-nextest-pin": repospec.BumpPatch,
+		"update rack requirement from ~> 1.2 to ~> 1.3":   repospec.BumpMinor,
+		"update lodash requirement from ^1.2.3 to ^2.0.0": repospec.BumpMajor,
+
+		// A compound range reduces to no single old/new pair, so it stays
+		// unparseable rather than being classified from its first bound.
+		// Misreading this one as a patch bump would merge it unreviewed.
+		"update foo requirement from >=1.0,<2.0 to >=1.0,<3.0": "",
 	}
 	for title, want := range tests {
 		got, ok := repogov.ParseBump(title)
@@ -1193,5 +1207,81 @@ func TestSettingsCarriesStrictPolicyThroughADeferral(t *testing.T) {
 	body := lastRulesetBody(gh)
 	if !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
 		t.Errorf("the live strict policy was torn down by a deferral:\n%s", body)
+	}
+}
+
+// A merge queue makes `--delete-branch` illegal rather than merely redundant:
+// gh refuses the combination before merging, so every merge in a queued
+// repository failed. delete_branch_on_merge covers the deletion instead.
+func TestMergePendingDropsDeleteBranchBehindAMergeQueue(t *testing.T) {
+	const queued = `{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}`
+	const unqueued = `{"data":{"repository":{"mergeQueue":null}}}`
+
+	for name, tc := range map[string]struct {
+		probe          string
+		probeErr       error
+		wantDeleteFlag bool
+	}{
+		"queued":           {probe: queued, wantDeleteFlag: false},
+		"not queued":       {probe: unqueued, wantDeleteFlag: true},
+		"probe unanswered": {probeErr: errors.New("graphql: 502"), wantDeleteFlag: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := &fakeGH{responses: map[string]string{"api graphql": tc.probe}}
+			if tc.probeErr != nil {
+				gh.errors = map[string]error{"api graphql": tc.probeErr}
+			}
+			pr := repogov.PendingPR{
+				Repo: "pedromvgomes/demo", Number: 7, Title: "bump x from 1.0.0 to 1.0.1",
+				Eligible: true, BaseRefName: "main",
+			}
+			if err := repogov.MergePending(context.Background(), gh, pr); err != nil {
+				t.Fatalf("MergePending() error = %v", err)
+			}
+			var merge string
+			for _, c := range gh.calls {
+				if strings.HasPrefix(c, "pr merge") {
+					merge = c
+				}
+			}
+			if merge == "" {
+				t.Fatalf("no merge call; calls = %v", gh.calls)
+			}
+			if !strings.Contains(merge, "--squash") {
+				t.Errorf("merge call = %q, want --squash", merge)
+			}
+			if got := strings.Contains(merge, "--delete-branch"); got != tc.wantDeleteFlag {
+				t.Errorf("merge call = %q, --delete-branch = %v, want %v", merge, got, tc.wantDeleteFlag)
+			}
+		})
+	}
+}
+
+// The probe asks about one branch, not the repository: a queue is configured
+// per branch, and Dependabot can be pointed at a target-branch that is not the
+// default one.
+func TestMergeQueueEnabledQueriesTheBranch(t *testing.T) {
+	gh := &fakeGH{responses: map[string]string{
+		"api graphql": `{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}`,
+	}}
+	got, err := repogov.MergeQueueEnabled(context.Background(), gh, "lydite/lydite", "release")
+	if err != nil {
+		t.Fatalf("MergeQueueEnabled() error = %v", err)
+	}
+	if !got {
+		t.Errorf("MergeQueueEnabled() = false, want true")
+	}
+	call := strings.Join(gh.calls, " ")
+	for _, want := range []string{"owner=lydite", "name=lydite", "branch=release"} {
+		if !strings.Contains(call, want) {
+			t.Errorf("call = %q, want it to carry %q", call, want)
+		}
+	}
+}
+
+func TestMergeQueueEnabledRejectsAMalformedRepo(t *testing.T) {
+	gh := &fakeGH{}
+	if _, err := repogov.MergeQueueEnabled(context.Background(), gh, "nameless", "main"); err == nil {
+		t.Error("MergeQueueEnabled(\"nameless\") = nil error, want a refusal")
 	}
 }

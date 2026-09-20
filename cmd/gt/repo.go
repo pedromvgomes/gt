@@ -217,11 +217,7 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 			printReport(opts.ui, report, govOpts)
 
 			drifted := repogov.Drifted(report.Results)
-			// report.SpecStale matters here as much as a drifted file: it is
-			// the case where every managed file is byte-correct but
-			// .gt-repo.yaml still pins defaults sync would now omit. Gating on
-			// len(drifted) alone made that state permanently unfixable.
-			if len(drifted) == 0 && !report.SpecStale {
+			if !report.NeedsWrite(skipWorkflows) {
 				opts.ui.Info("Nothing to write.")
 				return nil
 			}
