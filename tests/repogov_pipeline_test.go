@@ -22,7 +22,8 @@ type renderedJob struct {
 	Uses  string   `yaml:"uses"`
 	// `secrets:` is either the string "inherit" or a map of named secrets, so it
 	// has to be decoded loosely and inspected by the tests that care.
-	Secrets any `yaml:"secrets"`
+	Secrets any            `yaml:"secrets"`
+	With    map[string]any `yaml:"with"`
 }
 
 func workflowJobs(t *testing.T, content []byte) map[string]renderedJob {
@@ -98,25 +99,28 @@ func TestDisabledStageCollapsesOutOfDependencies(t *testing.T) {
 	}
 }
 
-// bulwark consumes the coverage the test stage uploads. If it did not run
-// after tests, the artifact would not exist yet and it would fall back to
-// running the whole suite again — the double-run this design removes.
-func TestBulwarkRunsAfterTests(t *testing.T) {
-	files := pipelineFiles(t, repospec.Default())
-	jobs := workflowJobs(t, files[".github/workflows/ci-orchestration.yml"])
+// The lydite job forwards to lydite's own pipeline, which runs whatever suites
+// it needs itself and consumes nothing this orchestrator produces. Waiting on
+// the test stage would only delay it behind work it does not use — and couple
+// the security gate to a stage a repository is free to turn off.
+func TestLyditeJobDoesNotWaitOnTestStage(t *testing.T) {
+	for name, stages := range map[string][]string{
+		"with a test stage":    {"preflight", "build", "test"},
+		"without a test stage": {"preflight", "build"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := repospec.Default()
+			spec.Pipeline.CI.Stages = stages
+			jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
 
-	bulwark, ok := jobs["bulwark"]
-	if !ok {
-		t.Fatal("bulwark job was not rendered")
-	}
-	var afterTest bool
-	for _, n := range bulwark.Needs {
-		if n == "test" {
-			afterTest = true
-		}
-	}
-	if !afterTest {
-		t.Errorf("bulwark needs = %v, want it to include test", bulwark.Needs)
+			lydite, ok := jobs["lydite"]
+			if !ok {
+				t.Fatal("lydite job was not rendered")
+			}
+			if !reflect.DeepEqual(lydite.Needs, []string{"attest"}) {
+				t.Errorf("lydite needs = %v, want [attest] alone", lydite.Needs)
+			}
+		})
 	}
 }
 
@@ -124,11 +128,58 @@ func TestBulwarkOmittedWhenDisabled(t *testing.T) {
 	spec := repospec.Default()
 	spec.Bulwark.Enabled = false
 	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
-	if _, ok := jobs["bulwark"]; ok {
-		t.Error("bulwark was rendered despite being disabled")
+	if _, ok := jobs["lydite"]; ok {
+		t.Error("lydite was rendered despite bulwark being disabled")
 	}
-	if gate := jobs[repospec.GateCheckJob]; strings.Contains(strings.Join(gate.Needs, ","), "bulwark") {
-		t.Errorf("gate still waits on bulwark: %v", gate.Needs)
+	if gate := jobs[repospec.GateCheckJob]; strings.Contains(strings.Join(gate.Needs, ","), "lydite") {
+		t.Errorf("gate still waits on lydite: %v", gate.Needs)
+	}
+}
+
+// The orchestrator calls gt's own reusable workflow, not lydite/actions
+// directly. That indirection is what lets gt repoint every governed repository
+// at a new lydite pipeline by editing one hand-authored file, instead of
+// re-rendering and merging a workflow in each consumer.
+func TestLyditeJobCallsGtsOwnReusableWorkflow(t *testing.T) {
+	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	lydite, ok := jobs["lydite"]
+	if !ok {
+		t.Fatal("lydite job was not rendered")
+	}
+	if !strings.Contains(lydite.Uses, "reusable-bulwark.yml") {
+		t.Errorf("lydite uses = %q, want gt's own reusable-bulwark.yml", lydite.Uses)
+	}
+	if strings.Contains(lydite.Uses, "lydite/actions") {
+		t.Errorf("lydite uses = %q, want the call to go through gt so the pipeline can be repointed in one file",
+			lydite.Uses)
+	}
+}
+
+// The `with:` keys have to be the ones reusable-bulwark.yml declares: a key it
+// does not accept fails the workflow on every governed repository at once.
+func TestLyditeJobForwardsTheScanDirAndCoverageGate(t *testing.T) {
+	spec := repospec.Default()
+	spec.Bulwark.Dir = "source"
+	spec.Bulwark.Coverage = false
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+
+	lydite, ok := jobs["lydite"]
+	if !ok {
+		t.Fatal("lydite job was not rendered")
+	}
+	if got := lydite.With["dir"]; got != "source" {
+		t.Errorf("with.dir = %#v, want the spec's bulwark.dir", got)
+	}
+	if got := lydite.With["coverage"]; got != false {
+		t.Errorf("with.coverage = %#v, want false from bulwark.coverage", got)
+	}
+
+	// With the defaults there is nothing to say: the callee already defaults to
+	// the repository root and to running the coverage gate, and a `with:` block
+	// restating a default is noise in every rendered file.
+	def := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])["lydite"]
+	if len(def.With) != 0 {
+		t.Errorf("with = %#v for the default spec, want nothing restated", def.With)
 	}
 }
 
@@ -463,17 +514,17 @@ func orNone(s string) string {
 	return s
 }
 
-// A stage skipped by preflight must not take bulwark down with it: GitHub skips
+// A stage skipped by preflight must not take lydite down with it: GitHub skips
 // a job whose needs were skipped, and ci-gate counts skipped as a pass — so the
 // security gate would silently vanish while the required check stayed green.
 func TestBulwarkSurvivesASkippedTestStage(t *testing.T) {
 	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
-	bulwark, ok := jobs["bulwark"]
+	lydite, ok := jobs["lydite"]
 	if !ok {
-		t.Fatal("bulwark job was not rendered")
+		t.Fatal("lydite job was not rendered")
 	}
-	if !strings.Contains(bulwark.If, "!cancelled()") {
-		t.Errorf("bulwark if = %q, want it to survive a skipped dependency", bulwark.If)
+	if !strings.Contains(lydite.If, "!cancelled()") {
+		t.Errorf("lydite if = %q, want it to survive a skipped dependency", lydite.If)
 	}
 }
 
@@ -552,110 +603,58 @@ func TestSyncAllowsUpgrade(t *testing.T) {
 	}
 }
 
-// bulwark decides who produces coverage from .bulwark.yml, not from an action
-// input — those were removed when the setting moved into the file. gt
-// scaffolds the file so the choice is written down rather than inherited.
+// gt scaffolds no lydite configuration at all. The file existed to tell bulwark
+// where coverage came from; lydite runs its own suites and reads its own
+// `.lydite/` config from the scan root, so a gt-written file here would be
+// configuration a repository carries and nobody can explain.
 //
-// It must scaffold `run`, not `report`. `report` says a report already exists,
-// and at the moment this file is created ci-test is a no-op stub that uploads
-// nothing — bulwark then exits with an error rather than shrugging at the
-// missing file. Onboarding gt itself proved that: the bulwark stage failed on
-// `open : no such file or directory` on a pipeline where every stage was a
-// stub. The repository flips it to `report` in the commit that makes ci-test
-// actually produce coverage.
-func TestBulwarkConfigScaffoldedWhenTestsProduceCoverage(t *testing.T) {
-	files, err := repogov.Render(testInput(repospec.Default()))
-	if err != nil {
-		t.Fatalf("Render() error = %v", err)
-	}
-
-	var found *repogov.File
-	for i := range files {
-		if files[i].Path == ".bulwark.yml" {
-			found = &files[i]
-		}
-	}
-	if found == nil {
-		t.Fatal(".bulwark.yml was not scaffolded")
-	}
-	if found.Mode != repogov.ModeScaffold {
-		t.Errorf("mode = %q, want scaffold — its contents are bulwark's, not gt's", found.Mode)
-	}
-	if !strings.Contains(string(found.Content), "source: run") {
-		t.Errorf("scaffold does not set coverage.source: run:\n%s", found.Content)
-	}
-	// Guards the direction specifically: `report` here fails the security gate
-	// on every repo whose ci-test is still a scaffold, which is all of them on
-	// the day they onboard.
-	if strings.Contains(string(found.Content), "source: report") {
-		t.Errorf("scaffold sets coverage.source: report, which fails until ci-test uploads coverage:\n%s", found.Content)
-	}
-}
-
-// With no test stage nothing produces a report, so declaring `report` would
-// tell bulwark to look for something that is never made.
-func TestBulwarkConfigNotScaffoldedWithoutATestStage(t *testing.T) {
+// Asserted across every combination the spec can produce, because the old
+// scaffold was conditional — a partial revert would put it back for exactly the
+// repositories that hit those conditions.
+func TestLyditeConfigIsNeverScaffolded(t *testing.T) {
 	for name, mutate := range map[string]func(*repospec.Spec){
+		"defaults":         func(*repospec.Spec) {},
 		"no test stage":    func(s *repospec.Spec) { s.Pipeline.CI.Stages = []string{"preflight", "build"} },
 		"bulwark disabled": func(s *repospec.Spec) { s.Bulwark.Enabled = false },
 		"ci disabled":      func(s *repospec.Spec) { s.Pipeline.CI.Enabled = false },
+		"coverage off":     func(s *repospec.Spec) { s.Bulwark.Coverage = false },
+		"coverage off, no test": func(s *repospec.Spec) {
+			s.Bulwark.Coverage = false
+			s.Pipeline.CI.Stages = []string{"preflight", "build"}
+		},
+		"scan dir": func(s *repospec.Spec) { s.Bulwark.Dir = "source" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec := repospec.Default()
 			mutate(&spec)
-			if _, ok := pipelineFiles(t, spec)[".bulwark.yml"]; ok {
-				t.Error(".bulwark.yml was scaffolded when nothing produces a report")
+			files, err := repogov.Render(testInput(spec))
+			if err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			for _, f := range files {
+				if strings.HasSuffix(f.Path, ".bulwark.yml") {
+					t.Errorf("%s was scaffolded; lydite reads its own config from the scan root", f.Path)
+				}
 			}
 		})
 	}
 }
 
-// bulwark reads the file from its scan root, so a repo scanning a subdirectory
-// needs it there rather than at the repository root.
-func TestBulwarkConfigFollowsTheScanDir(t *testing.T) {
-	spec := repospec.Default()
-	spec.Bulwark.Dir = "source"
-	if _, ok := pipelineFiles(t, spec)["source/.bulwark.yml"]; !ok {
-		t.Error("expected source/.bulwark.yml for a repo scanning a subdirectory")
-	}
-}
-
-// The bulwark stage must name its secrets rather than inherit them.
-//
-// GitHub documents `secrets: inherit` as working for reusable workflows "in the
-// same organization or enterprise", and gt lives under a different owner than
-// most repositories that call it. With inherit, an organization secret never
-// arrived: bulwark skipped its Codecov upload, because that step is guarded on
-// a non-empty token, and fell back to token-less semgrep. Nothing failed — the
-// gate stayed green while coverage history quietly stopped being recorded,
-// which is the worst shape a regression can take.
+// reusable-bulwark.yml declares no `secrets:` input, and a caller passing a
+// secret a reusable workflow does not accept is an error actionlint reports on
+// every rendered consumer at once.
 //
 // The repo-owned stages keep `inherit`, and correctly: those are local `./…`
 // calls inside the same repository, where inherit is the whole point.
-func TestBulwarkNamesItsSecretsInsteadOfInheriting(t *testing.T) {
+func TestLyditeJobForwardsNoSecrets(t *testing.T) {
 	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
 
-	bulwark, ok := jobs["bulwark"]
+	lydite, ok := jobs["lydite"]
 	if !ok {
-		t.Fatal("no bulwark job rendered")
+		t.Fatal("no lydite job rendered")
 	}
-	if bulwark.Secrets == "inherit" {
-		t.Fatal("bulwark inherits secrets; an org secret will not reach gt across owners")
-	}
-	named, ok := bulwark.Secrets.(map[string]any)
-	if !ok {
-		t.Fatalf("bulwark secrets = %#v, want a map of named secrets", bulwark.Secrets)
-	}
-	for _, want := range []string{"CODECOV_TOKEN", "SEMGREP_APP_TOKEN"} {
-		v, present := named[want]
-		if !present {
-			t.Errorf("bulwark does not pass %s; the feature it enables silently stops working", want)
-			continue
-		}
-		// It must forward the caller's value, not a literal.
-		if s, _ := v.(string); !strings.Contains(s, "secrets."+want) {
-			t.Errorf("%s = %q, want it to forward ${{ secrets.%s }}", want, s, want)
-		}
+	if lydite.Secrets != nil {
+		t.Errorf("lydite secrets = %#v, want none — its callee accepts no secrets", lydite.Secrets)
 	}
 
 	// A local stage is a different case and must keep inheriting.
@@ -751,17 +750,6 @@ func TestBulwarkCoverageOnByDefault(t *testing.T) {
 	content := string(pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
 	if strings.Contains(content, "coverage: false") {
 		t.Error("coverage disabled with the default spec")
-	}
-}
-
-// .bulwark.yml exists to declare where coverage comes from. With the coverage
-// gate off there is no such question, and scaffolding a file to answer it is
-// how a repository ends up carrying configuration nobody can explain.
-func TestBulwarkConfigNotScaffoldedWhenCoverageIsOff(t *testing.T) {
-	spec := repospec.Default()
-	spec.Bulwark.Coverage = false
-	if _, ok := pipelineFiles(t, spec)[".bulwark.yml"]; ok {
-		t.Error(".bulwark.yml was scaffolded for a repo with the coverage gate off")
 	}
 }
 
