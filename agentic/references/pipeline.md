@@ -59,6 +59,16 @@ assembled, and the comment on `LyditeReferralContext` in `repospec/spec.go` for
 why it has to be kept in sync with `lydite/lydite`'s `internal/clearance.Context`
 by hand.
 
+Clearing that status is `/lydite clear`, posted as a PR comment — answered by
+`lydite-clearance.yml`, a workflow of its own, wired to `issue_comment` rather
+than folded into `ci-orchestration.yml`. An `issue_comment` run always executes
+the *default branch's* copy of every workflow file, never the pull request's,
+which is exactly the property a job that holds `statuses: write` needs; putting
+it in `ci-orchestration.yml` would also mean every other job there re-running
+on each comment. It forwards to gt's own `reusable-lydite-clearance.yml`, the
+same indirection `lydite` itself uses, rendered wherever `spec.Lydite.Enabled`
+— a repo with lydite off has no referral to clear.
+
 ## The attestation
 
 For a `pull_request` event GitHub tests `refs/pull/N/merge` — the merged result

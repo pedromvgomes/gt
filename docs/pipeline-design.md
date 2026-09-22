@@ -506,8 +506,29 @@ it is a commit status lydite's referral step publishes directly, not a job
 result — so `ci-gate` never sees it, and requiring `ci-gate` alone would let a
 referred pull request merge with nothing red anywhere. `ci-gate` covers a real
 job failure and is unclearable: fix it and push. `lydite/referral` covers a
-refer verdict and clears through the existing `/lydite clear` PR-comment path,
-not by re-running anything.
+refer verdict and clears through the `/lydite clear` PR-comment path, not by
+re-running anything.
+
+### Answering a `/lydite` comment
+
+`lydite-clearance.yml` is what actually answers `/lydite clear` (and
+`/lydite explain`, `/lydite exempt`) — a workflow of its own, not a job inside
+`ci-orchestration.yml`, because it triggers on `issue_comment` rather than
+`pull_request`/`push`/`merge_group`. That distinction is load-bearing, not
+cosmetic: an `issue_comment` run always executes the *default branch's* own
+copy of every workflow file, never the pull request's, which is what makes it
+safe for this job to hold `statuses: write` — the logic deciding a clearance
+can never be something the pull request itself edited. Folding the trigger
+into `ci-orchestration.yml` instead would also mean every other job there
+(build, lint, the whole pipeline) re-running on every PR comment, not just a
+`/lydite` one.
+
+It forwards to gt's own `reusable-lydite-clearance.yml`, the same
+caller/reusable split `lydite` itself uses and for the same reason — one
+hand-authored file lets gt repoint every governed repository at a new
+clearance pipeline without re-rendering anything. Rendered wherever
+`spec.Lydite.Enabled`, since a repository with lydite off has no referral to
+clear.
 
 ## Coverage contract
 

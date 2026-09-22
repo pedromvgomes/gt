@@ -314,6 +314,20 @@ func (s scaffoldData) CoverageArtifact() string {
 	return CoverageArtifact
 }
 
+// lyditeClearanceData is the lydite-clearance.yml template input.
+type lyditeClearanceData struct {
+	LyditeDir                  string
+	LyditeClearanceWorkflowRef string
+}
+
+func buildLyditeClearanceData(in Input) lyditeClearanceData {
+	major := MajorTag(in.GTVersion)
+	return lyditeClearanceData{
+		LyditeDir:                  in.Spec.Lydite.Dir,
+		LyditeClearanceWorkflowRef: workflowRef("lydite-clearance.yml", major, in.RepoOwner, in.RepoName),
+	}
+}
+
 // ciData is the ci-orchestration template input.
 type ciData struct {
 	Branch          string

@@ -136,6 +136,80 @@ func TestLyditeOmittedWhenDisabled(t *testing.T) {
 	}
 }
 
+// A repository with lydite off has no referral to clear, so there is nothing
+// for this workflow to listen for.
+func TestLyditeClearanceOmittedWhenDisabled(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Enabled = false
+	files := pipelineFiles(t, spec)
+	if _, ok := files[".github/workflows/lydite-clearance.yml"]; ok {
+		t.Error("lydite-clearance.yml was rendered despite lydite being disabled")
+	}
+}
+
+// This must be its own workflow, triggered on issue_comment alone: folded
+// into ci-orchestration.yml's pull_request/push/merge_group triggers, every
+// other job there (build, lint, the whole pipeline) would run on every PR
+// comment too.
+func TestLyditeClearanceTriggersOnlyOnIssueComment(t *testing.T) {
+	content := pipelineFiles(t, repospec.Default())[".github/workflows/lydite-clearance.yml"]
+	var wf struct {
+		On map[string]any `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(content, &wf); err != nil {
+		t.Fatalf("unmarshal lydite-clearance.yml: %v", err)
+	}
+	if _, ok := wf.On["issue_comment"]; !ok {
+		t.Errorf("on = %v, want issue_comment", wf.On)
+	}
+	for trigger := range wf.On {
+		if trigger != "issue_comment" {
+			t.Errorf("on carries %q; a comment-triggered workflow must not also run every other job on pull_request/push/merge_group",
+				trigger)
+		}
+	}
+}
+
+// Mirrors TestLyditeJobCallsGtsOwnReusableWorkflow: gt's own repo calls its
+// local copy so a PR touching the clearance logic exercises it directly,
+// every other repo pins the moving major tag.
+func TestLyditeClearanceCallsGtsOwnReusableWorkflow(t *testing.T) {
+	gtFiles := renderMap(t, repogov.Input{
+		Spec: repospec.Default(), RepoOwner: "pedromvgomes", RepoName: "gt", GTVersion: "v0.6.0",
+	})
+	clearance := workflowJobs(t, gtFiles[".github/workflows/lydite-clearance.yml"])["clearance"]
+	if clearance.Uses != "./.github/workflows/reusable-lydite-clearance.yml" {
+		t.Errorf("gt's own uses = %q, want the local reusable-lydite-clearance.yml", clearance.Uses)
+	}
+
+	otherFiles := pipelineFiles(t, repospec.Default())
+	otherClearance := workflowJobs(t, otherFiles[".github/workflows/lydite-clearance.yml"])["clearance"]
+	want := "pedromvgomes/gt/.github/workflows/reusable-lydite-clearance.yml@v0"
+	if otherClearance.Uses != want {
+		t.Errorf("uses = %q, want %q", otherClearance.Uses, want)
+	}
+}
+
+// dir has to reach the clearance job the same way it reaches the scan job:
+// both read .lydite/exemptions.yml from the same root.
+func TestLyditeClearanceForwardsDir(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Dir = "source"
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/lydite-clearance.yml"])
+	clearance, ok := jobs["clearance"]
+	if !ok {
+		t.Fatal("clearance job was not rendered")
+	}
+	if got := clearance.With["dir"]; got != "source" {
+		t.Errorf("with.dir = %#v, want the spec's lydite.dir", got)
+	}
+
+	def := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/lydite-clearance.yml"])["clearance"]
+	if def.With != nil {
+		t.Errorf("with = %v, want no block when lydite.dir is the default", def.With)
+	}
+}
+
 // The orchestrator calls gt's own reusable workflow, not lydite/actions
 // directly. That indirection is what lets gt repoint every governed repository
 // at a new lydite pipeline by editing one hand-authored file, instead of
@@ -462,6 +536,7 @@ func TestOrchestratorJobsGrantWhatTheCalledWorkflowsDeclare(t *testing.T) {
 	for _, path := range []string{
 		".github/workflows/ci-orchestration.yml",
 		".github/workflows/cd-orchestration.yml",
+		".github/workflows/lydite-clearance.yml",
 	} {
 		content := pipelineFiles(t, repospec.Default())[path]
 		var wf struct {

@@ -164,6 +164,18 @@ func registry() []fileSpec {
 			},
 		},
 		{
+			key:      "lydite-clearance",
+			tmpl:     "templates/workflows/lydite-clearance.yml.tmpl",
+			path:     WorkflowDir + "/lydite-clearance.yml",
+			workflow: true,
+			mode:     ModeManaged,
+			// A repo with lydite off has nothing a clearance would act on.
+			wanted: func(s repospec.Spec) bool { return s.Lydite.Enabled },
+			data: func(in Input, shared templateData) (any, error) {
+				return buildLyditeClearanceData(in), nil
+			},
+		},
+		{
 			key:      "cd-orchestration",
 			tmpl:     "templates/workflows/cd-orchestration.yml.tmpl",
 			path:     WorkflowDir + "/cd-orchestration.yml",

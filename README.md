@@ -302,8 +302,11 @@ with "not started yet". A stage failure there is unclearable: fix it and push.
 `lydite/referral` is different in kind, not just in name. A referral verdict
 leaves the `lydite` job itself green — it is lydite's own commit status, not a
 job result — so requiring `ci-gate` alone would let a referred pull request
-merge with nothing red anywhere. It clears through the existing `/lydite
-clear` PR-comment path, not by re-running anything.
+merge with nothing red anywhere. It clears through the `/lydite clear`
+PR-comment path, not by re-running anything — answered by a workflow of its
+own, `lydite-clearance.yml`, triggered on `issue_comment` rather than
+`pull_request` so the logic deciding a clearance always runs from the default
+branch, never from the pull request it is deciding about.
 
 Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
 
