@@ -257,28 +257,16 @@ func TestBaseFreshnessDefaultsToAuto(t *testing.T) {
 	}
 }
 
-// The released spelling of the scan block. Parsing is non-strict, so a key no
-// field claims is dropped without an error, and a repository that had turned
-// the scan off would come back with it enabled by default.
-func TestTheRetiredBulwarkKeyStillParses(t *testing.T) {
+// `bulwark:` is not a field any struct claims, so non-strict parsing drops it
+// without an error — a manifest carrying only that key parses to the default
+// spec, with lydite enabled.
+func TestABulwarkKeyIsUnrecognizedAndIgnored(t *testing.T) {
 	spec, err := repospec.Parse([]byte("bulwark:\n  enabled: false\n"), "t.yaml")
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if spec.Bulwark.Enabled {
-		t.Error("enabled = true, want false — the legacy key was dropped")
-	}
-}
-
-// The new key is what the manifest means. A stray legacy key beside it carries
-// no weight.
-func TestTheLyditeKeyWinsOverALegacyBulwarkKey(t *testing.T) {
-	spec, err := repospec.Parse([]byte("bulwark:\n  enabled: false\nlydite:\n  enabled: true\n"), "t.yaml")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if !spec.Bulwark.Enabled {
-		t.Error("enabled = false, want true — the legacy key won")
+	if !spec.Lydite.Enabled {
+		t.Error("enabled = false, want true — an unrecognized key does not override the default spec")
 	}
 }
 

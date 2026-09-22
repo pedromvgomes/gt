@@ -46,16 +46,16 @@ protection rule.
 
 `gateNeeds` in `pipeline.go` builds that `needs:` list. It must name every
 stage the spec enabled plus the fixed jobs, or the gate goes green on work that
-never ran. `lydite` is one of those fixed jobs wherever `spec.Bulwark.Enabled`
+never ran. `lydite` is one of those fixed jobs wherever `spec.Lydite.Enabled`
 — but a referral verdict never fails the job, so `ci-gate` going green does not
 mean lydite cleared the tree.
 
-Wherever bulwark is enabled, `settings.go`'s `desiredRuleset` also requires a
-second, unrelated context: **`lydite/referral`** (`repospec.BulwarkReferralContext`),
+Wherever lydite is enabled, `settings.go`'s `desiredRuleset` also requires a
+second, unrelated context: **`lydite/referral`** (`repospec.LyditeReferralContext`),
 the commit status lydite's referral step publishes directly rather than a job
 in this workflow. That is what actually blocks a referred pull request from
 merging — see [`merge-queue.md`](merge-queue.md) for how required checks are
-assembled, and the comment on `BulwarkReferralContext` in `repospec/spec.go` for
+assembled, and the comment on `LyditeReferralContext` in `repospec/spec.go` for
 why it has to be kept in sync with `lydite/lydite`'s `internal/clearance.Context`
 by hand.
 

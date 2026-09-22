@@ -12,7 +12,7 @@
 # this one a few at a time, so the two coexist for a long while. Two workflows
 # sharing a display name make the Actions list ambiguous and every check read
 # as "CI / …" from one of two places. The `gt ` prefix matches the reusable
-# workflows this calls — gt attest, gt bulwark, gt sync.
+# workflows this calls — gt attest, gt lydite, gt sync.
 name: gt CI
 
 on:

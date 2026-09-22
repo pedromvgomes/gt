@@ -2,9 +2,9 @@
 #
 # gt created it once and will never modify or delete it again.
 #
-# The bulwark stage downloads the `gt-coverage` artifact this uploads and hands
-# it to bulwark rather than letting it run the suite again. That is not only a
-# speed question here: bulwark's fallback runs the suite without -coverpkg,
+# The lydite stage downloads the `gt-coverage` artifact this uploads and hands
+# it to lydite rather than letting it run the suite again. That is not only a
+# speed question here: lydite's fallback runs the suite without -coverpkg,
 # which for this repository measures almost nothing — every test lives in
 # ./tests and exercises ./internal, so the coverage lands on the test package
 # itself and reports ~0%. That is what failed patch coverage on a change whose
@@ -36,10 +36,10 @@ jobs:
       - name: Test
         run: go test ./tests/... -coverpkg=./internal/... -coverprofile=coverage.out
 
-      # Named `gt-coverage` because that is the name the bulwark stage looks
-      # for. Renaming it silently sends bulwark back to running the suite
+      # Named `gt-coverage` because that is the name the lydite stage looks
+      # for. Renaming it silently sends lydite back to running the suite
       # itself, with the miscount above.
-      - name: Upload coverage for the bulwark stage
+      - name: Upload coverage for the lydite stage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gt-coverage

@@ -124,12 +124,12 @@ func TestLyditeJobDoesNotWaitOnTestStage(t *testing.T) {
 	}
 }
 
-func TestBulwarkOmittedWhenDisabled(t *testing.T) {
+func TestLyditeOmittedWhenDisabled(t *testing.T) {
 	spec := repospec.Default()
-	spec.Bulwark.Enabled = false
+	spec.Lydite.Enabled = false
 	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
 	if _, ok := jobs["lydite"]; ok {
-		t.Error("lydite was rendered despite bulwark being disabled")
+		t.Error("lydite was rendered despite lydite being disabled")
 	}
 	if gate := jobs[repospec.GateCheckJob]; strings.Contains(strings.Join(gate.Needs, ","), "lydite") {
 		t.Errorf("gate still waits on lydite: %v", gate.Needs)
@@ -159,8 +159,8 @@ func TestLyditeJobCallsGtsOwnReusableWorkflow(t *testing.T) {
 // does not accept fails the workflow on every governed repository at once.
 func TestLyditeJobForwardsTheScanDirAndCoverageGate(t *testing.T) {
 	spec := repospec.Default()
-	spec.Bulwark.Dir = "source"
-	spec.Bulwark.Coverage = false
+	spec.Lydite.Dir = "source"
+	spec.Lydite.Coverage = false
 	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
 
 	lydite, ok := jobs["lydite"]
@@ -605,26 +605,24 @@ func TestSyncAllowsUpgrade(t *testing.T) {
 	}
 }
 
-// gt scaffolds no lydite configuration at all. The file existed to tell bulwark
-// where coverage came from; lydite runs its own suites and reads its own
-// `.lydite/` config from the scan root, so a gt-written file here would be
-// configuration a repository carries and nobody can explain.
+// gt scaffolds no lydite configuration at all. lydite runs its own suites and
+// reads its own `.lydite/` config from the scan root, so a gt-written file
+// here would be configuration a repository carries and nobody can explain.
 //
-// Asserted across every combination the spec can produce, because the old
-// scaffold was conditional — a partial revert would put it back for exactly the
-// repositories that hit those conditions.
+// Asserted across every combination the spec can produce, so a conditional
+// scaffold cannot slip back in for only the combinations that hit its guard.
 func TestLyditeConfigIsNeverScaffolded(t *testing.T) {
 	for name, mutate := range map[string]func(*repospec.Spec){
-		"defaults":         func(*repospec.Spec) {},
-		"no test stage":    func(s *repospec.Spec) { s.Pipeline.CI.Stages = []string{"preflight", "build"} },
-		"bulwark disabled": func(s *repospec.Spec) { s.Bulwark.Enabled = false },
-		"ci disabled":      func(s *repospec.Spec) { s.Pipeline.CI.Enabled = false },
-		"coverage off":     func(s *repospec.Spec) { s.Bulwark.Coverage = false },
+		"defaults":        func(*repospec.Spec) {},
+		"no test stage":   func(s *repospec.Spec) { s.Pipeline.CI.Stages = []string{"preflight", "build"} },
+		"lydite disabled": func(s *repospec.Spec) { s.Lydite.Enabled = false },
+		"ci disabled":     func(s *repospec.Spec) { s.Pipeline.CI.Enabled = false },
+		"coverage off":    func(s *repospec.Spec) { s.Lydite.Coverage = false },
 		"coverage off, no test": func(s *repospec.Spec) {
-			s.Bulwark.Coverage = false
+			s.Lydite.Coverage = false
 			s.Pipeline.CI.Stages = []string{"preflight", "build"}
 		},
-		"scan dir": func(s *repospec.Spec) { s.Bulwark.Dir = "source" },
+		"scan dir": func(s *repospec.Spec) { s.Lydite.Dir = "source" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec := repospec.Default()
@@ -703,18 +701,14 @@ func TestGateRecordsTheRunThatValidatedTheTree(t *testing.T) {
 	}
 }
 
-// bulwark takes its coverage baseline from a run on the merge-base, so gt used
-// to force the whole coverage chain to run on every push to manufacture one.
-// bulwark v1.8.0 keys baselines by TREE instead: a pull request records its own
-// measurement, and a squash merge lands a commit carrying that same tree, so the
-// number is already there when main needs it.
+// lydite keys its coverage baseline by TREE: a pull request records its own
+// measurement, and a squash merge lands a commit carrying that same tree, so
+// the number is already there when main needs it. Forcing the coverage chain
+// to run again on every push to manufacture a merge-base baseline would buy
+// nothing.
 //
-// Verified on gt's own bulwark-state before this was reverted — the six most
-// recent main commits all resolve to tree-keyed entries reading ~76%, where the
-// commit-keyed entry they replaced read 0.7%.
-//
-// So nothing is exempt from the attestation any more: an already-validated push
-// skips every stage, which is what attest was for.
+// So nothing is exempt from the attestation: an already-validated push skips
+// every stage, which is what attest is for.
 func TestAttestSkipsEveryStageOnAnAlreadyValidatedPush(t *testing.T) {
 	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
 
@@ -723,30 +717,30 @@ func TestAttestSkipsEveryStageOnAnAlreadyValidatedPush(t *testing.T) {
 			continue
 		}
 		if strings.Contains(job.If, "github.event_name == 'push'") {
-			t.Errorf("%s still carries the push exemption (%q); bulwark keys baselines by tree now, "+
+			t.Errorf("%s still carries the push exemption (%q); lydite keys baselines by tree, "+
 				"so forcing it to run on every merge buys nothing", name, job.If)
 		}
 	}
 }
 
-// A repository with nothing bulwark can measure turns the coverage gate off.
+// A repository with nothing lydite can measure turns the coverage gate off.
 // Left on, it resolves a baseline for languages that do not exist and reports a
 // number that means nothing — and a number that means nothing is one people
 // stop reading, which costs more than the minutes it wastes.
-func TestBulwarkCoverageCanBeTurnedOff(t *testing.T) {
+func TestLyditeCoverageCanBeTurnedOff(t *testing.T) {
 	spec := repospec.Default()
-	spec.Bulwark.Coverage = false
+	spec.Lydite.Coverage = false
 	content := string(pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
 	if !strings.Contains(content, "coverage: false") {
-		t.Errorf("coverage was not disabled in the bulwark stage:\n%s", content)
+		t.Errorf("coverage was not disabled in the lydite stage:\n%s", content)
 	}
 }
 
 // On by default, and NOT passed explicitly when on: the reusable workflow
 // already defaults to true, and a `with:` block that exists only to restate a
 // default is noise in every rendered file.
-func TestBulwarkCoverageOnByDefault(t *testing.T) {
-	if !repospec.Default().Bulwark.Coverage {
+func TestLyditeCoverageOnByDefault(t *testing.T) {
+	if !repospec.Default().Lydite.Coverage {
 		t.Fatal("coverage defaults to off; a repo would silently lose its gate on sync")
 	}
 	content := string(pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])

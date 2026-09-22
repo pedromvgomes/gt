@@ -30,7 +30,7 @@ type Spec struct {
 
 	Dependabot          []DependabotEntry   `yaml:"dependabot" json:"dependabot"`
 	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge" json:"dependabot_auto_merge"`
-	Bulwark             Bulwark             `yaml:"lydite" json:"lydite"`
+	Lydite              Lydite              `yaml:"lydite" json:"lydite"`
 	Pipeline            Pipeline            `yaml:"pipeline" json:"pipeline"`
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
@@ -57,7 +57,7 @@ type DependabotEntry struct {
 	// Allow narrows which dependencies Dependabot will open PRs for.
 	//
 	// It exists because Dependabot's default is direct dependencies only, and
-	// that default silently freezes any pin held indirectly. bulwark's go-pin
+	// that default silently freezes any pin held indirectly. lydite's go-pin
 	// module is the case: it has no .go files, so `go mod tidy` marks gosec and
 	// govulncheck as `// indirect`, and without an allow rule neither is ever
 	// bumped — in the security scanner, with nothing reporting it.
@@ -118,19 +118,19 @@ type DependabotAutoMerge struct {
 	GitHubApp bool `yaml:"github_app" json:"github_app"`
 }
 
-// Bulwark is the shared code-quality and security gate. Every governed repo
+// Lydite is the shared code-quality and security gate. Every governed repo
 // carries it — that is the convention — and it is disabled only where a repo
-// already wires bulwark into its own pipeline with coverage plumbing gt cannot
+// already wires lydite into its own pipeline with coverage plumbing gt cannot
 // generically reproduce.
-type Bulwark struct {
+type Lydite struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Dir scopes the scan to a subdirectory, forwarded as reusable-lydite.yml's
 	// `dir` input — lydite reads its own config from that root, so gt has to
 	// know it before lydite can find `.lydite/` there at all.
 	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
-	// Coverage runs bulwark's coverage gate. Default true.
+	// Coverage runs lydite's coverage gate. Default true.
 	//
-	// Off for a repository with nothing bulwark can measure — boma is shell and
+	// Off for a repository with nothing lydite can measure — boma is shell and
 	// container-driven pytest, wardnet-infrastructure is YAML. Leaving it on
 	// there is not harmless: the gate spends time resolving a baseline for
 	// languages that do not exist, and every run reports a coverage result that
@@ -406,9 +406,9 @@ var (
 // check name carries no "<caller> / " prefix.
 const GateCheckJob = "ci-gate"
 
-// BulwarkReferralContext is the commit-status context lydite's referral step
+// LyditeReferralContext is the commit-status context lydite's referral step
 // publishes its verdict under, and the second check branch protection requires
-// wherever bulwark is enabled. A "refer" verdict never fails the job, so this
+// wherever lydite is enabled. A "refer" verdict never fails the job, so this
 // status is the only thing that holds a referred pull request; a `/lydite
 // clear` comment flips it without re-running anything.
 //
@@ -423,7 +423,7 @@ const GateCheckJob = "ci-gate"
 // the plain per-run GITHUB_TOKEN, not any GitHub App identity, so there is no
 // App to scope the check to. Tracked as pedromvgomes/gt#71, blocked on
 // lydite/lydite (or lydite/actions) authenticating that path as an App first.
-const BulwarkReferralContext = "lydite/referral"
+const LyditeReferralContext = "lydite/referral"
 
 // Ecosystems gt can render a Dependabot entry for. Keys match Dependabot's
 // package-ecosystem values.
@@ -492,7 +492,7 @@ func Default() Spec {
 				RequireLastPushApproval: false,
 			},
 		},
-		Bulwark: Bulwark{Enabled: true, Coverage: true},
+		Lydite: Lydite{Enabled: true, Coverage: true},
 		Pipeline: Pipeline{
 			CI: PipelineCI{Enabled: true, Stages: append([]string(nil), CIStages...)},
 			CD: PipelineCD{
@@ -540,7 +540,6 @@ func Read(path string) (Spec, error) {
 // Parse unmarshals and validates manifest bytes. path is used only for error
 // messages.
 func Parse(data []byte, path string) (Spec, error) {
-	data = aliasLegacyBulwarkKey(data)
 	spec := Default()
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return Spec{}, fmt.Errorf("parse %s: %w", path, err)
@@ -549,45 +548,6 @@ func Parse(data []byte, path string) (Spec, error) {
 		return Spec{}, fmt.Errorf("%s: %w", path, err)
 	}
 	return spec, nil
-}
-
-// aliasLegacyBulwarkKey renames a top-level `bulwark:` key to `lydite:` when
-// the manifest carries no `lydite:` of its own. Parsing is non-strict, so an
-// unrecognized top-level key is dropped without an error: a manifest that
-// disabled the scan, or pointed it at a non-default dir, would otherwise parse
-// back to the enabled-by-default Spec and silently re-enable it. `lydite:`
-// always wins; a stray `bulwark:` beside it is ignored.
-//
-// Malformed input is returned unchanged so the caller's yaml.Unmarshal reports
-// the parse error once, in its own words.
-func aliasLegacyBulwarkKey(data []byte) []byte {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
-		return data
-	}
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return data
-	}
-	hasLydite := false
-	var bulwarkKey *yaml.Node
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		switch root.Content[i].Value {
-		case "lydite":
-			hasLydite = true
-		case "bulwark":
-			bulwarkKey = root.Content[i]
-		}
-	}
-	if hasLydite || bulwarkKey == nil {
-		return data
-	}
-	bulwarkKey.Value = "lydite"
-	out, err := yaml.Marshal(&doc)
-	if err != nil {
-		return data
-	}
-	return out
 }
 
 // Validate reports the first problem that would make a spec unrenderable.

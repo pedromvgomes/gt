@@ -464,8 +464,8 @@ func desiredRuleset(spec repospec.Spec, mq mergeQueueState, strict bool) map[str
 		// A referral verdict leaves the lydite job green, so the gate never
 		// sees it. Requiring the status it publishes instead is what stops a
 		// referred pull request merging.
-		if spec.Bulwark.Enabled {
-			checks = append(checks, map[string]any{"context": repospec.BulwarkReferralContext})
+		if spec.Lydite.Enabled {
+			checks = append(checks, map[string]any{"context": repospec.LyditeReferralContext})
 		}
 		rules = append(rules, map[string]any{
 			"type": "required_status_checks",
@@ -824,8 +824,8 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision
 			var wantChecks []string
 			if spec.Pipeline.CI.Enabled {
 				wantChecks = []string{repospec.GateCheckJob}
-				if spec.Bulwark.Enabled {
-					wantChecks = append(wantChecks, repospec.BulwarkReferralContext)
+				if spec.Lydite.Enabled {
+					wantChecks = append(wantChecks, repospec.LyditeReferralContext)
 				}
 			}
 			if !sameStrings(wantChecks, got) {
@@ -847,7 +847,7 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset, mq mergeQueueDecision
 
 // SettingsDiff reports what `SettingsApply` would change.
 //
-// The ruleset requires gt's gate, and — wherever bulwark is enabled — lydite's
+// The ruleset requires gt's gate, and — wherever lydite is enabled — its
 // referral status alongside it. The checks a repo actually cares about are
 // declared in .gt-repo.yaml and enforced by the gate aggregating them, which is
 // what keeps this list stable instead of needing an update every time a CI job

@@ -12,7 +12,7 @@
 # this one a few at a time, so the two coexist for a long while. Two workflows
 # sharing a display name make the Actions list ambiguous and every check read
 # as "CI / …" from one of two places. The `gt ` prefix matches the reusable
-# workflows this calls — gt attest, gt bulwark, gt sync.
+# workflows this calls — gt attest, gt lydite, gt sync.
 name: gt CI
 
 on:
@@ -121,10 +121,10 @@ jobs:
     needs: [attest]
     if: {{ .SkipGuard }}
     uses: {{ .GovernanceWorkflowRef }}
-{{- if .Bulwark }}
+{{- if .Lydite }}
 
   lydite:
-    needs: [{{ .BulwarkNeeds }}]
+    needs: [{{ .LyditeNeeds }}]
     # No skip guard, unlike the stages above: this job is the only publisher
     # of the required lydite/referral status, and that status has to be fresh
     # for whatever SHA branch protection is evaluating. reusable-attest.yml
@@ -136,19 +136,19 @@ jobs:
     # when a dependency fails, since a real referral verdict on a failing tree
     # is more useful than none.
     if: "!cancelled()"
-    uses: {{ .BulwarkWorkflowRef }}
+    uses: {{ .LyditeWorkflowRef }}
     permissions:
       contents: read
       statuses: write
       id-token: write
       pull-requests: write
-{{- if or .BulwarkDir (not .BulwarkCoverage) }}
+{{- if or .LyditeDir (not .LyditeCoverage) }}
     with:
-{{- if .BulwarkDir }}
-      dir: {{ .BulwarkDir }}
+{{- if .LyditeDir }}
+      dir: {{ .LyditeDir }}
 {{- end }}
-{{- if not .BulwarkCoverage }}
-      # Nothing here for bulwark to measure, so the coverage gate is off. Left
+{{- if not .LyditeCoverage }}
+      # Nothing here for lydite to measure, so the coverage gate is off. Left
       # on, it resolves a baseline for languages that do not exist and reports a
       # number that means nothing — which is how a gate stops being read.
       coverage: false

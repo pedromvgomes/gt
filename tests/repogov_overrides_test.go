@@ -57,7 +57,7 @@ func TestSavedSpecResolvesIdentically(t *testing.T) {
 	want.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
 	// A representative override of each shape: a bool flipped off, a string,
 	// and a list that differs from the default list.
-	want.Bulwark.Coverage = false
+	want.Lydite.Coverage = false
 	want.Settings.BranchProtection.Branch = "trunk"
 	want.Pipeline.CI.Stages = []string{"preflight", "test"}
 
@@ -247,7 +247,7 @@ func TestSavedSpecKeepsStructFieldOrder(t *testing.T) {
 	spec := repospec.Default()
 	spec.GTVersion = "v1.2.0"
 	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
-	spec.Bulwark.Coverage = false
+	spec.Lydite.Coverage = false
 	spec.ConventionalCommits.Scope = "both"
 	spec.Settings.BranchProtection.Branch = "trunk"
 

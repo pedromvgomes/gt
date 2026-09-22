@@ -81,13 +81,13 @@ func rulesetListJSON(names ...string) string {
 
 // compliantRulesetJSON is a ruleset detail that matches repospec.Default().
 //
-// The default spec enables bulwark, so a compliant ruleset requires lydite's
+// The default spec enables lydite, so a compliant ruleset requires lydite's
 // referral status alongside the gate: a referred pull request leaves the lydite
 // job green, and that status is the only thing holding it.
 func compliantRulesetJSON(t *testing.T, checks ...string) string {
 	t.Helper()
 	if len(checks) == 0 {
-		checks = []string{repospec.GateCheckJob, repospec.BulwarkReferralContext}
+		checks = []string{repospec.GateCheckJob, repospec.LyditeReferralContext}
 	}
 	var required []map[string]any
 	for _, c := range checks {
@@ -225,7 +225,7 @@ func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
-	want := repospec.GateCheckJob + ", " + repospec.BulwarkReferralContext
+	want := repospec.GateCheckJob + ", " + repospec.LyditeReferralContext
 	var found bool
 	for _, c := range changes {
 		if c.Field == "ruleset.required_status_checks" && c.Want == want {
@@ -239,11 +239,11 @@ func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
 
 // A referral verdict never fails the lydite job, so ci-gate reports green on a
 // pull request lydite has referred. The referral status is required separately
-// for exactly that reason — and only where bulwark runs to publish it, since a
+// for exactly that reason — and only where lydite runs to publish it, since a
 // context nothing reports blocks every pull request forever.
-func TestReferralStatusRequiredOnlyWhereBulwarkIsEnabled(t *testing.T) {
+func TestReferralStatusRequiredOnlyWhereLyditeIsEnabled(t *testing.T) {
 	spec := repospec.Default()
-	spec.Bulwark.Enabled = false
+	spec.Lydite.Enabled = false
 
 	gh := alignedGH(t)
 	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetJSON(t, repospec.GateCheckJob)
@@ -252,7 +252,7 @@ func TestReferralStatusRequiredOnlyWhereBulwarkIsEnabled(t *testing.T) {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
 	if len(changes) != 0 {
-		t.Fatalf("SettingsDiff() = %v, want the gate alone to be compliant with bulwark off", changes)
+		t.Fatalf("SettingsDiff() = %v, want the gate alone to be compliant with lydite off", changes)
 	}
 
 	// And a live ruleset still requiring it is drift to converge from.
@@ -470,10 +470,10 @@ func TestSettingsApplyWritesARulesetAndNotClassicProtection(t *testing.T) {
 			for _, c := range r.Parameters.RequiredStatusChecks {
 				got = append(got, c.Context)
 			}
-			// The default spec enables bulwark, so the referral status is
+			// The default spec enables lydite, so the referral status is
 			// required alongside the gate — the gate cannot aggregate it,
 			// because a referred pull request leaves its job green.
-			want := []string{repospec.GateCheckJob, repospec.BulwarkReferralContext}
+			want := []string{repospec.GateCheckJob, repospec.LyditeReferralContext}
 			if !sameStringSlice(got, want) {
 				t.Errorf("required checks = %v, want exactly %v", got, want)
 			}

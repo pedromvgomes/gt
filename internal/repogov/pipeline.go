@@ -8,9 +8,9 @@ import (
 	"github.com/pedromvgomes/gt/internal/repospec"
 )
 
-// CoverageArtifact is the name ci-test uploads coverage under and the bulwark
+// CoverageArtifact is the name ci-test uploads coverage under and the lydite
 // stage looks for. A convention rather than configuration: it is the entire
-// contract that stops bulwark re-running a suite the repo already ran.
+// contract that stops lydite re-running a suite the repo already ran.
 const CoverageArtifact = "gt-coverage"
 
 // AttestContext is the commit-status context carrying the validated tree SHA.
@@ -319,18 +319,18 @@ type ciData struct {
 	Branch          string
 	GateJob         string
 	PRTitleEnforced bool
-	Bulwark         bool
-	BulwarkDir      string
-	BulwarkCoverage bool
+	Lydite          bool
+	LyditeDir       string
+	LyditeCoverage  bool
 	AttestContext   string
 	CheckoutRef     string
 	SkipGuard       string
 	CIStages        []stageJob
 	GateNeeds       string
-	BulwarkNeeds    string
+	LyditeNeeds     string
 
 	AttestWorkflowRef              string
-	BulwarkWorkflowRef             string
+	LyditeWorkflowRef              string
 	ConventionalCommitsWorkflowRef string
 	GovernanceWorkflowRef          string
 }
@@ -360,8 +360,8 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 	fixed := []string{"conventional-commits", "governance"}
 	// The job forwards to lydite's own pipeline, which runs the suites it needs
 	// itself — so it waits on attest alone, never on a stage of this one.
-	bulwarkNeeds := []string{"attest"}
-	if in.Spec.Bulwark.Enabled {
+	lyditeNeeds := []string{"attest"}
+	if in.Spec.Lydite.Enabled {
 		fixed = append(fixed, "lydite")
 	}
 
@@ -370,18 +370,18 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		Branch:          in.Spec.Settings.BranchProtection.Branch,
 		GateJob:         repospec.GateCheckJob,
 		PRTitleEnforced: in.Spec.ConventionalCommits.EnforcesPRTitle(),
-		Bulwark:         in.Spec.Bulwark.Enabled,
-		BulwarkDir:      in.Spec.Bulwark.Dir,
-		BulwarkCoverage: in.Spec.Bulwark.Coverage,
+		Lydite:          in.Spec.Lydite.Enabled,
+		LyditeDir:       in.Spec.Lydite.Dir,
+		LyditeCoverage:  in.Spec.Lydite.Coverage,
 		AttestContext:   AttestContext,
 		CheckoutRef:     checkoutRef,
 		SkipGuard:       attestGuard,
 		CIStages:        stages,
 		GateNeeds:       gateNeeds("attest", stages, fixed...),
-		BulwarkNeeds:    strings.Join(bulwarkNeeds, ", "),
+		LyditeNeeds:     strings.Join(lyditeNeeds, ", "),
 
 		AttestWorkflowRef:              workflowRef("attest.yml", major, in.RepoOwner, in.RepoName),
-		BulwarkWorkflowRef:             workflowRef("lydite.yml", major, in.RepoOwner, in.RepoName),
+		LyditeWorkflowRef:              workflowRef("lydite.yml", major, in.RepoOwner, in.RepoName),
 		ConventionalCommitsWorkflowRef: workflowRef("conventional-commits.yml", major, in.RepoOwner, in.RepoName),
 		GovernanceWorkflowRef:          workflowRef("governance.yml", major, in.RepoOwner, in.RepoName),
 	}, nil

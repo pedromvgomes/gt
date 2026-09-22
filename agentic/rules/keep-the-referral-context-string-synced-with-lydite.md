@@ -1,11 +1,11 @@
 ---
-description: repospec.BulwarkReferralContext must be renamed together with lydite/lydite's internal/clearance.Context — nothing here can import that module.
+description: repospec.LyditeReferralContext must be renamed together with lydite/lydite's internal/clearance.Context — nothing here can import that module.
 ---
 
 # Rule: keep the referral context string synced with lydite
 
-`repospec.BulwarkReferralContext` (`"lydite/referral"`) is the commit-status
-context gt requires in branch protection wherever bulwark is enabled. It has
+`repospec.LyditeReferralContext` (`"lydite/referral"`) is the commit-status
+context gt requires in branch protection wherever lydite is enabled. It has
 to be the exact string lydite's own referral step publishes under —
 `internal/clearance.Context` in the separate `lydite/lydite` module — because
 branch protection matches the context literally and a required check nothing
@@ -17,7 +17,7 @@ equal by convention, not by the type system.
 
 ## Applies to
 
-`internal/repospec/spec.go`'s `BulwarkReferralContext`, and any change to what
+`internal/repospec/spec.go`'s `LyditeReferralContext`, and any change to what
 context lydite's referral step publishes under.
 
 ## Example
