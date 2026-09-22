@@ -219,7 +219,7 @@ three propagation mechanisms:
 
 | Layer | How it reaches the repo |
 |---|---|
-| Stage logic (attestation, conventional commits, bulwark, governance) | gt's reusable workflows, pinned to a moving major tag — changes need **no file edit at all** |
+| Stage logic (attestation, conventional commits, lydite, governance) | gt's reusable workflows, pinned to a moving major tag — changes need **no file edit at all** |
 | Files that must exist in-repo (orchestrators, `dependabot.yml`, CODEOWNERS) | `gt repo sync`, locally or from the weekly in-repo job |
 | GitHub API state (branch protection, merge methods) | `gt repo settings apply`, using your `gh` credentials |
 
@@ -265,12 +265,13 @@ together and nothing else:
 
 ```
 attest
-  └─ ci-preflight
-       └─ ci-build
-            ├─ ci-test ─── bulwark
-            └─ ci-end2end
+  ├─ ci-preflight
+  │    └─ ci-build
+  │         ├─ ci-test
+  │         └─ ci-end2end
+  └─ lydite
 conventional-commits, governance
-  └─ ci-gate     ← the one required check
+  └─ ci-gate     ← the required check for real job failures
 ```
 
 The `ci-*` and `cd-*` stage files are **yours**. gt writes each one once as an
@@ -282,13 +283,30 @@ deployment go.
 as `"false"` to skip a stage. The stub emits nothing, so everything runs until
 you say otherwise. A skipped stage passes the gate.
 
-### One required check, forever
+The `lydite` job forwards entirely to lydite's own reusable pipeline —
+referral, scan, test and publish, orchestrated as one in
+`lydite/actions/.github/workflows/lydite.yml@v1`. `ci-test` is not upstream of
+it: it is optional and fully decoupled, an escape hatch for a suite lydite
+doesn't run itself, and nothing in gt's own pipeline depends on it or reads
+anything it produces.
 
-Branch protection requires exactly one check: **`ci-gate`**. It is a plain job
-in a workflow your repository owns, so its check name is just the job name.
-Because every stage is a job in that same workflow, it aggregates them with
-`needs:` — no polling, no timeout, and no way to confuse "absent" with "not
-started yet".
+### Two required checks, when lydite is enabled
+
+Branch protection requires **`ci-gate`**, always, and — wherever lydite is
+enabled — a second context, **`lydite/referral`**, alongside it. `ci-gate` is a
+plain job in a workflow your repository owns, so its check name is just the
+job name; because every stage is a job in that same workflow, it aggregates
+them with `needs:` — no polling, no timeout, and no way to confuse "absent"
+with "not started yet". A stage failure there is unclearable: fix it and push.
+
+`lydite/referral` is different in kind, not just in name. A referral verdict
+leaves the `lydite` job itself green — it is lydite's own commit status, not a
+job result — so requiring `ci-gate` alone would let a referred pull request
+merge with nothing red anywhere. It clears through the `/lydite clear`
+PR-comment path, not by re-running anything — answered by a workflow of its
+own, `lydite-clearance.yml`, triggered on `issue_comment` rather than
+`pull_request` so the logic deciding a clearance always runs from the default
+branch, never from the pull request it is deciding about.
 
 Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
 
@@ -381,8 +399,10 @@ gt repo settings diff # preview branch protection changes
 gt repo settings apply
 ```
 
-Have `ci-test.yml` upload its coverage as an artifact named `gt-coverage`, and
-the bulwark stage consumes it instead of running your suite a second time.
+Coverage gating, affected-test selection, mutation testing and the PR comment
+all live inside `lydite test`, `lydite review` and `lydite publish` — gt
+scaffolds nothing for them. `ci-test.yml` is yours to fill or leave as the
+no-op stub; wire it up only for a suite lydite doesn't already cover.
 
 Then add a setup template so new clones are governed automatically:
 

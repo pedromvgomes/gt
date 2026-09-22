@@ -8,9 +8,9 @@ import (
 	"github.com/pedromvgomes/gt/internal/repospec"
 )
 
-// CoverageArtifact is the name ci-test uploads coverage under and the bulwark
+// CoverageArtifact is the name ci-test uploads coverage under and the lydite
 // stage looks for. A convention rather than configuration: it is the entire
-// contract that stops bulwark re-running a suite the repo already ran.
+// contract that stops lydite re-running a suite the repo already ran.
 const CoverageArtifact = "gt-coverage"
 
 // AttestContext is the commit-status context carrying the validated tree SHA.
@@ -260,33 +260,6 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 			add("ci", st, gated)
 		}
 	}
-	// bulwark reads .bulwark.yml from its scan root. Scaffolded rather than
-	// managed: its contents are bulwark's business, but coverage.source has to
-	// say `report` or bulwark re-runs the suite ci-test already ran — and the
-	// default is `run`, so forgetting the file is silently expensive rather
-	// than loudly broken.
-	//
-	// Not scaffolded when the coverage gate is off: the file exists to declare
-	// where coverage comes from, and writing one to answer a question nobody
-	// asks is how a repository ends up with configuration it cannot explain.
-	// A repository that wants it for bulwark's other settings can add it; gt
-	// never deletes a scaffold.
-	if spec.Bulwark.Enabled && spec.Bulwark.Coverage &&
-		spec.Pipeline.CI.Enabled && contains(spec.Pipeline.CI.Stages, "test") {
-		path := ".bulwark.yml"
-		if spec.Bulwark.Dir != "" {
-			path = spec.Bulwark.Dir + "/.bulwark.yml"
-		}
-		out = append(out, fileSpec{
-			key:    "bulwark-config",
-			tmpl:   "templates/scaffolds/bulwark-config.yml.tmpl",
-			path:   path,
-			mode:   ModeScaffold,
-			wanted: func(repospec.Spec) bool { return true },
-			data:   func(Input, templateData) (any, error) { return struct{}{}, nil },
-		})
-	}
-
 	if spec.Pipeline.CD.Enabled {
 		gated := gatedStages(spec.Pipeline.CD.Stages, cdWiring)
 		for _, st := range spec.Pipeline.CD.Stages {
@@ -294,15 +267,6 @@ func pipelineScaffolds(spec repospec.Spec) []fileSpec {
 		}
 	}
 	return out
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // gatedStages lists the enabled stages preflight can skip, which is what its
@@ -350,23 +314,37 @@ func (s scaffoldData) CoverageArtifact() string {
 	return CoverageArtifact
 }
 
+// lyditeClearanceData is the lydite-clearance.yml template input.
+type lyditeClearanceData struct {
+	LyditeDir                  string
+	LyditeClearanceWorkflowRef string
+}
+
+func buildLyditeClearanceData(in Input) lyditeClearanceData {
+	major := MajorTag(in.GTVersion)
+	return lyditeClearanceData{
+		LyditeDir:                  in.Spec.Lydite.Dir,
+		LyditeClearanceWorkflowRef: workflowRef("lydite-clearance.yml", major, in.RepoOwner, in.RepoName),
+	}
+}
+
 // ciData is the ci-orchestration template input.
 type ciData struct {
 	Branch          string
 	GateJob         string
 	PRTitleEnforced bool
-	Bulwark         bool
-	BulwarkDir      string
-	BulwarkCoverage bool
+	Lydite          bool
+	LyditeDir       string
+	LyditeCoverage  bool
 	AttestContext   string
 	CheckoutRef     string
 	SkipGuard       string
 	CIStages        []stageJob
 	GateNeeds       string
-	BulwarkNeeds    string
+	LyditeNeeds     string
 
 	AttestWorkflowRef              string
-	BulwarkWorkflowRef             string
+	LyditeWorkflowRef              string
 	ConventionalCommitsWorkflowRef string
 	GovernanceWorkflowRef          string
 }
@@ -394,16 +372,11 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 	}
 
 	fixed := []string{"conventional-commits", "governance"}
-	// bulwark runs after tests so it can consume the coverage they uploaded
-	// rather than running the suite again.
-	bulwarkNeeds := []string{"attest"}
-	if in.Spec.Bulwark.Enabled {
-		for _, s := range stages {
-			if s.Name == "test" {
-				bulwarkNeeds = append(bulwarkNeeds, "test")
-			}
-		}
-		fixed = append(fixed, "bulwark")
+	// The job forwards to lydite's own pipeline, which runs the suites it needs
+	// itself — so it waits on attest alone, never on a stage of this one.
+	lyditeNeeds := []string{"attest"}
+	if in.Spec.Lydite.Enabled {
+		fixed = append(fixed, "lydite")
 	}
 
 	major := MajorTag(in.GTVersion)
@@ -411,18 +384,18 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		Branch:          in.Spec.Settings.BranchProtection.Branch,
 		GateJob:         repospec.GateCheckJob,
 		PRTitleEnforced: in.Spec.ConventionalCommits.EnforcesPRTitle(),
-		Bulwark:         in.Spec.Bulwark.Enabled,
-		BulwarkDir:      in.Spec.Bulwark.Dir,
-		BulwarkCoverage: in.Spec.Bulwark.Coverage,
+		Lydite:          in.Spec.Lydite.Enabled,
+		LyditeDir:       in.Spec.Lydite.Dir,
+		LyditeCoverage:  in.Spec.Lydite.Coverage,
 		AttestContext:   AttestContext,
 		CheckoutRef:     checkoutRef,
 		SkipGuard:       attestGuard,
 		CIStages:        stages,
 		GateNeeds:       gateNeeds("attest", stages, fixed...),
-		BulwarkNeeds:    strings.Join(bulwarkNeeds, ", "),
+		LyditeNeeds:     strings.Join(lyditeNeeds, ", "),
 
 		AttestWorkflowRef:              workflowRef("attest.yml", major, in.RepoOwner, in.RepoName),
-		BulwarkWorkflowRef:             workflowRef("bulwark.yml", major, in.RepoOwner, in.RepoName),
+		LyditeWorkflowRef:              workflowRef("lydite.yml", major, in.RepoOwner, in.RepoName),
 		ConventionalCommitsWorkflowRef: workflowRef("conventional-commits.yml", major, in.RepoOwner, in.RepoName),
 		GovernanceWorkflowRef:          workflowRef("governance.yml", major, in.RepoOwner, in.RepoName),
 	}, nil

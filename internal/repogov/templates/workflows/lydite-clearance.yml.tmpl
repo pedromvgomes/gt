@@ -1,0 +1,31 @@
+# Managed by gt — edit .gt-repo.yaml, then run `gt repo sync`.
+#
+# Answers a `/lydite` comment on a pull request — `/lydite clear` above all,
+# since that is what unblocks the `lydite/referral` check branch protection
+# requires. It is a workflow of its own rather than another job in
+# ci-orchestration.yml: an `issue_comment` run always executes the *default
+# branch's* copy of every workflow file, never the pull request's, so folding
+# it into a `pull_request`-triggered file would not change what code decides
+# the comment — it would just make every other job in that file (build, lint,
+# the whole pipeline) run on every comment too.
+name: gt lydite clearance
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  clearance:
+    uses: {{ .LyditeClearanceWorkflowRef }}
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+      id-token: write
+{{- if .LyditeDir }}
+    with:
+      dir: {{ .LyditeDir }}
+{{- end }}

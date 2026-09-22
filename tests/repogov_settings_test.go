@@ -80,10 +80,14 @@ func rulesetListJSON(names ...string) string {
 }
 
 // compliantRulesetJSON is a ruleset detail that matches repospec.Default().
+//
+// The default spec enables lydite, so a compliant ruleset requires lydite's
+// referral status alongside the gate: a referred pull request leaves the lydite
+// job green, and that status is the only thing holding it.
 func compliantRulesetJSON(t *testing.T, checks ...string) string {
 	t.Helper()
 	if len(checks) == 0 {
-		checks = []string{repospec.GateCheckJob}
+		checks = []string{repospec.GateCheckJob, repospec.LyditeReferralContext}
 	}
 	var required []map[string]any
 	for _, c := range checks {
@@ -211,13 +215,49 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	}
 }
 
-// The ruleset must converge on exactly one context: gt's gate. A repo still
-// listing individual CI jobs is drift, because renaming any of them would
-// silently unprotect the branch.
+// The ruleset must converge on gt's gate plus lydite's referral status, and
+// nothing else. A repo still listing individual CI jobs is drift, because
+// renaming any of them would silently unprotect the branch.
 func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
 	gh := alignedGH(t)
 	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetJSON(t, "build", "test")
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	want := repospec.GateCheckJob + ", " + repospec.LyditeReferralContext
+	var found bool
+	for _, c := range changes {
+		if c.Field == "ruleset.required_status_checks" && c.Want == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("SettingsDiff() = %v, want %q to replace the per-job checks", changes, want)
+	}
+}
+
+// A referral verdict never fails the lydite job, so ci-gate reports green on a
+// pull request lydite has referred. The referral status is required separately
+// for exactly that reason — and only where lydite runs to publish it, since a
+// context nothing reports blocks every pull request forever.
+func TestReferralStatusRequiredOnlyWhereLyditeIsEnabled(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Enabled = false
+
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetJSON(t, repospec.GateCheckJob)
+	changes, err := repogov.SettingsDiff(context.Background(), gh, spec, "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("SettingsDiff() = %v, want the gate alone to be compliant with lydite off", changes)
+	}
+
+	// And a live ruleset still requiring it is drift to converge from.
+	gh = alignedGH(t) // its live ruleset requires both
+	changes, err = repogov.SettingsDiff(context.Background(), gh, spec, "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
@@ -228,7 +268,7 @@ func TestSettingsDiffReplacesPerJobRequiredChecks(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("SettingsDiff() = %v, want the gate to replace the per-job checks", changes)
+		t.Fatalf("SettingsDiff() = %v, want the referral context dropped where nothing reports it", changes)
 	}
 }
 
@@ -426,9 +466,16 @@ func TestSettingsApplyWritesARulesetAndNotClassicProtection(t *testing.T) {
 			t.Errorf("allowed_merge_methods = %v, want [squash]", r.Parameters.AllowedMergeMethods)
 		}
 		if r.Type == "required_status_checks" {
-			if len(r.Parameters.RequiredStatusChecks) != 1 ||
-				r.Parameters.RequiredStatusChecks[0].Context != repospec.GateCheckJob {
-				t.Errorf("required checks = %v, want exactly %q", r.Parameters.RequiredStatusChecks, repospec.GateCheckJob)
+			var got []string
+			for _, c := range r.Parameters.RequiredStatusChecks {
+				got = append(got, c.Context)
+			}
+			// The default spec enables lydite, so the referral status is
+			// required alongside the gate — the gate cannot aggregate it,
+			// because a referred pull request leaves its job green.
+			want := []string{repospec.GateCheckJob, repospec.LyditeReferralContext}
+			if !sameStringSlice(got, want) {
+				t.Errorf("required checks = %v, want exactly %v", got, want)
 			}
 		}
 	}

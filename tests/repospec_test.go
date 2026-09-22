@@ -257,6 +257,19 @@ func TestBaseFreshnessDefaultsToAuto(t *testing.T) {
 	}
 }
 
+// `bulwark:` is not a field any struct claims, so non-strict parsing drops it
+// without an error — a manifest carrying only that key parses to the default
+// spec, with lydite enabled.
+func TestABulwarkKeyIsUnrecognizedAndIgnored(t *testing.T) {
+	spec, err := repospec.Parse([]byte("bulwark:\n  enabled: false\n"), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if !spec.Lydite.Enabled {
+		t.Error("enabled = false, want true — an unrecognized key does not override the default spec")
+	}
+}
+
 // The released spelling. A repository still carrying it must keep parsing, and
 // must land on auto — which on any repository where it could have been set
 // computes to strict, the behaviour it already had.

@@ -3,9 +3,9 @@
 # gt created it once and will never modify or delete it again. Put this
 # repository's test suite here; the orchestration around it stays gt's.
 #
-# Upload coverage as an artifact named `{{ .CoverageArtifact }}` and the bulwark
+# Upload coverage as an artifact named `{{ .CoverageArtifact }}` and the lydite
 # stage will consume it instead of running the suite a second time. Without it
-# bulwark falls back to running the tests itself, which is correct but slower.
+# lydite falls back to running the tests itself, which is correct but slower.
 #
 #   - uses: actions/upload-artifact@<sha>
 #     with:

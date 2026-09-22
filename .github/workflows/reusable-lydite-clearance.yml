@@ -1,0 +1,46 @@
+name: gt lydite clearance
+
+# Reusable answer to a `/lydite` comment on a pull request. It has no steps of
+# its own — the whole command (clear, explain, exempt) is lydite's own
+# reusable workflow, and this file only forwards to it, so the command's
+# behavior is versioned in lydite/actions rather than restated here.
+#
+# `lydite-version` and `relay` are not exposed as inputs: no GitHub App
+# publishes lydite's statuses yet (tracked as pedromvgomes/gt#71), so there is
+# no relay identity to hand this job — every governed repository answers a
+# clearance under github-actions[bot] until one exists. Forwarding only `dir`
+# keeps this file narrowing to exactly what a consumer can configure today.
+
+on:
+  workflow_call:
+    inputs:
+      dir:
+        description: >-
+          Root directory whose .lydite/exemptions.yml applies, for repos whose
+          source is not at the root. Matches reusable-lydite.yml's own `dir`
+          input, since a clearance and the scan it clears read the same root.
+        type: string
+        default: "."
+
+permissions:
+  contents: read
+
+jobs:
+  clearance:
+    name: clearance
+    permissions:
+      contents: read
+      statuses: write # a /lydite clear verdict
+      pull-requests: write # every other /lydite reply
+      id-token: write # the relay auth lydite-clearance.yml mints and does not use without a relay configured
+    # Third-party actions are SHA-pinned, because a tag its owner controls can
+    # be silently repointed at code we never reviewed. lydite is ours: the
+    # floating major alias is its intended delivery channel, moved
+    # deliberately on each release so consumers pick up fixes without a bump
+    # PR each time. That tag still grants real authority on every governed
+    # repository at once — the same trust reusable-lydite.yml already accepts
+    # for the scan job.
+    # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: lydite/actions/.github/workflows/lydite-clearance.yml@v1
+    with:
+      dir: ${{ inputs.dir }}

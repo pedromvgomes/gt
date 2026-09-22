@@ -1,0 +1,74 @@
+name: gt lydite
+
+# Reusable code-quality and security gate. Every governed repo carries it by
+# default; it is the quality gate, and ci-gate waits on it.
+#
+# It has no steps of its own. The whole gate is lydite's own reusable pipeline —
+# referral, scan, test and publish, orchestrated as one — and this workflow only
+# forwards to it, so the shape of the gate is versioned in lydite/actions rather
+# than restated here.
+#
+# harden-runner lives in lydite.yml's jobs, not in this file: a job that is only
+# `uses:` cannot also carry `steps:`, so there is nowhere here to run it. It is
+# lydite's concern by design, not something dropped on the way.
+
+on:
+  workflow_call:
+    inputs:
+      dir:
+        description: >-
+          Subdirectory to scan, for repos whose source is not at the root. Stays
+          an input rather than moving into lydite's own config because that file
+          lives at the scan root, so lydite must know the root to find it.
+
+          Defaults to "." rather than "". A value passed explicitly overrides a
+          default even when it is empty — so forwarding "" hands the pipeline
+          `--dir ""` and it dies on `open : no such file or directory`, on every
+          repository that does not set lydite.dir.
+        type: string
+        default: "."
+      coverage:
+        description: >-
+          Run lydite's coverage gate. Off for a repository with nothing it can
+          measure — left on there, it resolves a baseline for languages that do
+          not exist and reports a number that means nothing.
+        type: boolean
+        default: true
+
+# No `secrets:` block, deliberately. SEMGREP_APP_TOKEN in particular is not
+# forwarded: supplying it is a single on/off switch for both diff-aware scanning
+# AND uploading every finding to Semgrep's own AppSec Platform — the two are not
+# separable. Token-less scanning already gets equivalent diff-aware scoping from
+# `--diff-base`, so forwarding the token by default would buy nothing and
+# silently hand every governed repository a second findings dashboard, against
+# the point of a single lydite ledger. A consumer who wants that upload anyway
+# configures it themselves, outside gt's rendered workflow.
+
+permissions:
+  contents: read
+
+jobs:
+  lydite:
+    name: lydite
+    permissions:
+      contents: read
+      statuses: write # referral's verdict
+      id-token: write # publish's relay auth
+      pull-requests: write # publish's fallback comment path
+    # Third-party actions are SHA-pinned, because a tag its owner controls can be
+    # silently repointed at code we never reviewed. lydite is ours: the floating
+    # major alias is its intended delivery channel, moved deliberately on each
+    # release so consumers pick up scanner fixes without a bump PR each time.
+    #
+    # That tag still grants real authority on every governed repository at
+    # once — id-token: write for publish's relay auth, statuses: write for the
+    # referral verdict. lydite.yml running step-security/harden-runner first,
+    # the way every other reusable workflow gt calls does, is therefore a
+    # contract this call depends on, not an assumption: whoever can move the
+    # v1 tag replaces every step lydite.yml runs, egress audit included, and
+    # that first-party trust is what this suppression accepts.
+    # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: lydite/actions/.github/workflows/lydite.yml@v1
+    with:
+      dir: ${{ inputs.dir }}
+      gate-coverage: ${{ inputs.coverage }}

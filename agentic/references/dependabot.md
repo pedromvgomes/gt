@@ -99,5 +99,5 @@ Two escapes, and no long-lived token anywhere:
 
 Secrets are **declared, not inherited**: `secrets: inherit` is documented as
 working within one organization or enterprise, and gt lives under a different
-owner than the repositories calling it. The bulwark stage lost its Codecov
+owner than the repositories calling it. The lydite stage lost its Codecov
 token to exactly that, silently.

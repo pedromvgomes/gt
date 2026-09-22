@@ -6,7 +6,7 @@ committing `.gt-repo.yaml`, and that one file drives three mechanisms.
 
 | Layer | How it reaches the repo | Needs |
 |---|---|---|
-| Stage logic (attestation, conventional commits, bulwark, governance) | gt's reusable workflows, pinned to a moving major tag | nothing — a gt release is enough |
+| Stage logic (attestation, conventional commits, lydite, governance) | gt's reusable workflows, pinned to a moving major tag | nothing — a gt release is enough |
 | Files that must exist in-repo (orchestrators, `dependabot.yml`, CODEOWNERS) | `gt repo sync` | a local run or the weekly in-repo job |
 | GitHub API state (branch protection, merge methods, the queue) | `gt repo settings apply` | your own `gh` credentials |
 
@@ -41,7 +41,9 @@ managed path silently stops being orphan-checked.
 - **`ModeScaffold`** — gt creates the file once and the repository owns it from
   then on. gt never rewrites a scaffold and never deletes one, because both
   would destroy code gt did not write. **Existence is the entire contract.**
-  The `ci-*`/`cd-*` stage files and `.bulwark.yml` are scaffolds.
+  The `ci-*`/`cd-*` stage files are scaffolds. gt scaffolds no coverage
+  configuration at all — the `lydite` job forwards entirely to lydite's own
+  pipeline, which reads its own config from the scan root.
 
 `diff.go` reports four states: `ok`, `drifted`, `missing`, and `orphaned` — the
 last meaning gt rendered the file previously but the spec no longer asks for it.

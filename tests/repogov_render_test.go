@@ -485,7 +485,7 @@ func TestDiffSkipWorkflowsExcludesWorkflowFiles(t *testing.T) {
 //
 // `secrets: inherit` is documented as working for reusable workflows "in the
 // same organization or enterprise", and gt lives under a different owner than
-// the repositories calling it. The bulwark stage already lost its Codecov token
+// the repositories calling it. The lydite stage already lost its Codecov token
 // to exactly that, silently — the job kept passing while the upload stopped.
 // Here the failure would be quieter still: every github-actions bump would go
 // on being skipped as unmergeable, which is what it did before the App existed.
@@ -556,7 +556,7 @@ func TestAutoMergeFailsWhenOptedInWithoutTheSecret(t *testing.T) {
 
 // Dependabot's default is direct dependencies only, so a pin held indirectly is
 // never bumped — and nothing reports a dependency that simply stops being
-// updated. bulwark's go-pin module is exactly that: no .go files, so `go mod
+// updated. lydite's go-pin module is exactly that: no .go files, so `go mod
 // tidy` marks gosec and govulncheck `// indirect`, and without an allow rule
 // the security scanner's own tool pins freeze in place.
 func TestRenderDependabotAllowRules(t *testing.T) {

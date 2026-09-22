@@ -30,7 +30,7 @@ type Spec struct {
 
 	Dependabot          []DependabotEntry   `yaml:"dependabot" json:"dependabot"`
 	DependabotAutoMerge DependabotAutoMerge `yaml:"dependabot_auto_merge" json:"dependabot_auto_merge"`
-	Bulwark             Bulwark             `yaml:"bulwark" json:"bulwark"`
+	Lydite              Lydite              `yaml:"lydite" json:"lydite"`
 	Pipeline            Pipeline            `yaml:"pipeline" json:"pipeline"`
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
@@ -57,7 +57,7 @@ type DependabotEntry struct {
 	// Allow narrows which dependencies Dependabot will open PRs for.
 	//
 	// It exists because Dependabot's default is direct dependencies only, and
-	// that default silently freezes any pin held indirectly. bulwark's go-pin
+	// that default silently freezes any pin held indirectly. lydite's go-pin
 	// module is the case: it has no .go files, so `go mod tidy` marks gosec and
 	// govulncheck as `// indirect`, and without an allow rule neither is ever
 	// bumped — in the security scanner, with nothing reporting it.
@@ -118,19 +118,19 @@ type DependabotAutoMerge struct {
 	GitHubApp bool `yaml:"github_app" json:"github_app"`
 }
 
-// Bulwark is the shared code-quality and security gate. Every governed repo
+// Lydite is the shared code-quality and security gate. Every governed repo
 // carries it — that is the convention — and it is disabled only where a repo
-// already wires bulwark into its own pipeline with coverage plumbing gt cannot
+// already wires lydite into its own pipeline with coverage plumbing gt cannot
 // generically reproduce.
-type Bulwark struct {
+type Lydite struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
-	// Dir scopes bulwark to a subdirectory. It stays an input rather than
-	// moving into .bulwark.yml because that file lives *at* the scan root, so
-	// bulwark must know the root before it can read its own config.
+	// Dir scopes the scan to a subdirectory, forwarded as reusable-lydite.yml's
+	// `dir` input — lydite reads its own config from that root, so gt has to
+	// know it before lydite can find `.lydite/` there at all.
 	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
-	// Coverage runs bulwark's coverage gate. Default true.
+	// Coverage runs lydite's coverage gate. Default true.
 	//
-	// Off for a repository with nothing bulwark can measure — boma is shell and
+	// Off for a repository with nothing lydite can measure — boma is shell and
 	// container-driven pytest, wardnet-infrastructure is YAML. Leaving it on
 	// there is not harmless: the gate spends time resolving a baseline for
 	// languages that do not exist, and every run reports a coverage result that
@@ -406,6 +406,25 @@ var (
 // check name carries no "<caller> / " prefix.
 const GateCheckJob = "ci-gate"
 
+// LyditeReferralContext is the commit-status context lydite's referral step
+// publishes its verdict under, and the second check branch protection requires
+// wherever lydite is enabled. A "refer" verdict never fails the job, so this
+// status is the only thing that holds a referred pull request; a `/lydite
+// clear` comment flips it without re-running anything.
+//
+// It mirrors internal/clearance.Context in the separate lydite/lydite module,
+// which nothing here can import. The two are not kept in sync mechanically, so
+// a rename on either side needs a matching change on the other.
+//
+// Required unscoped by integration_id: anything with write access to the repo
+// can post a status under this context and satisfy the check without going
+// through /lydite clear. Not fixable by adding one yet, either — as of this
+// writing lydite/lydite publishes this status and handles /lydite clear with
+// the plain per-run GITHUB_TOKEN, not any GitHub App identity, so there is no
+// App to scope the check to. Tracked as pedromvgomes/gt#71, blocked on
+// lydite/lydite (or lydite/actions) authenticating that path as an App first.
+const LyditeReferralContext = "lydite/referral"
+
 // Ecosystems gt can render a Dependabot entry for. Keys match Dependabot's
 // package-ecosystem values.
 var Ecosystems = []string{
@@ -473,7 +492,7 @@ func Default() Spec {
 				RequireLastPushApproval: false,
 			},
 		},
-		Bulwark: Bulwark{Enabled: true, Coverage: true},
+		Lydite: Lydite{Enabled: true, Coverage: true},
 		Pipeline: Pipeline{
 			CI: PipelineCI{Enabled: true, Stages: append([]string(nil), CIStages...)},
 			CD: PipelineCD{
