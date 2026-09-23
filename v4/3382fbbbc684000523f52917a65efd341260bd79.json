@@ -1,0 +1,7 @@
+{
+  "gt": {
+    "covered": 2254,
+    "total": 2866,
+    "producer": "go 1.26.6, scope -coverpkg=./internal/... ./tests/..."
+  }
+}
