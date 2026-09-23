@@ -269,7 +269,8 @@ attest
   │    └─ ci-build
   │         ├─ ci-test
   │         └─ ci-end2end
-  └─ lydite
+  ├─ lydite
+  └─ lydite-baseline   ← push to the default branch only, and outside the gate
 conventional-commits, governance
   └─ ci-gate     ← the required check for real job failures
 ```
@@ -290,6 +291,15 @@ it: it is optional and fully decoupled, an escape hatch for a suite lydite
 doesn't run itself, and nothing in gt's own pipeline depends on it or reads
 anything it produces.
 
+`lydite-baseline` records the coverage baseline that pipeline compares a pull
+request against, forwarding to `lydite/actions`' own baseline workflow through
+gt's `reusable-lydite-baseline.yml`. It runs on a push to the default branch
+and nowhere else, waits on `attest` rather than on `lydite` — a referral
+verdict says nothing about what the baseline should be — and is the one job
+outside `ci-gate`'s `needs:`: on a push there is nothing left to merge, so a
+baseline that failed to record is worth a red job rather than a red gate on a
+commit already on the branch.
+
 ### Two required checks, when lydite is enabled
 
 Branch protection requires **`ci-gate`**, always, and — wherever lydite is
@@ -304,7 +314,7 @@ leaves the `lydite` job itself green — it is lydite's own commit status, not a
 job result — so requiring `ci-gate` alone would let a referred pull request
 merge with nothing red anywhere. It clears through the `/lydite clear`
 PR-comment path, not by re-running anything — answered by a workflow of its
-own, `lydite-clearance.yml`, triggered on `issue_comment` rather than
+own, `gt-lydite-clearance.yml`, triggered on `issue_comment` rather than
 `pull_request` so the logic deciding a clearance always runs from the default
 branch, never from the pull request it is deciding about.
 

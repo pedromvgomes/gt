@@ -164,6 +164,28 @@ jobs:
       id-token: write
       pull-requests: write
 
+  # Records the coverage baseline the pull-request gate compares against.
+  # Without it the gate has nothing to measure a PR's coverage against. Gated
+  # on coverage, not only on lydite being enabled: a repo with nothing lydite
+  # can measure has no gate this would feed, and would otherwise hold
+  # contents: write to record a baseline for a comparison that never runs.
+  lydite-baseline:
+    # attest, not lydite: a referral verdict on the merged tree has no bearing
+    # on what the baseline should say, and gating the record on it would leave
+    # the default branch without one exactly when a referral is outstanding.
+    needs: [attest]
+    # `push:` above is filtered to the default branch, and no other trigger of
+    # this workflow reports as a push — so this is "on the default branch, and
+    # only there" without a second condition on github.ref to keep in step.
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/reusable-lydite-baseline.yml
+    # Deliberately absent from ci-gate's needs. A push to the default
+    # branch has nothing left to merge, so the gate there is informational; a
+    # baseline that failed to record is worth a red job, not a red gate on a
+    # commit already on main.
+    permissions:
+      contents: write
+
   # The single required check. `if: always()` so it still reports when a stage
   # was skipped, and a skipped stage passes — that is the point of preflight.
   ci-gate:
