@@ -10,7 +10,10 @@
 package repospec
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -272,6 +275,11 @@ type BranchProtection struct {
 	// the repositories where it could have been set computes to `strict`
 	// anyway.
 	BaseFreshness string `yaml:"base_freshness" json:"base_freshness"`
+	// RequireUpToDate is the released spelling, accepted so a manifest still
+	// carrying it parses. It is an input key rather than part of the resolved
+	// spec: Parse translates it onto BaseFreshness, and nothing downstream
+	// reads it.
+	RequireUpToDate *bool `yaml:"require_up_to_date,omitempty" json:"-"`
 	// DismissStaleReviews drops approvals when new commits land. Default true:
 	// an approval is of a diff, and a review of code that has since changed is
 	// a rubber stamp wearing a reviewer's name.
@@ -287,6 +295,23 @@ type BranchProtection struct {
 	// approve. Default false: with required_approvals at 0 it has nothing to
 	// act on, and turning it on without approvals would block every PR.
 	RequireLastPushApproval bool `yaml:"require_last_push_approval" json:"require_last_push_approval"`
+}
+
+// resolveFreshness translates the retired `require_up_to_date` key onto
+// BaseFreshness, and clears it so the resolved spec carries one spelling of the
+// guarantee.
+//
+// Every value of the key resolves to auto, as does its absence: it named
+// GitHub's strict required checks, which is what auto computes to on every
+// repository where the key could have been set. It is therefore not a way to
+// ask for something `base_freshness` cannot say, and a manifest carrying both
+// spellings resolves to auto.
+func (b *BranchProtection) resolveFreshness() {
+	if b.RequireUpToDate == nil {
+		return
+	}
+	b.RequireUpToDate = nil
+	b.BaseFreshness = FreshnessAuto
 }
 
 // Squash commit title sources. The GitHub values these map to are an
@@ -539,11 +564,20 @@ func Read(path string) (Spec, error) {
 
 // Parse unmarshals and validates manifest bytes. path is used only for error
 // messages.
+//
+// Decoding is strict, recursively: a key no struct in the tree claims is an
+// error naming the field, not a line quietly dropped. A misspelled or retired
+// key that parses is a manifest whose author believes it is in force, and the
+// spec it produces is the default one.
 func Parse(data []byte, path string) (Spec, error) {
 	spec := Default()
-	if err := yaml.Unmarshal(data, &spec); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	// An empty document decodes to io.EOF, and leaves the defaults standing.
+	if err := dec.Decode(&spec); err != nil && !errors.Is(err, io.EOF) {
 		return Spec{}, fmt.Errorf("parse %s: %w", path, err)
 	}
+	spec.Settings.BranchProtection.resolveFreshness()
 	if err := Validate(spec); err != nil {
 		return Spec{}, fmt.Errorf("%s: %w", path, err)
 	}

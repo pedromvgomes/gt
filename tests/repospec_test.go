@@ -257,16 +257,16 @@ func TestBaseFreshnessDefaultsToAuto(t *testing.T) {
 	}
 }
 
-// `bulwark:` is not a field any struct claims, so non-strict parsing drops it
-// without an error — a manifest carrying only that key parses to the default
-// spec, with lydite enabled.
-func TestABulwarkKeyIsUnrecognizedAndIgnored(t *testing.T) {
-	spec, err := repospec.Parse([]byte("bulwark:\n  enabled: false\n"), "t.yaml")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
+// `bulwark:` is not a field any struct claims, and strict decoding refuses it
+// by name rather than dropping the line — an opt-out written under the retired
+// name is not an opt-out, and its author is entitled to hear that.
+func TestABulwarkKeyIsRejectedByName(t *testing.T) {
+	_, err := repospec.Parse([]byte("bulwark:\n  enabled: false\n"), "t.yaml")
+	if err == nil {
+		t.Fatal("Parse() error = nil, want an error — an unrecognized key is not silently dropped")
 	}
-	if !spec.Lydite.Enabled {
-		t.Error("enabled = false, want true — an unrecognized key does not override the default spec")
+	if !strings.Contains(err.Error(), "bulwark") {
+		t.Errorf("error = %q, want it to name the bulwark field", err)
 	}
 }
 
