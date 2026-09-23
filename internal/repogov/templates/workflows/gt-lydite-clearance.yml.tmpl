@@ -25,7 +25,12 @@ jobs:
       statuses: write
       pull-requests: write
       id-token: write
-{{- if .LyditeDir }}
+{{- if or .LyditeDir .LyditeRelay }}
     with:
+{{- if .LyditeDir }}
       dir: {{ .LyditeDir }}
+{{- end }}
+{{- if .LyditeRelay }}
+      relay: {{ .LyditeRelay }}
+{{- end }}
 {{- end }}
