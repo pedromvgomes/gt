@@ -72,7 +72,7 @@ why it has to be kept in sync with `lydite/lydite`'s `internal/clearance.Context
 by hand.
 
 Clearing that status is `/lydite clear`, posted as a PR comment — answered by
-`lydite-clearance.yml`, a workflow of its own, wired to `issue_comment` rather
+`gt-lydite-clearance.yml`, a workflow of its own, wired to `issue_comment` rather
 than folded into `ci-orchestration.yml`. An `issue_comment` run always executes
 the *default branch's* copy of every workflow file, never the pull request's,
 which is exactly the property a job that holds `statuses: write` needs; putting

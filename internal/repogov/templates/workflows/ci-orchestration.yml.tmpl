@@ -155,8 +155,13 @@ jobs:
 {{- end }}
 {{- end }}
 
+{{- if .LyditeCoverage }}
+
   # Records the coverage baseline the pull-request gate compares against.
-  # Without it the gate has nothing to measure a PR's coverage against.
+  # Without it the gate has nothing to measure a PR's coverage against. Gated
+  # on coverage, not only on lydite being enabled: a repo with nothing lydite
+  # can measure has no gate this would feed, and would otherwise hold
+  # contents: write to record a baseline for a comparison that never runs.
   lydite-baseline:
     # attest, not lydite: a referral verdict on the merged tree has no bearing
     # on what the baseline should say, and gating the record on it would leave
@@ -176,6 +181,7 @@ jobs:
 {{- if .LyditeDir }}
     with:
       dir: {{ .LyditeDir }}
+{{- end }}
 {{- end }}
 {{- end }}
 

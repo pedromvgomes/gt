@@ -271,6 +271,18 @@ func TestLyditeBaselineOmittedWhenDisabled(t *testing.T) {
 	}
 }
 
+// A repo with nothing lydite can measure has no coverage gate to feed, so the
+// job that records a baseline for one — and holds contents: write to do it —
+// has no reason to run either.
+func TestLyditeBaselineOmittedWhenCoverageOff(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Coverage = false
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+	if _, ok := jobs["lydite-baseline"]; ok {
+		t.Error("lydite-baseline was rendered despite coverage being off")
+	}
+}
+
 // Mirrors TestLyditeJobCallsGtsOwnReusableWorkflow: gt's own repo calls its
 // local copy so a PR touching the baseline logic exercises it directly, every
 // other repo pins the moving major tag.
