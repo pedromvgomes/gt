@@ -106,11 +106,11 @@ There is no artifact hand-off between `ci-test` and `lydite`. Testing, review
 and publishing all live inside lydite's own commands (`lydite test`, `lydite
 review`, `lydite publish`), which discover and run each unit's suite
 themselves; `lydite` never reads `ci-test`'s output. `.bulwark.yml` is gone —
-gt scaffolds no coverage configuration at all now, only the `lydite.enabled`
-and `lydite.dir` knobs in the spec. Everything about what gets scanned, gated
-and reported is lydite's own config, read from the scan root once lydite runs
-there. See [`docs/pipeline-design.md`](../../docs/pipeline-design.md) for the
-full rationale.
+gt scaffolds no coverage configuration at all now, only the `lydite.enabled`,
+`lydite.dir` and `lydite.relay` knobs in the spec. Everything about what gets
+scanned, gated and reported is lydite's own config, read from the scan root
+once lydite runs there. See [`docs/pipeline-design.md`](../../docs/pipeline-design.md)
+for the full rationale.
 
 ## Permissions
 

@@ -550,11 +550,11 @@ never downloads a `gt-coverage` artifact, and `ci-test.yml` never has to
 produce one.
 
 That settles the `.bulwark.yml` question the other way from an artifact
-convention: gt scaffolds no coverage configuration at all. `lydite.enabled`
-and `lydite.dir` (the scan root — the `dir` input `reusable-lydite.yml`
-forwards to lydite) are the only knobs gt's own spec carries; everything else
-about what gets scanned, gated and reported is lydite's own config, read from
-the scan root once lydite runs there.
+convention: gt scaffolds no coverage configuration at all. `lydite.enabled`,
+`lydite.dir` (the scan root — the `dir` input `reusable-lydite.yml`
+forwards to lydite) and `lydite.relay` are the only knobs gt's own spec
+carries; everything else about what gets scanned, gated and reported is
+lydite's own config, read from the scan root once lydite runs there.
 
 ### The coverage baseline
 
