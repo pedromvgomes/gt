@@ -34,6 +34,13 @@ on:
           not exist and reports a number that means nothing.
         type: boolean
         default: true
+      relay:
+        description: >-
+          The comment relay's origin. Empty posts every PR comment and review
+          as github-actions[bot]; set it to route them through lydite's own
+          App identity instead.
+        type: string
+        default: ""
 
 # No `secrets:` block, deliberately. SEMGREP_APP_TOKEN in particular is not
 # forwarded: supplying it is a single on/off switch for both diff-aware scanning
@@ -72,3 +79,4 @@ jobs:
     with:
       dir: ${{ inputs.dir }}
       gate-coverage: ${{ inputs.coverage }}
+      relay: ${{ inputs.relay }}
