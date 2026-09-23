@@ -269,7 +269,8 @@ attest
   │    └─ ci-build
   │         ├─ ci-test
   │         └─ ci-end2end
-  └─ lydite
+  ├─ lydite
+  └─ lydite-baseline   ← push to the default branch only, and outside the gate
 conventional-commits, governance
   └─ ci-gate     ← the required check for real job failures
 ```
@@ -289,6 +290,15 @@ referral, scan, test and publish, orchestrated as one in
 it: it is optional and fully decoupled, an escape hatch for a suite lydite
 doesn't run itself, and nothing in gt's own pipeline depends on it or reads
 anything it produces.
+
+`lydite-baseline` records the coverage baseline that pipeline compares a pull
+request against, forwarding to `lydite/actions`' own baseline workflow through
+gt's `reusable-lydite-baseline.yml`. It runs on a push to the default branch
+and nowhere else, waits on `attest` rather than on `lydite` — a referral
+verdict says nothing about what the baseline should be — and is the one job
+outside `ci-gate`'s `needs:`: on a push there is nothing left to merge, so a
+baseline that failed to record is worth a red job rather than a red gate on a
+commit already on the branch.
 
 ### Two required checks, when lydite is enabled
 

@@ -15,7 +15,8 @@ attest
   │    └─ ci-build
   │         ├─ ci-test
   │         └─ ci-end2end
-  └─ lydite
+  ├─ lydite
+  └─ lydite-baseline   ← push to the default branch only, and outside the gate
 conventional-commits, governance
   └─ ci-gate     ← the required check that aggregates every job above
 ```
@@ -24,6 +25,16 @@ The `lydite` job hangs off `attest` alone, not off `ci-test`: it forwards to
 lydite's own reusable pipeline, which discovers and runs each unit's suite
 itself. There is no artifact hand-off between `ci-test` and `lydite` — see
 Coverage below.
+
+`lydite-baseline` records the coverage baseline the pull-request gate compares
+against, forwarding to gt's own `reusable-lydite-baseline.yml`. Two things set
+it apart from every other job here: it waits on `attest` rather than on
+`lydite` — a referral verdict has no bearing on what the baseline says — and it
+is the one job **not** in `ci-gate`'s `needs:`. It runs only on a push to the
+default branch, where there is nothing left to merge and the gate is
+informational, so a baseline that failed to record is worth a red job and not a
+red gate on a commit already on the branch. It is also the only job granted
+`contents: write`, because recording a baseline writes back.
 
 The `ci-*` and `cd-*` stage files are the **repository's**. gt writes each one
 once as an empty stub and never touches it again — not to update it, not to
@@ -48,7 +59,8 @@ protection rule.
 stage the spec enabled plus the fixed jobs, or the gate goes green on work that
 never ran. `lydite` is one of those fixed jobs wherever `spec.Lydite.Enabled`
 — but a referral verdict never fails the job, so `ci-gate` going green does not
-mean lydite cleared the tree.
+mean lydite cleared the tree. `lydite-baseline` is deliberately not on that
+list.
 
 Wherever lydite is enabled, `settings.go`'s `desiredRuleset` also requires a
 second, unrelated context: **`lydite/referral`** (`repospec.LyditeReferralContext`),

@@ -22,8 +22,9 @@ type renderedJob struct {
 	Uses  string   `yaml:"uses"`
 	// `secrets:` is either the string "inherit" or a map of named secrets, so it
 	// has to be decoded loosely and inspected by the tests that care.
-	Secrets any            `yaml:"secrets"`
-	With    map[string]any `yaml:"with"`
+	Secrets     any               `yaml:"secrets"`
+	With        map[string]any    `yaml:"with"`
+	Permissions map[string]string `yaml:"permissions"`
 }
 
 func workflowJobs(t *testing.T, content []byte) map[string]renderedJob {
@@ -58,7 +59,11 @@ func TestGateWaitsOnEveryJob(t *testing.T) {
 		waited[n] = true
 	}
 	for name := range jobs {
-		if name == repospec.GateCheckJob {
+		// lydite-baseline is the one exception, by design: it runs only on a
+		// push to the default branch, where there is nothing left to merge and
+		// the gate is informational. A baseline that failed to record must not
+		// paint a commit already on main red.
+		if name == repospec.GateCheckJob || name == "lydite-baseline" {
 			continue
 		}
 		if !waited[name] {
@@ -254,6 +259,96 @@ func TestLyditeJobForwardsTheScanDirAndCoverageGate(t *testing.T) {
 	def := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])["lydite"]
 	if len(def.With) != 0 {
 		t.Errorf("with = %#v for the default spec, want nothing restated", def.With)
+	}
+}
+
+func TestLyditeBaselineOmittedWhenDisabled(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Enabled = false
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+	if _, ok := jobs["lydite-baseline"]; ok {
+		t.Error("lydite-baseline was rendered despite lydite being disabled")
+	}
+}
+
+// Mirrors TestLyditeJobCallsGtsOwnReusableWorkflow: gt's own repo calls its
+// local copy so a PR touching the baseline logic exercises it directly, every
+// other repo pins the moving major tag.
+func TestLyditeBaselineCallsGtsOwnReusableWorkflow(t *testing.T) {
+	gtFiles := renderMap(t, repogov.Input{
+		Spec: repospec.Default(), RepoOwner: "pedromvgomes", RepoName: "gt", GTVersion: "v0.6.0",
+	})
+	own := workflowJobs(t, gtFiles[".github/workflows/ci-orchestration.yml"])["lydite-baseline"]
+	if own.Uses != "./.github/workflows/reusable-lydite-baseline.yml" {
+		t.Errorf("gt's own uses = %q, want the local reusable-lydite-baseline.yml", own.Uses)
+	}
+
+	other := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])["lydite-baseline"]
+	want := "pedromvgomes/gt/.github/workflows/reusable-lydite-baseline.yml@v0"
+	if other.Uses != want {
+		t.Errorf("uses = %q, want %q", other.Uses, want)
+	}
+}
+
+// Recording a baseline writes back to the repository, so this is the one job
+// in the orchestrator granted more than contents: read.
+func TestLyditeBaselineCanWriteContents(t *testing.T) {
+	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	baseline, ok := jobs["lydite-baseline"]
+	if !ok {
+		t.Fatal("lydite-baseline job was not rendered")
+	}
+	if got := baseline.Permissions["contents"]; got != "write" {
+		t.Errorf("permissions.contents = %q, want write — a baseline the job cannot persist is no baseline",
+			got)
+	}
+}
+
+// dir has to reach the baseline the same way it reaches the scan: the gate
+// compares against a baseline measured from the same root.
+func TestLyditeBaselineForwardsDir(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Dir = "source"
+	baseline := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])["lydite-baseline"]
+	if got := baseline.With["dir"]; got != "source" {
+		t.Errorf("with.dir = %#v, want the spec's lydite.dir", got)
+	}
+
+	def := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])["lydite-baseline"]
+	if len(def.With) != 0 {
+		t.Errorf("with = %#v for the default spec, want nothing restated", def.With)
+	}
+}
+
+// A baseline records what is on the default branch. The push trigger is
+// already filtered to that branch and no other trigger reports as a push, so
+// the event name alone is the whole condition.
+func TestLyditeBaselineRunsOnlyOnPush(t *testing.T) {
+	baseline := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])["lydite-baseline"]
+	if baseline.If != "github.event_name == 'push'" {
+		t.Errorf("if = %q, want the push-only guard", baseline.If)
+	}
+}
+
+// The baseline waits on attest, not on lydite. A referral verdict gating the
+// record would leave the default branch without a baseline exactly when a
+// referral is outstanding — the state the record exists to avoid.
+func TestLyditeBaselineDoesNotWaitOnTheReferral(t *testing.T) {
+	baseline := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])["lydite-baseline"]
+	if !reflect.DeepEqual(baseline.Needs, []string{"attest"}) {
+		t.Errorf("lydite-baseline needs = %v, want [attest] alone", baseline.Needs)
+	}
+}
+
+// On a push to the default branch there is nothing left to merge, so the gate
+// is informational there. A baseline that failed to record must not turn it
+// red on a commit already on main.
+func TestLyditeBaselineIsNotRequiredByTheGate(t *testing.T) {
+	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	for _, n := range jobs[repospec.GateCheckJob].Needs {
+		if n == "lydite-baseline" {
+			t.Errorf("%s waits on lydite-baseline: %v", repospec.GateCheckJob, jobs[repospec.GateCheckJob].Needs)
+		}
 	}
 }
 
@@ -782,13 +877,16 @@ func TestGateRecordsTheRunThatValidatedTheTree(t *testing.T) {
 // to run again on every push to manufacture a merge-base baseline would buy
 // nothing.
 //
-// So nothing is exempt from the attestation: an already-validated push skips
-// every stage, which is what attest is for.
+// So no stage is exempt from the attestation: an already-validated push skips
+// every one of them, which is what attest is for. lydite-baseline is not a
+// stage — it exists only on a push to the default branch and re-validates
+// nothing, so its push condition is its whole trigger rather than an exemption
+// from one.
 func TestAttestSkipsEveryStageOnAnAlreadyValidatedPush(t *testing.T) {
 	jobs := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
 
 	for name, job := range jobs {
-		if name == "attest" || name == repospec.GateCheckJob {
+		if name == "attest" || name == repospec.GateCheckJob || name == "lydite-baseline" {
 			continue
 		}
 		if strings.Contains(job.If, "github.event_name == 'push'") {

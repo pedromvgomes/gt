@@ -132,6 +132,16 @@ jobs:
       id-token: write
       pull-requests: write
 
+  lydite-baseline:
+    needs: [attest]
+    # Default branch only: the push trigger is filtered to it, and no other
+    # trigger of this workflow reports as a push. Absent from ci-gate's needs
+    # on purpose — see "The coverage baseline", below.
+    if: github.event_name == 'push'
+    uses: pedromvgomes/gt/.github/workflows/reusable-lydite-baseline.yml@v0
+    permissions:
+      contents: write
+
   conventional-commits:
     uses: pedromvgomes/gt/.github/workflows/reusable-conventional-commits.yml@v0
 
@@ -545,6 +555,29 @@ and `lydite.dir` (the scan root — the `dir` input `reusable-lydite.yml`
 forwards to lydite) are the only knobs gt's own spec carries; everything else
 about what gets scanned, gated and reported is lydite's own config, read from
 the scan root once lydite runs there.
+
+### The coverage baseline
+
+The gate a pull request meets is a comparison, so something has to record what
+it compares against. `lydite-baseline` is that recording: a job in the same
+orchestrator forwarding to `lydite/actions`' own baseline workflow through
+gt's `reusable-lydite-baseline.yml`, firing on a push to the default branch and
+nowhere else. Without it every governed repository gates against a baseline no
+run ever wrote.
+
+Three decisions shape it:
+
+- **It waits on `attest`, not on `lydite`.** The baseline is a measurement of
+  what is on the default branch; a referral verdict about that tree says
+  nothing about what the measurement should be, and gating the record on one
+  would withhold the baseline exactly when a referral is outstanding.
+- **It is not in `ci-gate`'s `needs:`.** On a push the commit is already on the
+  branch and there is nothing left to merge, so the gate there is
+  informational. A baseline that failed to record is worth a red job and a
+  re-run, not a red required check on history.
+- **It carries `contents: write`**, alone among the workflows gt owns.
+  Recording writes back; read-only it would run, report success and persist
+  nothing, which is indistinguishable from the bug it fixes.
 
 Scanning itself runs token-less by design: gt does not forward a
 `SEMGREP_APP_TOKEN` to the lydite pipeline. Supplying that token is a single

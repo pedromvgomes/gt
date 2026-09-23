@@ -345,6 +345,7 @@ type ciData struct {
 
 	AttestWorkflowRef              string
 	LyditeWorkflowRef              string
+	LyditeBaselineWorkflowRef      string
 	ConventionalCommitsWorkflowRef string
 	GovernanceWorkflowRef          string
 }
@@ -396,6 +397,7 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 
 		AttestWorkflowRef:              workflowRef("attest.yml", major, in.RepoOwner, in.RepoName),
 		LyditeWorkflowRef:              workflowRef("lydite.yml", major, in.RepoOwner, in.RepoName),
+		LyditeBaselineWorkflowRef:      workflowRef("lydite-baseline.yml", major, in.RepoOwner, in.RepoName),
 		ConventionalCommitsWorkflowRef: workflowRef("conventional-commits.yml", major, in.RepoOwner, in.RepoName),
 		GovernanceWorkflowRef:          workflowRef("governance.yml", major, in.RepoOwner, in.RepoName),
 	}, nil

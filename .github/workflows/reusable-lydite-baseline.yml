@@ -1,0 +1,51 @@
+name: gt lydite baseline
+
+# Reusable coverage-baseline recorder, called on a push to the default branch.
+# It has no steps of its own — recording the baseline is lydite's own reusable
+# workflow, and this file only forwards to it, so what a baseline is and where
+# it is stored stays versioned in lydite/actions rather than restated here.
+#
+# The pull-request pipeline reads a baseline it never writes: without a run on
+# the default branch there is nothing for the coverage gate to compare against,
+# and it falls back to a number that means nothing.
+
+on:
+  workflow_call:
+    inputs:
+      dir:
+        description: >-
+          Root directory the baseline is measured from, for repos whose source
+          is not at the root. Matches reusable-lydite.yml's own `dir` input,
+          since a baseline and the gate that compares against it read the same
+          root.
+
+          Defaults to "." rather than "". A value passed explicitly overrides a
+          default even when it is empty — so forwarding "" hands the pipeline
+          `--dir ""` and it dies on `open : no such file or directory`, on every
+          repository that does not set lydite.dir.
+        type: string
+        default: "."
+
+# contents: write, unlike every other reusable workflow gt owns. Recording a
+# baseline is the one lydite call that writes back to the repository rather
+# than only reporting on it — read-only, it runs and persists nothing, and the
+# coverage gate stays baseline-less exactly as if this workflow were absent.
+permissions:
+  contents: write
+
+jobs:
+  baseline:
+    name: baseline
+    permissions:
+      contents: write # the recorded baseline
+    # Third-party actions are SHA-pinned, because a tag its owner controls can
+    # be silently repointed at code we never reviewed. lydite is ours: the
+    # floating major alias is its intended delivery channel, moved
+    # deliberately on each release so consumers pick up fixes without a bump
+    # PR each time. That tag still grants real authority on every governed
+    # repository at once — contents: write here, more than the scan job asks
+    # for — which is the same first-party trust reusable-lydite.yml accepts.
+    # nosemgrep: yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag
+    uses: lydite/actions/.github/workflows/lydite-baseline.yml@v1
+    with:
+      dir: ${{ inputs.dir }}
