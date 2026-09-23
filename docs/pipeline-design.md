@@ -575,9 +575,9 @@ Three decisions shape it:
   branch and there is nothing left to merge, so the gate there is
   informational. A baseline that failed to record is worth a red job and a
   re-run, not a red required check on history.
-- **It carries `contents: write`**, alone among the workflows gt owns.
-  Recording writes back; read-only it would run, report success and persist
-  nothing, which is indistinguishable from the bug it fixes.
+- **It carries `contents: write`**, the only lydite call that does. Recording
+  writes back; read-only it would run, report success and persist nothing,
+  which is indistinguishable from the bug it fixes.
 
 Scanning itself runs token-less by design: gt does not forward a
 `SEMGREP_APP_TOKEN` to the lydite pipeline. Supplying that token is a single

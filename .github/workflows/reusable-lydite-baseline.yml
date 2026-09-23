@@ -26,10 +26,10 @@ on:
         type: string
         default: "."
 
-# contents: write, unlike every other reusable workflow gt owns. Recording a
-# baseline is the one lydite call that writes back to the repository rather
-# than only reporting on it — read-only, it runs and persists nothing, and the
-# coverage gate stays baseline-less exactly as if this workflow were absent.
+# contents: write. Recording a baseline is the one lydite call that writes
+# back to the repository rather than only reporting on it — read-only, it
+# runs and persists nothing, and the coverage gate stays baseline-less
+# exactly as if this workflow were absent.
 permissions:
   contents: write
 

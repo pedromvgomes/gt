@@ -23,6 +23,27 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+// A Decoder, unlike yaml.Unmarshal, reports an empty document as io.EOF
+// rather than decoding zero fields — Parse must absorb that itself or a
+// repository with an empty or comments-only .gt-repo.yaml starts failing
+// gt repo check/sync instead of resolving to the default spec.
+func TestParseResolvesAnEmptyManifestToDefaults(t *testing.T) {
+	for name, data := range map[string]string{
+		"empty":         "",
+		"comments only": "# nothing here yet\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec, err := repospec.Parse([]byte(data), "t.yaml")
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if spec.Settings.BranchProtection.Branch != "main" {
+				t.Errorf("branch = %q, want the default spec", spec.Settings.BranchProtection.Branch)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsBadSpecs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -280,5 +301,35 @@ func TestTheRetiredRequireUpToDateKeyStillParses(t *testing.T) {
 	}
 	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
 		t.Errorf("base_freshness = %q, want %q", got, repospec.FreshnessAuto)
+	}
+}
+
+// The retired key wins over an explicit base_freshness, per resolveFreshness's
+// own doc comment: it names nothing base_freshness cannot already say, so a
+// manifest carrying both is read as still meaning the retired key's setting.
+func TestTheRetiredKeyOverridesAnExplicitBaseFreshness(t *testing.T) {
+	spec, err := repospec.Parse([]byte(
+		"settings:\n  branch_protection:\n    require_up_to_date: true\n    base_freshness: strict\n",
+	), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
+		t.Errorf("base_freshness = %q, want %q — the retired key resolves unconditionally",
+			got, repospec.FreshnessAuto)
+	}
+}
+
+// resolveFreshness only has something to translate when require_up_to_date is
+// present. A manifest that never carried the retired key must keep whatever
+// base_freshness it set explicitly, unrelated to what auto would compute to.
+func TestBaseFreshnessIsUntouchedWithoutTheRetiredKey(t *testing.T) {
+	spec, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    base_freshness: strict\n"), "t.yaml")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessStrict {
+		t.Errorf("base_freshness = %q, want %q — absent require_up_to_date, resolveFreshness must not touch it",
+			got, repospec.FreshnessStrict)
 	}
 }
