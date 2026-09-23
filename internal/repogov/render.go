@@ -164,9 +164,9 @@ func registry() []fileSpec {
 			},
 		},
 		{
-			key:      "lydite-clearance",
-			tmpl:     "templates/workflows/lydite-clearance.yml.tmpl",
-			path:     WorkflowDir + "/lydite-clearance.yml",
+			key:      "gt-lydite-clearance",
+			tmpl:     "templates/workflows/gt-lydite-clearance.yml.tmpl",
+			path:     WorkflowDir + "/gt-lydite-clearance.yml",
 			workflow: true,
 			mode:     ModeManaged,
 			// A repo with lydite off has nothing a clearance would act on.

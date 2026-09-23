@@ -304,7 +304,7 @@ leaves the `lydite` job itself green — it is lydite's own commit status, not a
 job result — so requiring `ci-gate` alone would let a referred pull request
 merge with nothing red anywhere. It clears through the `/lydite clear`
 PR-comment path, not by re-running anything — answered by a workflow of its
-own, `lydite-clearance.yml`, triggered on `issue_comment` rather than
+own, `gt-lydite-clearance.yml`, triggered on `issue_comment` rather than
 `pull_request` so the logic deciding a clearance always runs from the default
 branch, never from the pull request it is deciding about.
 

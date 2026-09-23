@@ -142,8 +142,8 @@ func TestLyditeClearanceOmittedWhenDisabled(t *testing.T) {
 	spec := repospec.Default()
 	spec.Lydite.Enabled = false
 	files := pipelineFiles(t, spec)
-	if _, ok := files[".github/workflows/lydite-clearance.yml"]; ok {
-		t.Error("lydite-clearance.yml was rendered despite lydite being disabled")
+	if _, ok := files[".github/workflows/gt-lydite-clearance.yml"]; ok {
+		t.Error("gt-lydite-clearance.yml was rendered despite lydite being disabled")
 	}
 }
 
@@ -152,12 +152,12 @@ func TestLyditeClearanceOmittedWhenDisabled(t *testing.T) {
 // other job there (build, lint, the whole pipeline) would run on every PR
 // comment too.
 func TestLyditeClearanceTriggersOnlyOnIssueComment(t *testing.T) {
-	content := pipelineFiles(t, repospec.Default())[".github/workflows/lydite-clearance.yml"]
+	content := pipelineFiles(t, repospec.Default())[".github/workflows/gt-lydite-clearance.yml"]
 	var wf struct {
 		On map[string]any `yaml:"on"`
 	}
 	if err := yaml.Unmarshal(content, &wf); err != nil {
-		t.Fatalf("unmarshal lydite-clearance.yml: %v", err)
+		t.Fatalf("unmarshal gt-lydite-clearance.yml: %v", err)
 	}
 	if _, ok := wf.On["issue_comment"]; !ok {
 		t.Errorf("on = %v, want issue_comment", wf.On)
@@ -177,13 +177,13 @@ func TestLyditeClearanceCallsGtsOwnReusableWorkflow(t *testing.T) {
 	gtFiles := renderMap(t, repogov.Input{
 		Spec: repospec.Default(), RepoOwner: "pedromvgomes", RepoName: "gt", GTVersion: "v0.6.0",
 	})
-	clearance := workflowJobs(t, gtFiles[".github/workflows/lydite-clearance.yml"])["clearance"]
+	clearance := workflowJobs(t, gtFiles[".github/workflows/gt-lydite-clearance.yml"])["clearance"]
 	if clearance.Uses != "./.github/workflows/reusable-lydite-clearance.yml" {
 		t.Errorf("gt's own uses = %q, want the local reusable-lydite-clearance.yml", clearance.Uses)
 	}
 
 	otherFiles := pipelineFiles(t, repospec.Default())
-	otherClearance := workflowJobs(t, otherFiles[".github/workflows/lydite-clearance.yml"])["clearance"]
+	otherClearance := workflowJobs(t, otherFiles[".github/workflows/gt-lydite-clearance.yml"])["clearance"]
 	want := "pedromvgomes/gt/.github/workflows/reusable-lydite-clearance.yml@v0"
 	if otherClearance.Uses != want {
 		t.Errorf("uses = %q, want %q", otherClearance.Uses, want)
@@ -195,7 +195,7 @@ func TestLyditeClearanceCallsGtsOwnReusableWorkflow(t *testing.T) {
 func TestLyditeClearanceForwardsDir(t *testing.T) {
 	spec := repospec.Default()
 	spec.Lydite.Dir = "source"
-	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/lydite-clearance.yml"])
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/gt-lydite-clearance.yml"])
 	clearance, ok := jobs["clearance"]
 	if !ok {
 		t.Fatal("clearance job was not rendered")
@@ -204,7 +204,7 @@ func TestLyditeClearanceForwardsDir(t *testing.T) {
 		t.Errorf("with.dir = %#v, want the spec's lydite.dir", got)
 	}
 
-	def := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/lydite-clearance.yml"])["clearance"]
+	def := workflowJobs(t, pipelineFiles(t, repospec.Default())[".github/workflows/gt-lydite-clearance.yml"])["clearance"]
 	if def.With != nil {
 		t.Errorf("with = %v, want no block when lydite.dir is the default", def.With)
 	}
@@ -536,7 +536,7 @@ func TestOrchestratorJobsGrantWhatTheCalledWorkflowsDeclare(t *testing.T) {
 	for _, path := range []string{
 		".github/workflows/ci-orchestration.yml",
 		".github/workflows/cd-orchestration.yml",
-		".github/workflows/lydite-clearance.yml",
+		".github/workflows/gt-lydite-clearance.yml",
 	} {
 		content := pipelineFiles(t, repospec.Default())[path]
 		var wf struct {

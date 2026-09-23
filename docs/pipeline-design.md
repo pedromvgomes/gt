@@ -511,7 +511,7 @@ re-running anything.
 
 ### Answering a `/lydite` comment
 
-`lydite-clearance.yml` is what actually answers `/lydite clear` (and
+`gt-lydite-clearance.yml` is what actually answers `/lydite clear` (and
 `/lydite explain`, `/lydite exempt`) — a workflow of its own, not a job inside
 `ci-orchestration.yml`, because it triggers on `issue_comment` rather than
 `pull_request`/`push`/`merge_group`. That distinction is load-bearing, not

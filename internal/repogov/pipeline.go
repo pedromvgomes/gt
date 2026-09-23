@@ -314,7 +314,7 @@ func (s scaffoldData) CoverageArtifact() string {
 	return CoverageArtifact
 }
 
-// lyditeClearanceData is the lydite-clearance.yml template input.
+// lyditeClearanceData is the gt-lydite-clearance.yml template input.
 type lyditeClearanceData struct {
 	LyditeDir                  string
 	LyditeClearanceWorkflowRef string
