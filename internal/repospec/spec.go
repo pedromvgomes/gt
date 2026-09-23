@@ -139,6 +139,10 @@ type Lydite struct {
 	// languages that do not exist, and every run reports a coverage result that
 	// means nothing, which is the kind of number people start ignoring.
 	Coverage bool `yaml:"coverage" json:"coverage"`
+	// Relay is the comment/review relay identity forwarded as reusable-lydite.yml's
+	// and reusable-lydite-clearance.yml's `relay` input. Empty posts PR comments
+	// and clearance replies as `github-actions[bot]`.
+	Relay string `yaml:"relay,omitempty" json:"relay,omitempty"`
 }
 
 // Pipeline declares the CI and CD orchestration gt renders. Each listed stage

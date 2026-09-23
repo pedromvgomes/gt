@@ -317,6 +317,7 @@ func (s scaffoldData) CoverageArtifact() string {
 // lyditeClearanceData is the gt-lydite-clearance.yml template input.
 type lyditeClearanceData struct {
 	LyditeDir                  string
+	LyditeRelay                string
 	LyditeClearanceWorkflowRef string
 }
 
@@ -324,6 +325,7 @@ func buildLyditeClearanceData(in Input) lyditeClearanceData {
 	major := MajorTag(in.GTVersion)
 	return lyditeClearanceData{
 		LyditeDir:                  in.Spec.Lydite.Dir,
+		LyditeRelay:                in.Spec.Lydite.Relay,
 		LyditeClearanceWorkflowRef: workflowRef("lydite-clearance.yml", major, in.RepoOwner, in.RepoName),
 	}
 }
@@ -336,6 +338,7 @@ type ciData struct {
 	Lydite          bool
 	LyditeDir       string
 	LyditeCoverage  bool
+	LyditeRelay     string
 	AttestContext   string
 	CheckoutRef     string
 	SkipGuard       string
@@ -388,6 +391,7 @@ func buildCIData(in Input, shared templateData) (ciData, error) {
 		Lydite:          in.Spec.Lydite.Enabled,
 		LyditeDir:       in.Spec.Lydite.Dir,
 		LyditeCoverage:  in.Spec.Lydite.Coverage,
+		LyditeRelay:     in.Spec.Lydite.Relay,
 		AttestContext:   AttestContext,
 		CheckoutRef:     checkoutRef,
 		SkipGuard:       attestGuard,

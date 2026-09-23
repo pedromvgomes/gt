@@ -5,11 +5,14 @@ name: gt lydite clearance
 # reusable workflow, and this file only forwards to it, so the command's
 # behavior is versioned in lydite/actions rather than restated here.
 #
-# `lydite-version` and `relay` are not exposed as inputs: no GitHub App
-# publishes lydite's statuses yet (tracked as pedromvgomes/gt#71), so there is
-# no relay identity to hand this job — every governed repository answers a
-# clearance under github-actions[bot] until one exists. Forwarding only `dir`
-# keeps this file narrowing to exactly what a consumer can configure today.
+# `lydite-version` is not exposed as an input: this file pins to lydite's own
+# `v1` alias rather than letting a consumer select a version.
+#
+# `relay` is forwarded because the comment/review relay accepts it. The
+# clearance *status* itself is published under this job's own run token, not
+# under a relay identity — that's a separate, unrelated scoping question,
+# tracked by `LyditeReferralContext`'s own doc comment in
+# `internal/repospec/spec.go`.
 
 on:
   workflow_call:
@@ -21,6 +24,13 @@ on:
           input, since a clearance and the scan it clears read the same root.
         type: string
         default: "."
+      relay:
+        description: >-
+          The comment relay's origin. Empty posts the clearance reply as
+          github-actions[bot]; set it to route it through lydite's own App
+          identity instead.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -44,3 +54,4 @@ jobs:
     uses: lydite/actions/.github/workflows/lydite-clearance.yml@v1
     with:
       dir: ${{ inputs.dir }}
+      relay: ${{ inputs.relay }}

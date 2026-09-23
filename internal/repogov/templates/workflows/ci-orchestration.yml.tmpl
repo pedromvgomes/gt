@@ -142,7 +142,7 @@ jobs:
       statuses: write
       id-token: write
       pull-requests: write
-{{- if or .LyditeDir (not .LyditeCoverage) }}
+{{- if or .LyditeDir (not .LyditeCoverage) .LyditeRelay }}
     with:
 {{- if .LyditeDir }}
       dir: {{ .LyditeDir }}
@@ -152,6 +152,9 @@ jobs:
       # on, it resolves a baseline for languages that do not exist and reports a
       # number that means nothing — which is how a gate stops being read.
       coverage: false
+{{- end }}
+{{- if .LyditeRelay }}
+      relay: {{ .LyditeRelay }}
 {{- end }}
 {{- end }}
 

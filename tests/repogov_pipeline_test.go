@@ -262,6 +262,40 @@ func TestLyditeJobForwardsTheScanDirAndCoverageGate(t *testing.T) {
 	}
 }
 
+// The outer with: gate has to open on relay alone, not just on dir/coverage —
+// a spec that sets only relay must still reach reusable-lydite.yml's relay
+// input.
+func TestLyditeJobForwardsRelay(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Relay = "lydite[bot]"
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
+
+	lydite, ok := jobs["lydite"]
+	if !ok {
+		t.Fatal("lydite job was not rendered")
+	}
+	if got := lydite.With["relay"]; got != "lydite[bot]" {
+		t.Errorf("with.relay = %#v, want the spec's lydite.relay", got)
+	}
+}
+
+// The outer with: gate has to open on relay alone, not just on dir — a spec
+// that sets only relay must still reach reusable-lydite-clearance.yml's relay
+// input.
+func TestLyditeClearanceForwardsRelay(t *testing.T) {
+	spec := repospec.Default()
+	spec.Lydite.Relay = "lydite[bot]"
+	jobs := workflowJobs(t, pipelineFiles(t, spec)[".github/workflows/gt-lydite-clearance.yml"])
+
+	clearance, ok := jobs["clearance"]
+	if !ok {
+		t.Fatal("clearance job was not rendered")
+	}
+	if got := clearance.With["relay"]; got != "lydite[bot]" {
+		t.Errorf("with.relay = %#v, want the spec's lydite.relay", got)
+	}
+}
+
 func TestLyditeBaselineOmittedWhenDisabled(t *testing.T) {
 	spec := repospec.Default()
 	spec.Lydite.Enabled = false
