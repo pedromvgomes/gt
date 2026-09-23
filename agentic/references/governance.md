@@ -60,6 +60,23 @@ the major is exactly what the `uses:` pin carries: a stale gt would silently
 repoint every caller at an older major. There is deliberately no `--force` —
 rolling back means editing `gt_version` by hand, which is a considered act.
 
+## Retired and unknown keys
+
+`repospec.Parse` decodes `.gt-repo.yaml` with `yaml.KnownFields(true)`,
+recursively: a key no struct in the tree claims is a parse error naming the
+field, not a line silently dropped. A misspelled or retired key that parsed
+successfully would produce the default spec while its author believes it is
+in force — indistinguishable, from the repo's side, from the setting actually
+applying.
+
+Retiring a key is therefore not the same as deleting its struct field.
+`BranchProtection.RequireUpToDate` in `internal/repospec/spec.go` stays a real,
+tagged field so a manifest still carrying it keeps parsing, and
+`resolveFreshness()` translates it onto `BaseFreshness` and clears it before
+validation runs. Removing the field outright would turn every manifest still
+carrying the old spelling into a hard `gt repo check`/`sync` failure across
+the fleet.
+
 ## Working on this
 
 - Adding a rendered file means adding a `fileSpec` to `registry()`, a template
@@ -68,6 +85,9 @@ rolling back means editing `gt_version` by hand, which is a considered act.
 - Adding a spec field means a default in `Default()`, validation if the value
   can be wrong, and a decision about whether `sync` should strip it when it
   merely restates the default.
+- Retiring a spec field means giving it the same translate-then-clear treatment
+  as `require_up_to_date`, not deleting it — see "Retired and unknown keys"
+  above.
 - Shared policy (Dependabot cooldown, commit-message prefixes, the sync
   schedule) belongs in gt's templates, never in `.gt-repo.yaml` — that is what
   makes changing it everywhere one gt release.
