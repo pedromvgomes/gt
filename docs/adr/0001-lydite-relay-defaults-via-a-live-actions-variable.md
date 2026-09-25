@@ -24,5 +24,5 @@ The default is fleet-wide (any `lydite.enabled` repo, independent of whether
 it also uses a merge queue) and carries **no opt-out**: there is no field or
 sentinel that distinguishes "repo owner declared no relay on purpose" from
 "repo owner said nothing," so every `lydite.enabled` repo's PR comments and
-clearance replies post as the lydite App from the next sync onward, with no
-way back short of new code adding one.
+clearance replies post as the lydite App as soon as someone runs `settings
+apply` against it, with no way back short of new code adding one.
