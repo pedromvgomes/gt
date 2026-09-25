@@ -556,6 +556,15 @@ forwards to lydite) and `lydite.relay` are the only knobs gt's own spec
 carries; everything else about what gets scanned, gated and reported is
 lydite's own config, read from the scan root once lydite runs there.
 
+`lydite.relay` is a per-repo override, rendered into the committed
+orchestrator when a repo's own spec sets it. The relay identity most repos
+actually get comes from elsewhere: `gt repo settings apply` sets a
+repository-level Actions variable, `GT_LYDITE_RELAY`, on every
+`lydite.enabled` repo, and gt's reusable lydite workflows fall back to it
+when a caller passes no explicit `relay` input. See
+[ADR 0001](adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md)
+for why this is a live API-managed default rather than a rendered one.
+
 ### The coverage baseline
 
 The gate a pull request meets is a comparison, so something has to record what
