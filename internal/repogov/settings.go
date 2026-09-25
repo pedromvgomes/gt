@@ -1181,6 +1181,22 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 			return fmt.Errorf("remove superseded ruleset %q: %w", o.Name, err)
 		}
 	}
+
+	// Unconditional: whatever is live under LyditeRelayVar, a lydite-enabled
+	// repository ends this call holding LyditeRelayValue. There is no opt-out,
+	// because a stale relay value is indistinguishable, to the reusable
+	// workflows reading it, from a correct one until something depends on it.
+	if wantsLyditeRelay(spec) {
+		state, _, err := findLyditeRelayVar(ctx, gh, owner, name)
+		if err != nil {
+			return err
+		}
+		if state != relayVarMatches {
+			if err := setLyditeRelayVar(ctx, gh, owner, name, state); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
