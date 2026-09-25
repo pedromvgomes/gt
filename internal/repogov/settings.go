@@ -694,6 +694,15 @@ func setLyditeRelayVar(ctx context.Context, gh GH, owner, name string, state rel
 	return nil
 }
 
+// wantsLyditeRelay reports whether a repository's spec calls for
+// LyditeRelayVar to be set. It tracks lydite.enabled alone: a repository's own
+// lydite.relay field governs the separate, template-rendered relay input on
+// ci-orchestration.yml and gt-lydite-clearance.yml, not this Actions
+// variable, and merge-queue configuration has no bearing on either.
+func wantsLyditeRelay(spec repospec.Spec) bool {
+	return spec.Lydite.Enabled
+}
+
 // strictPolicy resolves the strict-required-status-checks flag.
 //
 // Under a settled mechanism it follows the decision. Under a deferral it
