@@ -114,9 +114,10 @@ for the full rationale.
 
 The `lydite.relay` spec knob renders into the committed orchestrator; it is
 not the same mechanism as the `GT_LYDITE_RELAY` Actions variable `gt repo
-settings apply` sets on every `lydite.enabled` repo (`repogov/settings.go`),
-which the reusable lydite workflows fall back to absent an explicit `relay`
-input. See [ADR 0001](../../docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md).
+settings apply` sets on every `lydite.enabled` repo (`repogov/settings.go`).
+The reusable lydite workflows read `relay` only from their explicit input
+today, so the Actions variable has no runtime effect until they also read
+it. See [ADR 0001](../../docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md).
 
 ## Permissions
 

@@ -320,7 +320,7 @@ branch, never from the pull request it is deciding about.
 
 Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
 
-Once `GT_LYDITE_RELAY` is set on a repo, its PR comments and clearance replies post as the lydite App rather than as a generic bot identity — see [ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md).
+gt's reusable lydite workflows read `relay` only from their own explicit input; setting `GT_LYDITE_RELAY` on a repo has no effect on PR comment or clearance-reply identity until those workflows also read the variable — see [ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md) for the full mechanism.
 
 ### Skipping work that was already validated
 

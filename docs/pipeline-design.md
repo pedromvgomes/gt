@@ -557,13 +557,14 @@ carries; everything else about what gets scanned, gated and reported is
 lydite's own config, read from the scan root once lydite runs there.
 
 `lydite.relay` is a per-repo override, rendered into the committed
-orchestrator when a repo's own spec sets it. The relay identity most repos
-actually get comes from elsewhere: `gt repo settings apply` sets a
-repository-level Actions variable, `GT_LYDITE_RELAY`, on every
-`lydite.enabled` repo, and gt's reusable lydite workflows fall back to it
-when a caller passes no explicit `relay` input. See
+orchestrator when a repo's own spec sets it. `gt repo settings apply` also
+sets a repository-level Actions variable, `GT_LYDITE_RELAY`, on every
+`lydite.enabled` repo — but gt's own reusable lydite workflows read `relay`
+only from their explicit input today, so this variable has no runtime effect
+until those workflows also fall back to it. See
 [ADR 0001](adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md)
-for why this is a live API-managed default rather than a rendered one.
+for why the default is a live API-managed variable rather than a rendered
+one, and for the intended fallback.
 
 ### The coverage baseline
 
