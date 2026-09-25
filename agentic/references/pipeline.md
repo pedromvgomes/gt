@@ -115,9 +115,11 @@ for the full rationale.
 The `lydite.relay` spec knob renders into the committed orchestrator; it is
 not the same mechanism as the `GT_LYDITE_RELAY` Actions variable `gt repo
 settings apply` sets on every `lydite.enabled` repo (`repogov/settings.go`).
-The reusable lydite workflows read `relay` only from their explicit input
-today, so the Actions variable has no runtime effect until they also read
-it. See [ADR 0001](../../docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md).
+`reusable-lydite.yml` and `reusable-lydite-clearance.yml` pass `relay:
+${{ inputs.relay != '' && inputs.relay || vars.GT_LYDITE_RELAY }}` to the
+lydite scan and clearance workflows, so a governed repo whose orchestrator
+carries no explicit `relay` input falls back to the fleet-wide variable at
+runtime. See [ADR 0001](../../docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md).
 
 ## Permissions
 

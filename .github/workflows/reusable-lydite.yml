@@ -79,4 +79,4 @@ jobs:
     with:
       dir: ${{ inputs.dir }}
       gate-coverage: ${{ inputs.coverage }}
-      relay: ${{ inputs.relay }}
+      relay: ${{ inputs.relay != '' && inputs.relay || vars.GT_LYDITE_RELAY }}
