@@ -12,7 +12,9 @@ pipelines, Dependabot config and branch protection from one committed
 `.gt-repo.yaml` per repository.
 
 User-facing documentation is [README.md](README.md); the pipeline's rationale
-is [docs/pipeline-design.md](docs/pipeline-design.md).
+is [docs/pipeline-design.md](docs/pipeline-design.md). A decision that rejects
+a real alternative gets an ADR under [`docs/adr/`](docs/adr/), one file per
+decision.
 
 ## Where the detail is
 
