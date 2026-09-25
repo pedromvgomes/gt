@@ -54,4 +54,4 @@ jobs:
     uses: lydite/actions/.github/workflows/lydite-clearance.yml@v1
     with:
       dir: ${{ inputs.dir }}
-      relay: ${{ inputs.relay }}
+      relay: ${{ inputs.relay != '' && inputs.relay || vars.GT_LYDITE_RELAY }}
