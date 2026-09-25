@@ -62,3 +62,13 @@ applies one. `ManagedExternally` declines to self-update a binary installed by
 a package manager. `update-check-cancelled-but-marked-checked` in the memory
 store records a live trap here: the state file can record a check that was
 cancelled rather than completed.
+
+`Check` and `Apply` use separate `HTTPClient`s because they bound very
+different requests. `Check`'s client (`defaultClient`) keeps a 10s
+`http.Client.Timeout`, sized for the small GitHub API metadata request —
+that field bounds the whole request including the body read, so it would cut
+off a release archive part way through on any connection slower than the
+field allows. `Apply`'s client carries no `Client.Timeout` at all; `download`
+instead wraps each request's context in its own deadline,
+`Options.DownloadTimeout`, which defaults to 5 minutes and is sized for a
+multi-megabyte archive rather than a JSON response.
