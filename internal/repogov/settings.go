@@ -1063,6 +1063,22 @@ func SettingsDiff(ctx context.Context, gh GH, spec repospec.Spec, owner, name st
 		})
 	}
 
+	// Reported whenever a lydite-enabled repository's live Actions variable
+	// would need writing to reach LyditeRelayValue. relayVarMatches is not
+	// drift and gets nothing appended.
+	if wantsLyditeRelay(spec) {
+		state, got, err := findLyditeRelayVar(ctx, gh, owner, name)
+		if err != nil {
+			return nil, err
+		}
+		if state != relayVarMatches {
+			if got == "" {
+				got = "(unset)"
+			}
+			changes = append(changes, SettingChange{Field: LyditeRelayVar, Want: LyditeRelayValue, Got: got})
+		}
+	}
+
 	return changes, nil
 }
 
