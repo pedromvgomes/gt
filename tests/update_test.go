@@ -201,6 +201,103 @@ func TestApplyRejectsChecksumMismatch(t *testing.T) {
 	}
 }
 
+// newSlowAssetServer behaves like newReleaseServer, except the archive
+// download handler sleeps for delay before writing the archive's bytes,
+// simulating a connection slow enough that the download takes meaningfully
+// longer than the metadata request that preceded it.
+func newSlowAssetServer(t *testing.T, tag, assetName string, payload []byte, delay time.Duration) *httptest.Server {
+	t.Helper()
+	var serverURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/gt/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+		base := serverURL
+		rel := map[string]any{
+			"tag_name": tag,
+			"html_url": base,
+			"assets": []map[string]string{
+				{"name": assetName, "browser_download_url": base + "/dl/" + assetName},
+				{"name": "checksums.txt", "browser_download_url": base + "/dl/checksums.txt"},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(rel)
+	})
+	mux.HandleFunc("/dl/"+assetName, func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(delay)
+		_, _ = w.Write(payload)
+	})
+	mux.HandleFunc("/dl/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, "%s  %s\n", sha256Hex(payload), assetName)
+	})
+	srv := httptest.NewServer(mux)
+	serverURL = srv.URL
+	return srv
+}
+
+func TestApplySucceedsWithSlowDownloadWithinConfiguredTimeout(t *testing.T) {
+	delay := 100 * time.Millisecond
+	payload := tarballWithBinary(t, []byte("REPLACED-BINARY-CONTENT"))
+	srv := newSlowAssetServer(t, "v2.0.0", "gt_linux_amd64.tar.gz", payload, delay)
+	defer srv.Close()
+
+	exePath := filepath.Join(t.TempDir(), "gt")
+	if err := os.WriteFile(exePath, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	available, err := update.Check(context.Background(), "1.0.0", update.Options{
+		Repo: "owner/gt", BaseURL: srv.URL, OS: "linux", Arch: "amd64",
+	})
+	if err != nil {
+		t.Fatalf("Check error: %v", err)
+	}
+
+	u := ui.New(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, true, true)
+	err = update.Apply(context.Background(), u, available, update.Options{
+		BaseURL:         srv.URL,
+		ExePath:         exePath,
+		DownloadTimeout: 10 * delay,
+	})
+	if err != nil {
+		t.Fatalf("Apply with a download slower than an instant metadata check unexpectedly failed: %v", err)
+	}
+}
+
+func TestApplyFailsWhenDownloadExceedsConfiguredTimeout(t *testing.T) {
+	delay := 100 * time.Millisecond
+	payload := tarballWithBinary(t, []byte("x"))
+	srv := newSlowAssetServer(t, "v2.0.0", "gt_linux_amd64.tar.gz", payload, delay)
+	defer srv.Close()
+
+	exePath := filepath.Join(t.TempDir(), "gt")
+	if err := os.WriteFile(exePath, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	available, err := update.Check(context.Background(), "1.0.0", update.Options{
+		Repo: "owner/gt", BaseURL: srv.URL, OS: "linux", Arch: "amd64",
+	})
+	if err != nil {
+		t.Fatalf("Check error: %v", err)
+	}
+
+	u := ui.New(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, true, true)
+	err = update.Apply(context.Background(), u, available, update.Options{
+		BaseURL:         srv.URL,
+		ExePath:         exePath,
+		DownloadTimeout: delay / 4,
+	})
+	if err == nil {
+		t.Fatal("expected Apply to fail when the download exceeds its configured timeout")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Errorf("expected a deadline-exceeded error, got %v", err)
+	}
+	got, _ := os.ReadFile(exePath)
+	if string(got) != "OLD" {
+		t.Errorf("binary should be untouched on a timed-out download, got %q", got)
+	}
+}
+
 func TestEligibleSkipsDevVersion(t *testing.T) {
 	t.Setenv("GT_NO_UPDATE_CHECK", "")
 	t.Setenv("CI", "")
