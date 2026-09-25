@@ -703,6 +703,25 @@ func wantsLyditeRelay(spec repospec.Spec) bool {
 	return spec.Lydite.Enabled
 }
 
+// applyLyditeRelay writes LyditeRelayVar when the repository's spec wants it
+// and the live value isn't already correct. There is no opt-out: whatever is
+// live, a lydite-enabled repository ends this call holding LyditeRelayValue,
+// because a stale relay value is indistinguishable, to the reusable
+// workflows reading it, from a correct one until something depends on it.
+func applyLyditeRelay(ctx context.Context, gh GH, spec repospec.Spec, owner, name string) error {
+	if !wantsLyditeRelay(spec) {
+		return nil
+	}
+	state, _, err := findLyditeRelayVar(ctx, gh, owner, name)
+	if err != nil {
+		return err
+	}
+	if state == relayVarMatches {
+		return nil
+	}
+	return setLyditeRelayVar(ctx, gh, owner, name, state)
+}
+
 // strictPolicy resolves the strict-required-status-checks flag.
 //
 // Under a settled mechanism it follows the decision. Under a deferral it
@@ -1198,22 +1217,7 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		}
 	}
 
-	// Unconditional: whatever is live under LyditeRelayVar, a lydite-enabled
-	// repository ends this call holding LyditeRelayValue. There is no opt-out,
-	// because a stale relay value is indistinguishable, to the reusable
-	// workflows reading it, from a correct one until something depends on it.
-	if wantsLyditeRelay(spec) {
-		state, _, err := findLyditeRelayVar(ctx, gh, owner, name)
-		if err != nil {
-			return err
-		}
-		if state != relayVarMatches {
-			if err := setLyditeRelayVar(ctx, gh, owner, name, state); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return applyLyditeRelay(ctx, gh, spec, owner, name)
 }
 
 func sameStrings(a, b []string) bool {
