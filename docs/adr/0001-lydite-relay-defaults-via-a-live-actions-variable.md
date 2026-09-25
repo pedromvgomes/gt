@@ -9,12 +9,9 @@ value into the repo's committed `ci-orchestration.yml`. This follows the
 command split the repo already documents: live GitHub API state goes through
 `settings diff|apply`, not `sync`/`check`, which only render and diff
 committed files. gt's own fleet-shared `reusable-lydite.yml` and
-`reusable-lydite-clearance.yml` are the intended consumer: each falls back to
-`vars.GT_LYDITE_RELAY` when a caller passes no explicit `relay` input, with
-an explicit `lydite.relay` in a repo's own spec still overriding it — but
-that fallback is a separate change to those two workflow files, not yet
-made. Setting `GT_LYDITE_RELAY` on a repo has no runtime effect until it
-lands; today both workflows read `relay` only from their explicit input.
+`reusable-lydite-clearance.yml` fall back to `vars.GT_LYDITE_RELAY` when a
+caller passes no explicit `relay` input; an explicit `lydite.relay` in a
+repo's own spec still overrides it.
 
 A rendered default was rejected because it would touch every governed repo's
 committed workflow file on the next sync, correctly triggering the
@@ -26,7 +23,6 @@ any committed file.
 The default is fleet-wide (any `lydite.enabled` repo, independent of whether
 it also uses a merge queue) and carries **no opt-out**: there is no field or
 sentinel that distinguishes "repo owner declared no relay on purpose" from
-"repo owner said nothing," so once the workflow fallback above is in place,
-every `lydite.enabled` repo's PR comments and clearance replies post as the
-lydite App as soon as someone runs `settings apply` against it, with no way
-back short of new code adding one.
+"repo owner said nothing," so every `lydite.enabled` repo's PR comments and
+clearance replies post as the lydite App from the next sync onward, with no
+way back short of new code adding one.
