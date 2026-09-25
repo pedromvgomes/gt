@@ -609,6 +609,91 @@ func findRuleset(ctx context.Context, gh GH, owner, name, branch string) (*liveR
 	return mine, others, nil
 }
 
+// LyditeRelayVar is the repository-level Actions variable carrying lydite's
+// relay identity, and LyditeRelayValue is the fleet-wide value gt writes into
+// it. The fleet's reusable lydite workflows fall back to this variable when a
+// caller passes no explicit relay input, so a repository gets the relay without
+// its committed ci-orchestration.yml mentioning one.
+const (
+	LyditeRelayVar   = "GT_LYDITE_RELAY"
+	LyditeRelayValue = "https://pr.lydite.org"
+)
+
+// relayVarState is what the live repository holds for LyditeRelayVar.
+type relayVarState int
+
+const (
+	// relayVarAbsent: no variable of that name. apply creates it.
+	relayVarAbsent relayVarState = iota
+	// relayVarMatches: present with LyditeRelayValue. Nothing to write.
+	relayVarMatches
+	// relayVarDiffers: present with some other value. apply updates it.
+	relayVarDiffers
+)
+
+// findLyditeRelayVar reports whether LyditeRelayVar exists on the repository
+// and whether its value is the one gt wants, returning the live value so a diff
+// can name what it would replace.
+//
+// It lists and searches rather than fetching the variable by name: the GH
+// implementation collapses every non-zero gh exit into one error string, so a
+// missing variable and a broken token are the same value here, and reading
+// "absent" out of that would make a credential failure look like a repository
+// that just needs writing to.
+func findLyditeRelayVar(ctx context.Context, gh GH, owner, name string) (relayVarState, string, error) {
+	// per_page beyond the 30-entry default page, so a repository with many
+	// variables does not report gt's own as absent and get it re-created.
+	raw, err := gh.Run(ctx, "api", fmt.Sprintf("repos/%s/%s/actions/variables?per_page=100", owner, name))
+	if err != nil {
+		return relayVarAbsent, "", fmt.Errorf("list actions variables: %w", err)
+	}
+	var listed struct {
+		Variables []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"variables"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		return relayVarAbsent, "", fmt.Errorf("parse actions variables: %w", err)
+	}
+	for _, v := range listed.Variables {
+		if v.Name != LyditeRelayVar {
+			continue
+		}
+		if v.Value == LyditeRelayValue {
+			return relayVarMatches, v.Value, nil
+		}
+		return relayVarDiffers, v.Value, nil
+	}
+	return relayVarAbsent, "", nil
+}
+
+// setLyditeRelayVar writes LyditeRelayValue, creating the variable or updating
+// it in place. Creation posts to the collection and carries the name in the
+// body; an update patches the variable's own path, which already names it.
+func setLyditeRelayVar(ctx context.Context, gh GH, owner, name string, state relayVarState) error {
+	method := "POST"
+	path := fmt.Sprintf("repos/%s/%s/actions/variables", owner, name)
+	payload := map[string]string{"name": LyditeRelayVar, "value": LyditeRelayValue}
+	if state != relayVarAbsent {
+		method = "PATCH"
+		path = fmt.Sprintf("repos/%s/%s/actions/variables/%s", owner, name, LyditeRelayVar)
+		payload = map[string]string{"value": LyditeRelayValue}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode %s payload: %w", LyditeRelayVar, err)
+	}
+	if _, err := gh.RunWithInput(ctx, body,
+		"api", "--method", method, path,
+		"--input", "-",
+		"--header", "Accept: application/vnd.github+json",
+	); err != nil {
+		return fmt.Errorf("set %s: %w", LyditeRelayVar, err)
+	}
+	return nil
+}
+
 // strictPolicy resolves the strict-required-status-checks flag.
 //
 // Under a settled mechanism it follows the decision. Under a deferral it
