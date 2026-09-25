@@ -1492,6 +1492,19 @@ func TestSettingsApplyCreatesTheLyditeRelayVarWhenAbsent(t *testing.T) {
 	}
 }
 
+// A failed write is not swallowed: apply must surface it rather than report
+// success while the live variable is left exactly as it was.
+func TestSettingsApplyPropagatesALyditeRelayVarWriteError(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
+	gh.errors["POST repos/pedromvgomes/demo/actions/variables"] = errors.New("rate limited")
+
+	err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err == nil {
+		t.Fatal("SettingsApply() error = nil, want the write failure to propagate")
+	}
+}
+
 // Apply updates the variable in place when it is present with a different
 // value, carrying only the new value: the path already names the variable.
 func TestSettingsApplyUpdatesTheLyditeRelayVarWhenItDiffers(t *testing.T) {
