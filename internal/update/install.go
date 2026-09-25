@@ -13,11 +13,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const binaryName = "gt"
 
-func downloadAndReplace(ctx context.Context, client HTTPClient, available *Available, exePath string) error {
+// defaultDownloadClient carries no Client-level Timeout: that field bounds
+// an entire request including the body read, so a value sized for a small
+// API response (see defaultClient) cuts off a release archive part way
+// through on any connection slower than the field allows. download instead
+// bounds each request through its own context deadline, sized for a
+// multi-megabyte payload rather than a JSON response.
+func defaultDownloadClient() HTTPClient {
+	return &http.Client{}
+}
+
+func downloadAndReplace(ctx context.Context, client HTTPClient, available *Available, exePath string, timeout time.Duration) error {
 	tmp, err := os.MkdirTemp("", "gt-update-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -25,12 +36,12 @@ func downloadAndReplace(ctx context.Context, client HTTPClient, available *Avail
 	defer func() { _ = os.RemoveAll(tmp) }()
 
 	archive := filepath.Join(tmp, available.AssetName)
-	if err := download(ctx, client, available.AssetURL, archive); err != nil {
+	if err := download(ctx, client, available.AssetURL, archive, timeout); err != nil {
 		return fmt.Errorf("download %s: %w", available.AssetName, err)
 	}
 
 	checksums := filepath.Join(tmp, "checksums.txt")
-	if err := download(ctx, client, available.Checksums, checksums); err != nil {
+	if err := download(ctx, client, available.Checksums, checksums, timeout); err != nil {
 		return fmt.Errorf("download checksums.txt: %w", err)
 	}
 
@@ -54,7 +65,9 @@ func downloadAndReplace(ctx context.Context, client HTTPClient, available *Avail
 	return swapBinary(binPath, exePath)
 }
 
-func download(ctx context.Context, client HTTPClient, url, dest string) error {
+func download(ctx context.Context, client HTTPClient, url, dest string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err

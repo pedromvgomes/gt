@@ -34,6 +34,14 @@ type Options struct {
 	OS         string
 	Arch       string
 	ExePath    string
+
+	// DownloadTimeout bounds each request Apply makes while downloading the
+	// release archive and its checksums. It is independent of the timeout
+	// governing the small Check request: an asset several megabytes large
+	// takes meaningfully longer to fetch than a JSON API response, and a
+	// value sized for the latter cuts off a legitimately slow-but-complete
+	// download. Defaults to 5 minutes.
+	DownloadTimeout time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -43,9 +51,6 @@ func (o Options) withDefaults() Options {
 	if o.BaseURL == "" {
 		o.BaseURL = DefaultBaseURL
 	}
-	if o.HTTPClient == nil {
-		o.HTTPClient = defaultClient()
-	}
 	if o.Now == nil {
 		o.Now = time.Now
 	}
@@ -54,6 +59,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Arch == "" {
 		o.Arch = runtime.GOARCH
+	}
+	if o.DownloadTimeout <= 0 {
+		o.DownloadTimeout = 5 * time.Minute
 	}
 	return o
 }
@@ -108,7 +116,11 @@ func ManagedExternally(path string) (bool, string) {
 // already up-to-date.
 func Check(ctx context.Context, currentVersion string, opts Options) (*Available, error) {
 	opts = opts.withDefaults()
-	rel, err := fetchLatest(ctx, opts.HTTPClient, opts.BaseURL, opts.Repo)
+	client := opts.HTTPClient
+	if client == nil {
+		client = defaultClient()
+	}
+	rel, err := fetchLatest(ctx, client, opts.BaseURL, opts.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -170,8 +182,12 @@ func Apply(ctx context.Context, u *ui.UI, available *Available, opts Options) er
 	if managed, by := ManagedExternally(exe); managed {
 		return ui.Errorf(ui.ExitUser, "gt at %s is managed by %s; update through that package manager instead", exe, by)
 	}
+	client := opts.HTTPClient
+	if client == nil {
+		client = defaultDownloadClient()
+	}
 	u.Info("downloading %s", available.AssetName)
-	return downloadAndReplace(ctx, opts.HTTPClient, available, exe)
+	return downloadAndReplace(ctx, client, available, exe, opts.DownloadTimeout)
 }
 
 // SkipReason returns a non-empty reason when an update check should be
