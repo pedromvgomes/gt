@@ -164,6 +164,12 @@ func queueCapableRepoJSON(t *testing.T) string {
 	return string(body)
 }
 
+// lyditeRelayVarJSON is the actions/variables list endpoint carrying a single
+// GT_LYDITE_RELAY entry, shaped to match what findLyditeRelayVar unmarshals.
+func lyditeRelayVarJSON(value string) string {
+	return `{"variables":[{"name":"` + repogov.LyditeRelayVar + `","value":"` + value + `"}]}`
+}
+
 // alignedGH is a fake whose repository, ruleset list and ruleset detail all
 // match repospec.Default(), and whose branch has no classic protection.
 func alignedGH(t *testing.T) *fakeGH {
@@ -174,6 +180,7 @@ func alignedGH(t *testing.T) *fakeGH {
 			"repos/pedromvgomes/demo/rulesets":                rulesetListJSON(repogov.RulesetName),
 			"repos/pedromvgomes/demo/rulesets/100":            compliantRulesetJSON(t),
 			"contents/.github/workflows/ci-orchestration.yml": queueReadyWorkflow,
+			"repos/pedromvgomes/demo/actions/variables":       lyditeRelayVarJSON(repogov.LyditeRelayValue),
 		},
 		errors: map[string]error{
 			"branches/main/protection": errors.New("gh: Branch not protected (HTTP 404)"),
@@ -1330,5 +1337,208 @@ func TestMergeQueueEnabledRejectsAMalformedRepo(t *testing.T) {
 	gh := &fakeGH{}
 	if _, err := repogov.MergeQueueEnabled(context.Background(), gh, "nameless", "main"); err == nil {
 		t.Error("MergeQueueEnabled(\"nameless\") = nil error, want a refusal")
+	}
+}
+
+// GT_LYDITE_RELAY tracks lydite.enabled alone, independent of whatever
+// mechanism (queue or strict fallback) the branch protection guarantee uses.
+func TestLyditeRelayVarTracksLyditeEnabledIndependentlyOfTheMergeQueue(t *testing.T) {
+	for name, spec := range map[string]func() repospec.Spec{
+		"queue-capable repository": func() repospec.Spec { return repospec.Default() },
+		"queue-impossible repository": func() repospec.Spec {
+			spec := repospec.Default()
+			spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessNone
+			return spec
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := alignedGH(t)
+			gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
+
+			changes, err := repogov.SettingsDiff(context.Background(), gh, spec(), "pedromvgomes", "demo")
+			if err != nil {
+				t.Fatalf("SettingsDiff() error = %v", err)
+			}
+			var found bool
+			for _, c := range changes {
+				if c.Field == repogov.LyditeRelayVar {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("SettingsDiff() = %v, want a %s change regardless of merge-queue state", changes, repogov.LyditeRelayVar)
+			}
+		})
+	}
+
+	spec := repospec.Default()
+	spec.Lydite.Enabled = false
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, spec, "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	for _, c := range changes {
+		if c.Field == repogov.LyditeRelayVar {
+			t.Errorf("SettingsDiff() reported %s with lydite disabled: %v", repogov.LyditeRelayVar, changes)
+		}
+	}
+
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	for _, c := range gh.calls {
+		if strings.Contains(c, "actions/variables") && (strings.Contains(c, "POST") || strings.Contains(c, "PATCH")) {
+			t.Errorf("SettingsApply() wrote %s with lydite disabled: %s", repogov.LyditeRelayVar, c)
+		}
+	}
+}
+
+// An absent variable is reported as unset, not as an empty string, so the
+// diff output names what is actually live.
+func TestSettingsDiffReportsAnAbsentLyditeRelayVarAsUnset(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var reported repogov.SettingChange
+	var found bool
+	for _, c := range changes {
+		if c.Field == repogov.LyditeRelayVar {
+			reported = c
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("SettingsDiff() = %v, want a %s change", changes, repogov.LyditeRelayVar)
+	}
+	if reported.Got != "(unset)" || reported.Want != repogov.LyditeRelayValue {
+		t.Errorf("SettingsDiff() reported %+v, want Got=(unset) Want=%s", reported, repogov.LyditeRelayValue)
+	}
+}
+
+// A live value that differs from LyditeRelayValue is drift, and the change
+// names the old value rather than swallowing it.
+func TestSettingsDiffReportsADifferingLyditeRelayVar(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = lyditeRelayVarJSON("https://stale.example.org")
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var reported repogov.SettingChange
+	var found bool
+	for _, c := range changes {
+		if c.Field == repogov.LyditeRelayVar {
+			reported = c
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("SettingsDiff() = %v, want a %s change", changes, repogov.LyditeRelayVar)
+	}
+	if reported.Got != "https://stale.example.org" || reported.Want != repogov.LyditeRelayValue {
+		t.Errorf("SettingsDiff() reported %+v, want Got=https://stale.example.org Want=%s", reported, repogov.LyditeRelayValue)
+	}
+}
+
+// A live value already matching LyditeRelayValue is not drift, and diff never
+// writes while establishing that: only a GET reaches actions/variables.
+func TestSettingsDiffReportsNoChangeWhenLyditeRelayVarAlreadyMatches(t *testing.T) {
+	gh := alignedGH(t) // pre-populated with a matching GT_LYDITE_RELAY
+
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	for _, c := range changes {
+		if c.Field == repogov.LyditeRelayVar {
+			t.Errorf("SettingsDiff() reported drift on an already-matching value: %v", changes)
+		}
+	}
+	for _, c := range gh.calls {
+		if strings.Contains(c, "actions/variables") && (strings.Contains(c, "POST") || strings.Contains(c, "PATCH")) {
+			t.Errorf("SettingsDiff() wrote to actions/variables: %s", c)
+		}
+	}
+}
+
+// Apply creates the variable when it is absent, carrying both its name and
+// LyditeRelayValue in the POST body.
+func TestSettingsApplyCreatesTheLyditeRelayVarWhenAbsent(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var created string
+	for i, c := range gh.calls {
+		if strings.Contains(c, "POST") && strings.HasSuffix(c, "/actions/variables --input - --header Accept: application/vnd.github+json") {
+			created = string(gh.inputs[i])
+		}
+	}
+	if created == "" {
+		t.Fatalf("apply did not create %s; calls = %v", repogov.LyditeRelayVar, gh.calls)
+	}
+	if !strings.Contains(created, `"name":"`+repogov.LyditeRelayVar+`"`) || !strings.Contains(created, `"value":"`+repogov.LyditeRelayValue+`"`) {
+		t.Errorf("create body = %s, want name and value for %s", created, repogov.LyditeRelayVar)
+	}
+}
+
+// A failed write is not swallowed: apply must surface it rather than report
+// success while the live variable is left exactly as it was.
+func TestSettingsApplyPropagatesALyditeRelayVarWriteError(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
+	gh.errors["POST repos/pedromvgomes/demo/actions/variables"] = errors.New("rate limited")
+
+	err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err == nil {
+		t.Fatal("SettingsApply() error = nil, want the write failure to propagate")
+	}
+}
+
+// Apply updates the variable in place when it is present with a different
+// value, carrying only the new value: the path already names the variable.
+func TestSettingsApplyUpdatesTheLyditeRelayVarWhenItDiffers(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = lyditeRelayVarJSON("https://stale.example.org")
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var updated string
+	for i, c := range gh.calls {
+		if strings.Contains(c, "PATCH") && strings.HasSuffix(c, "/actions/variables/"+repogov.LyditeRelayVar+" --input - --header Accept: application/vnd.github+json") {
+			updated = string(gh.inputs[i])
+		}
+	}
+	if updated == "" {
+		t.Fatalf("apply did not update %s; calls = %v", repogov.LyditeRelayVar, gh.calls)
+	}
+	if !strings.Contains(updated, `"value":"`+repogov.LyditeRelayValue+`"`) {
+		t.Errorf("update body = %s, want the new value for %s", updated, repogov.LyditeRelayVar)
+	}
+}
+
+// Apply makes no create/update call when the live value already matches:
+// only a GET reaches actions/variables.
+func TestSettingsApplyLeavesAMatchingLyditeRelayVarAlone(t *testing.T) {
+	gh := alignedGH(t) // pre-populated with a matching GT_LYDITE_RELAY
+
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	for _, c := range gh.calls {
+		if strings.Contains(c, "actions/variables") && (strings.Contains(c, "POST") || strings.Contains(c, "PATCH")) {
+			t.Errorf("apply wrote to an already-matching %s: %s", repogov.LyditeRelayVar, c)
+		}
 	}
 }

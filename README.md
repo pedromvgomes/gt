@@ -116,7 +116,7 @@ Keep repositories structurally consistent: the CI/CD pipeline, Dependabot config
 - `gt repo check` — render the spec and diff it against the working tree. Non-zero exit on drift, so it works as a PR check. `--json` for machine-readable output.
 - `gt repo sync` — write the files that have drifted. `--dry-run`, `--yes`, and `--skip-workflows`. A repository with no `.gt-repo.yaml` is not governed; sync says so and exits 0, which makes it safe to run from a post-clone setup template.
 - `gt repo config [--json]` — print the resolved spec with defaults applied. gt's own workflows consume this rather than re-parsing the YAML.
-- `gt repo settings diff|apply` — branch protection, merge methods, the merge queue, and the single required status check, through your existing `gh` credentials.
+- `gt repo settings diff|apply` — branch protection, merge methods, the merge queue, and the single required status check, through your existing `gh` credentials. For a `lydite.enabled` repo, `apply` also sets the repository-level `GT_LYDITE_RELAY` Actions variable ([ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md)); like every other setting on this line, rollout is manual — it takes someone running `apply` against that repo, not something `gt repo fleet sync` triggers.
 - `gt repo fleet check|sync --owner <name>` — sweep every repository in an owner; `sync` opens a PR per repo. This is the escalation path for files `GITHUB_TOKEN` cannot write.
 - `gt repo fleet merge-pending --owner <name>` — list (or `--merge`) the Dependabot PRs the in-repo auto-merge cannot touch. Applies the same eligibility gates as the in-repo job.
 
@@ -319,6 +319,8 @@ own, `gt-lydite-clearance.yml`, triggered on `issue_comment` rather than
 branch, never from the pull request it is deciding about.
 
 Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
+
+gt's reusable lydite workflows read `relay` only from their own explicit input; setting `GT_LYDITE_RELAY` on a repo has no effect on PR comment or clearance-reply identity until those workflows also read the variable — see [ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md) for the full mechanism.
 
 ### Skipping work that was already validated
 
