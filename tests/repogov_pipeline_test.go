@@ -807,9 +807,11 @@ func TestSyncAllowsUpgrade(t *testing.T) {
 	}
 }
 
-// gt scaffolds no lydite configuration at all. lydite runs its own suites and
-// reads its own `.lydite/` config from the scan root, so a gt-written file
-// here would be configuration a repository carries and nobody can explain.
+// gt scaffolds no repository-owned lydite configuration. lydite runs its own
+// suites and reads its own `.lydite/` config from the scan root, so a
+// scaffolded file would be configuration a repository carries and nobody can
+// explain. The managed exemptions file is the exception that is not a
+// scaffold: it is derived from the spec on every sync.
 //
 // Asserted across every combination the spec can produce, so a conditional
 // scaffold cannot slip back in for only the combinations that hit its guard.

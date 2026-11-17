@@ -52,6 +52,39 @@ still running while `check` called the repository compliant. Scaffolds are
 deliberately absent from `managedPaths()`: an orphaned scaffold holds the
 repository's own work.
 
+## lydite's exemptions file
+
+Wherever `lydite.enabled` is true, gt renders `.lydite/exemptions.yml` as a
+**managed** file (`repogov/exemptions.go`, registered in `registry()`). Without
+it lydite declares no exemptions and refers every change, so every Dependabot
+pull request waits on `lydite/referral` for a human. The file holds:
+
+- **`dependency-version-bump`**, derived from `dependabot:` while
+  `lydite.exempt_dependency_bumps` is true (the default), with `versions:
+  patch-and-minor`. Its paths are the files lydite can measure, joined under
+  each entry's `directory`, sorted and de-duplicated: `gomod` → `go.mod`, `go.sum`;
+  `cargo` → `Cargo.lock`; `npm` → `package-lock.json`. `pip`, `docker`,
+  `terraform` and `github-actions` contribute nothing: lydite cannot yet
+  measure an action bump, so a workflow path would pass vacuously and the
+  bump stays referred. Manifests (`Cargo.toml`, `package.json`) are never
+  listed: lydite reads no comparison from them, so the condition would pass
+  vacuously over a manifest-only edit.
+- **`lydite.exemptions`**, the repository's own entries, rendered after the
+  derived one in declared order. `repospec.validateLydite` refuses what lydite
+  would refuse to load, plus the derived entry's name while it is on.
+
+No entries means no file, and a file the spec stops asking for is orphaned and
+removed. lydite reads the file from its scan root, so `lydite.dir` moves it;
+patterns stay repository-root-relative. Orphan detection checks both the root
+location and the one the current spec puts it at (`DiffSpec`), but a file left
+under a `lydite.dir` the spec no longer names is invisible to it.
+
+lydite reads the file from the base commit, disqualifies any change under
+`.lydite/`, and wants a pull request that changes the file to change nothing
+else. A sync that changes it is therefore always referred and needs a `/lydite
+clear`; gt does not split sync pull requests to isolate it. See [ADR 0003](../../docs/adr/0003-lydite-exemptions-are-managed-not-scaffolded.md)
+for why the file is managed rather than scaffolded.
+
 ## The version gate
 
 `Spec.GTVersion` (`gt_version`) records the gt release that last rendered the
@@ -86,7 +119,9 @@ without it.
 
 - Adding a rendered file means adding a `fileSpec` to `registry()`, a template
   under `internal/repogov/templates/`, and — if it is managed — an entry that
-  orphan detection will see. Do not add a second list.
+  orphan detection will see. Do not add a second list. A file whose location
+  depends on the spec sets `pathFor`; its `path` stays the default location,
+  and orphan detection checks both.
 - Adding a spec field means a default in `Default()`, validation if the value
   can be wrong, and a decision about whether `sync` should strip it when it
   merely restates the default.

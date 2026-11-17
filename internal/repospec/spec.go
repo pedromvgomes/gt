@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -143,7 +144,54 @@ type Lydite struct {
 	// and reusable-lydite-clearance.yml's `relay` input. Empty posts PR comments
 	// and clearance replies as `github-actions[bot]`.
 	Relay string `yaml:"relay,omitempty" json:"relay,omitempty"`
+	// ExemptDependencyBumps renders a `dependency-version-bump` entry into
+	// .lydite/exemptions.yml, derived from the dependabot: block. Default true.
+	//
+	// Without an exemption lydite refers every change, so every Dependabot pull
+	// request waits on `lydite/referral` until a human clears it, and the
+	// nightly auto-merge lands none of them. The entry is conditional — lydite
+	// passes a bump only when it stays within patch or minor and its licence
+	// and SCA rows are green — so false is for a repository that wants every
+	// bump read regardless.
+	ExemptDependencyBumps bool `yaml:"exempt_dependency_bumps" json:"exempt_dependency_bumps"`
+	// Exemptions are repository-specific entries rendered into
+	// .lydite/exemptions.yml after the derived one. gt owns that file, so this
+	// list is where a repository records anything else it has decided lydite
+	// need not refer.
+	Exemptions []LyditeExemption `yaml:"exemptions,omitempty" json:"exemptions,omitempty"`
 }
+
+// LyditeExemption is one entry of lydite's exemptions file, in lydite's own
+// shape: a change merges unread only when a single entry covers every path it
+// touched and that entry's condition holds.
+type LyditeExemption struct {
+	Name string `yaml:"name" json:"name"`
+	// Reason is required by lydite: each entry is a claim about what is safe
+	// to stop reading, and a list of bare globs is not reviewable.
+	Reason string `yaml:"reason" json:"reason"`
+	// Paths are lydite's anchored patterns, relative to the repository root
+	// even when lydite.dir scopes the scan to a subdirectory. "*" stays within
+	// one segment and "**" spans any number of them.
+	Paths []string `yaml:"paths" json:"paths"`
+	// Versions conditions the match; LyditeVersionsPatchAndMinor is the only
+	// value lydite accepts, and empty is a match on paths alone.
+	Versions string `yaml:"versions,omitempty" json:"versions,omitempty"`
+}
+
+// LyditeVersionsPatchAndMinor is the one condition lydite understands: every
+// version the change moves stays within patch or minor, and the licence and
+// SCA rows for every component ran and passed.
+const LyditeVersionsPatchAndMinor = "patch-and-minor"
+
+// DependencyBumpExemption names the entry gt derives from the dependabot:
+// block. While lydite.exempt_dependency_bumps is on, no entry in
+// lydite.exemptions may take the name: lydite rejects a file carrying it twice.
+const DependencyBumpExemption = "dependency-version-bump"
+
+// lyditeReasonPlaceholder is the literal lydite reserves for the reason of an
+// entry it proposes and refuses in any exemption it loads. Catching it here
+// keeps the failure at `gt repo check` rather than in every lydite run.
+const lyditeReasonPlaceholder = "TODO(lydite):"
 
 // Pipeline declares the CI and CD orchestration gt renders. Each listed stage
 // becomes a job in the orchestrator calling a scaffolded workflow the
@@ -435,7 +483,7 @@ func Default() Spec {
 				RequireLastPushApproval: false,
 			},
 		},
-		Lydite: Lydite{Enabled: true, Coverage: true},
+		Lydite: Lydite{Enabled: true, Coverage: true, ExemptDependencyBumps: true},
 		Pipeline: Pipeline{
 			CI: PipelineCI{Enabled: true, Stages: append([]string(nil), CIStages...)},
 			CD: PipelineCD{
@@ -516,6 +564,9 @@ func Validate(s Spec) error {
 		return err
 	}
 	if err := validateSettings(s.Settings); err != nil {
+		return err
+	}
+	if err := validateLydite(s.Lydite); err != nil {
 		return err
 	}
 	if err := validatePipeline(s.Pipeline); err != nil {
@@ -760,6 +811,84 @@ func validateIndependentStages(field string, enabled bool, got, stages []string)
 				field, i, stage)
 		}
 		seen[stage] = true
+	}
+	return nil
+}
+
+// validateLydite rejects an exemption lydite itself would refuse to load.
+// lydite parses the file on every run, so an entry that passed here and failed
+// there would break the lydite job on every pull request rather than once, at
+// sync time.
+func validateLydite(l Lydite) error {
+	if len(l.Exemptions) == 0 {
+		return nil
+	}
+	if !l.Enabled {
+		return fmt.Errorf("lydite.exemptions: cannot declare exemptions while lydite is disabled")
+	}
+	seen := map[string]bool{}
+	for i, e := range l.Exemptions {
+		where := fmt.Sprintf("lydite.exemptions[%d]", i)
+		name := strings.TrimSpace(e.Name)
+		if name == "" {
+			return fmt.Errorf("%s: name is required", where)
+		}
+		if name != e.Name {
+			return fmt.Errorf("%s: name %q has leading or trailing whitespace", where, e.Name)
+		}
+		if l.ExemptDependencyBumps && name == DependencyBumpExemption {
+			return fmt.Errorf("%s: name %q is the entry gt derives from dependabot:; "+
+				"set lydite.exempt_dependency_bumps: false to write your own", where, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("%s: duplicate name %q", where, name)
+		}
+		seen[name] = true
+		if strings.TrimSpace(e.Reason) == "" {
+			return fmt.Errorf("%s (%s): reason is required — it is what makes the entry reviewable", where, name)
+		}
+		if strings.Contains(e.Reason, lyditeReasonPlaceholder) {
+			return fmt.Errorf("%s (%s): reason still carries lydite's placeholder %q", where, name, lyditeReasonPlaceholder)
+		}
+		// An entry with no paths covers only a change that touches nothing,
+		// so it can never fire; lydite refuses it.
+		if len(e.Paths) == 0 {
+			return fmt.Errorf("%s (%s): at least one path pattern is required", where, name)
+		}
+		for j, p := range e.Paths {
+			if err := validateExemptionPattern(p); err != nil {
+				return fmt.Errorf("%s (%s).paths[%d]: %w", where, name, j, err)
+			}
+		}
+		if e.Versions != "" && e.Versions != LyditeVersionsPatchAndMinor {
+			return fmt.Errorf("%s (%s): versions %q is not a condition lydite knows (accepted: %s)",
+				where, name, e.Versions, LyditeVersionsPatchAndMinor)
+		}
+	}
+	return nil
+}
+
+// validateExemptionPattern accepts what lydite's pattern syntax can match.
+// Patterns are anchored and compared against repository-root-relative paths
+// that never start with "/", so a leading slash or an empty segment yields a
+// pattern that silently matches nothing.
+func validateExemptionPattern(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return fmt.Errorf("pattern is empty")
+	}
+	if strings.HasPrefix(p, "/") {
+		return fmt.Errorf("pattern %q must be relative to the repository root, without a leading \"/\"", p)
+	}
+	for _, segment := range strings.Split(p, "/") {
+		if segment == "" {
+			return fmt.Errorf("pattern %q has an empty path segment", p)
+		}
+		if segment == "**" {
+			continue
+		}
+		if _, err := path.Match(segment, ""); err != nil {
+			return fmt.Errorf("bad path pattern %q: %w", p, err)
+		}
 	}
 	return nil
 }

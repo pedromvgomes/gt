@@ -322,6 +322,38 @@ Rename a CI job and you edit `.gt-repo.yaml`, never the protection rule.
 
 gt's reusable lydite workflows read `relay` only from their own explicit input; setting `GT_LYDITE_RELAY` on a repo has no effect on PR comment or clearance-reply identity until those workflows also read the variable — see [ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md) for the full mechanism.
 
+### Dependency bumps lydite does not refer
+
+With no exemptions declared, lydite refers every change — every Dependabot
+pull request included. So wherever lydite is enabled, gt renders
+`.lydite/exemptions.yml` (under `lydite.dir` when one is set) as a managed
+file, with a `dependency-version-bump` entry derived from `dependabot:`. A
+bump is exempt only when it stays within patch or minor and its licence and
+SCA rows are green, whoever wrote it.
+
+| Ecosystem | Paths the entry covers, under its `directory` |
+|---|---|
+| `gomod` | `go.mod`, `go.sum` |
+| `cargo` | `Cargo.lock` — never `Cargo.toml`, which lydite cannot measure |
+| `npm` | `package-lock.json` — never `package.json`, for the same reason |
+| `pip`, `docker`, `terraform` | nothing: lydite has no reader, so their bumps stay referred |
+| `github-actions` | nothing: lydite cannot yet measure an action bump, so it stays referred |
+
+```yaml
+lydite:
+  exempt_dependency_bumps: false   # default true; false refers every bump
+  exemptions:                      # your own entries, rendered after the derived one
+    - name: docs
+      reason: Prose only; nothing runs from it.
+      paths: ["docs/**"]
+      # versions: patch-and-minor  # the one condition lydite knows
+```
+
+Edit `.gt-repo.yaml`, not the rendered file: `check` reports a hand edit as
+drift. Patterns are lydite's anchored, repository-root-relative globs. lydite
+reads the file from the base commit and refers any pull request that changes
+it, so a sync that touches it needs a `/lydite clear` — see [ADR 0003](docs/adr/0003-lydite-exemptions-are-managed-not-scaffolded.md).
+
 ### Skipping work that was already validated
 
 For a `pull_request` event GitHub tests `refs/pull/N/merge` — the merged result

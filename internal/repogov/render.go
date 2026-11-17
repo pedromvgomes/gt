@@ -108,9 +108,12 @@ type File struct {
 // is how a managed path silently stops being orphan-checked, or worse, how a
 // scaffold gets treated as managed and overwritten.
 type fileSpec struct {
-	key      string
-	tmpl     string
-	path     string
+	key  string
+	tmpl string
+	path string
+	// pathFor overrides path for a file whose location depends on the spec.
+	// path stays the default location, which orphan detection always checks.
+	pathFor  func(repospec.Spec) string
 	workflow bool
 	mode     Mode
 	// wanted reports whether this spec asks for the file at all. Most consult
@@ -121,6 +124,14 @@ type fileSpec struct {
 	// and giving them separate types keeps CI's fields from being visible —
 	// and mistakable — inside CD's template.
 	data func(Input, templateData) (any, error)
+}
+
+// pathIn is where this file lives for the given spec.
+func (f fileSpec) pathIn(s repospec.Spec) string {
+	if f.pathFor != nil {
+		return f.pathFor(s)
+	}
+	return f.path
 }
 
 func wantsKey(key string) func(repospec.Spec) bool {
@@ -173,6 +184,21 @@ func registry() []fileSpec {
 			wanted: func(s repospec.Spec) bool { return s.Lydite.Enabled },
 			data: func(in Input, shared templateData) (any, error) {
 				return buildLyditeClearanceData(in), nil
+			},
+		},
+		{
+			key:     "lydite-exemptions",
+			tmpl:    "templates/lydite-exemptions.yml.tmpl",
+			path:    LyditeExemptionsFile,
+			pathFor: lyditeExemptionsPath,
+			mode:    ModeManaged,
+			// Implied by lydite.enabled rather than listed in files:. It drops
+			// out — and is orphaned — when lydite is off or nothing is left to
+			// exempt, because lydite refuses an entry with no paths and an
+			// empty file would only restate lydite's own default.
+			wanted: func(s repospec.Spec) bool { return len(lyditeExemptions(s)) > 0 },
+			data: func(in Input, _ templateData) (any, error) {
+				return buildLyditeExemptionsData(in.Spec)
 			},
 		},
 		{
@@ -273,7 +299,7 @@ func Render(in Input) ([]File, error) {
 			return nil, err
 		}
 		files = append(files, File{
-			Path: f.path, Content: content, Workflow: f.workflow, Mode: f.mode,
+			Path: f.pathIn(in.Spec), Content: content, Workflow: f.workflow, Mode: f.mode,
 		})
 	}
 

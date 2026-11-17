@@ -134,7 +134,7 @@ func checkSpec(spec repospec.Spec, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	results, err := Diff(opts.WorkDir, files, opts.SkipWorkflows)
+	results, err := DiffSpec(opts.WorkDir, spec, files, opts.SkipWorkflows)
 	if err != nil {
 		return Report{}, err
 	}
