@@ -1266,3 +1266,44 @@ func TestSettingsApplyLeavesAMatchingLyditeRelayVarAlone(t *testing.T) {
 		}
 	}
 }
+
+// A behind Dependabot PR is reported as behind, never as failing checks, and
+// is not merged; merge-pending asks Dependabot to rebase it.
+func TestPendingWorkflowPRsReportsBehindAndRequestsRebase(t *testing.T) {
+	gh := &fakeGH{responses: map[string]string{
+		"pr list": `[
+		  {"number":5,"title":"bump actions/setup-go from 5.0.0 to 5.0.1","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BEHIND"},
+		  {"number":6,"title":"bump actions/cache from 4.0.0 to 4.0.1","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}
+		]`,
+	}}
+	pending, err := repogov.PendingWorkflowPRs(context.Background(), gh, "pedromvgomes/demo", repospec.BumpMinor)
+	if err != nil {
+		t.Fatalf("PendingWorkflowPRs() error = %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("got %d PRs, want 2", len(pending))
+	}
+	behind, blocked := pending[0], pending[1]
+	if !behind.Behind || behind.Eligible || !strings.Contains(behind.Reason, "behind the base branch") {
+		t.Errorf("PR #5 = %+v, want behind, ineligible, reason naming the base branch", behind)
+	}
+	if blocked.Behind {
+		t.Errorf("PR #6 is BLOCKED, not behind")
+	}
+
+	if err := repogov.MergePending(context.Background(), gh, behind); err == nil {
+		t.Error("MergePending(behind) = nil, want a refusal")
+	}
+	if err := repogov.RequestRebase(context.Background(), gh, blocked); err == nil {
+		t.Error("RequestRebase(not behind) = nil, want a refusal")
+	}
+	gh.calls = nil
+	if err := repogov.RequestRebase(context.Background(), gh, behind); err != nil {
+		t.Fatalf("RequestRebase() error = %v", err)
+	}
+	if len(gh.calls) != 1 || gh.calls[0] != "pr comment 5 --repo pedromvgomes/demo --body @dependabot rebase" {
+		t.Errorf("calls = %v, want exactly one rebase comment", gh.calls)
+	}
+}

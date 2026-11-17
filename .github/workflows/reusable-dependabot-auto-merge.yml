@@ -245,6 +245,17 @@ jobs:
               echo "   → skip: not mergeable (conflicts?)"
               continue
             fi
+            # BEHIND = mergeable, but strict required checks refuse a PR that is
+            # not up to date with its base. Every merge to the base leaves the
+            # other open PRs here. Ask Dependabot to rebase it, once per run;
+            # the list only holds Dependabot PRs.
+            if [[ "$state" == "BEHIND" ]]; then
+              echo "   → skip: behind the base branch; asking Dependabot to rebase"
+              if ! gh pr comment "$number" --repo "$REPO" --body "@dependabot rebase"; then
+                echo "   → could not comment on #${number}; continuing with the rest"
+              fi
+              continue
+            fi
             # UNSTABLE = required checks passed but optional ones failed.
             # Branch protection already enforces the required set, so this is
             # eligible.

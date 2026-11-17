@@ -73,10 +73,15 @@ the base branch first: gt applies no merge queue, and a queue is the one thing
 that makes gh refuse `--delete-branch` outright, before merging.
 
 What does shape the merge is strict required checks, which every governed
-repository with a gate has. A Dependabot PR that falls behind its base reports
-`mergeStateStatus` `BEHIND`, and both paths merge only `CLEAN`, `HAS_HOOKS` and
-`UNSTABLE` — so it is skipped as "checks not green", not failed, on every run
-until something updates it (`@dependabot rebase`, or "Update branch").
+repository with a gate has. Each merge to the base leaves every other open
+Dependabot PR with `mergeStateStatus` `BEHIND`, and both paths merge only
+`CLEAN`, `HAS_HOOKS` and `UNSTABLE`. A `BEHIND` PR is reported as "behind the
+base branch" and skipped, and the path asks Dependabot to rebase it by
+commenting exactly `@dependabot rebase`: the workflow once per `BEHIND` PR per
+run (a failed comment does not fail the job; it needs `pull-requests: write`,
+which the job holds), `merge-pending` only with `--merge`
+(`repogov.RequestRebase`). Only Dependabot PRs are ever listed, so no other
+author's PR is commented on.
 
 ## The workflow-scope gap
 

@@ -358,8 +358,9 @@ gt applies no merge queue, and `settings apply` removes a `merge_queue` rule
 from the ruleset it owns — see
 [ADR 0002](docs/adr/0002-always-strict-freshness-instead-of-a-merge-queue.md).
 The cost is that somebody updates a behind pull request before it merges;
-for Dependabot, a pull request that falls behind is skipped by the nightly
-auto-merge until `@dependabot rebase` or "Update branch" brings it current.
+for Dependabot, a pull request that falls behind is reported as behind the base
+branch, skipped by the nightly auto-merge, and sent an `@dependabot rebase`
+comment so the next run finds it current.
 
 ### What CI cannot do, and why
 

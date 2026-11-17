@@ -25,6 +25,9 @@ type PendingPR struct {
 	Eligible bool
 	// Reason explains an ineligible verdict.
 	Reason string
+	// Behind reports that the PR is mergeable but behind its base branch,
+	// which strict required checks refuse to merge until it is updated.
+	Behind bool
 }
 
 // pullRequest is the subset of the PR list API the fleet commands read.
@@ -94,6 +97,7 @@ func PendingWorkflowPRs(ctx context.Context, gh GH, repo, maxBump string) ([]Pen
 		}
 		p := PendingPR{Repo: repo, Number: pr.Number, Title: pr.Title}
 		p.Bump, p.Eligible, p.Reason = eligibility(pr, maxBump)
+		p.Behind = pr.Mergeable == "MERGEABLE" && pr.MergeStateStatus == "BEHIND"
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
@@ -114,6 +118,8 @@ func eligibility(pr pullRequest, maxBump string) (bump string, eligible bool, re
 	// protection already enforces the required set.
 	switch pr.MergeStateStatus {
 	case "CLEAN", "HAS_HOOKS", "UNSTABLE":
+	case "BEHIND":
+		return "", false, "behind the base branch"
 	default:
 		return "", false, fmt.Sprintf("checks not green (%s)", pr.MergeStateStatus)
 	}
@@ -225,5 +231,19 @@ func MergePending(ctx context.Context, gh GH, pr PendingPR) error {
 		return fmt.Errorf("%s#%d is not eligible: %s", pr.Repo, pr.Number, pr.Reason)
 	}
 	_, err := gh.Run(ctx, "pr", "merge", fmt.Sprint(pr.Number), "--repo", pr.Repo, "--squash", "--delete-branch")
+	return err
+}
+
+// RebaseComment is the comment that asks Dependabot to rebase its PR onto the
+// current base branch. Dependabot only acts on this exact text.
+const RebaseComment = "@dependabot rebase"
+
+// RequestRebase asks Dependabot to rebase a PR that is behind its base
+// branch. Only Dependabot PRs reach it: PendingWorkflowPRs lists no others.
+func RequestRebase(ctx context.Context, gh GH, pr PendingPR) error {
+	if !pr.Behind {
+		return fmt.Errorf("%s#%d is not behind its base branch", pr.Repo, pr.Number)
+	}
+	_, err := gh.Run(ctx, "pr", "comment", fmt.Sprint(pr.Number), "--repo", pr.Repo, "--body", RebaseComment)
 	return err
 }

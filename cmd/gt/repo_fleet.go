@@ -185,6 +185,13 @@ func newRepoFleetMergePendingCommand(opts *options) *cobra.Command {
 						status = "skip: " + pr.Reason
 					}
 					_, _ = fmt.Fprintf(opts.ui.Out, "  %s#%-5d %-40s (%s)\n", pr.Repo, pr.Number, pr.Title, status)
+					if pr.Behind && merge {
+						if err := repogov.RequestRebase(ctx, gh, pr); err != nil {
+							opts.ui.Warn("  rebase request failed: %v", err)
+							continue
+						}
+						opts.ui.Info("  asked Dependabot to rebase %s#%d", pr.Repo, pr.Number)
+					}
 					if !pr.Eligible {
 						continue
 					}
