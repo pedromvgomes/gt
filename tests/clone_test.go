@@ -12,7 +12,6 @@ import (
 	"github.com/pedromvgomes/gt/internal/clone"
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 func TestDeriveFolder(t *testing.T) {
@@ -62,9 +61,9 @@ func TestRunMinimalClonePath(t *testing.T) {
 			},
 		},
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 
-	err := clone.Run(context.Background(), runner, printer, config.Config{
+	err := clone.Run(context.Background(), runner, inv, config.Config{
 		WorktreeTypes: []string{"feature", "fix", "chore"},
 		SSH:           config.SSH{HostAliases: map[string]string{}},
 	}, clone.Options{RepoURL: "git@github.com:pedromvgomes/gt.git", NoSetupAuth: true})
@@ -103,16 +102,16 @@ func TestRunRejectsExistingFolder(t *testing.T) {
 	if err := os.Mkdir("gt", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
-	err := clone.Run(context.Background(), &fakeGitRunner{}, printer, config.Default(), clone.Options{
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	err := clone.Run(context.Background(), &fakeGitRunner{}, inv, config.Default(), clone.Options{
 		RepoURL:     "git@github.com:pedromvgomes/gt.git",
 		NoSetupAuth: true,
 	})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error")
 	}
-	if ui.ExitCode(err) != ui.ExitUser {
-		t.Fatalf("ExitCode() = %d, want %d", ui.ExitCode(err), ui.ExitUser)
+	if !strings.Contains(err.Error(), `folder "gt" already exists`) {
+		t.Fatalf("Run() error = %v, want it to name the existing folder", err)
 	}
 }
 
@@ -123,9 +122,9 @@ func TestRunFallsBackToMainWhenRemoteShowFails(t *testing.T) {
 			"--git-dir=.bare remote show origin": errors.New("remote show failed"),
 		},
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 
-	err := clone.Run(context.Background(), runner, printer, config.Default(), clone.Options{
+	err := clone.Run(context.Background(), runner, inv, config.Default(), clone.Options{
 		RepoURL:     "git@github.com:pedromvgomes/gt.git",
 		Folder:      "repo",
 		NoSetupAuth: true,
@@ -155,8 +154,8 @@ func TestHTTPToSSHUsesHostAlias(t *testing.T) {
 }
 
 func TestResolveRepoURLHonorsPromptNo(t *testing.T) {
-	printer := &ui.UI{In: strings.NewReader("n\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
-	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
+	inv := testInvocation("n\n", ioDiscard{}, ioDiscard{}, true)
+	got, err := clone.ResolveRepoURL(inv, config.Default(), clone.Options{
 		RepoURL: "https://github.com/pedromvgomes/gt.git",
 	})
 	if err != nil {
@@ -174,13 +173,13 @@ func TestRunInvokesSetupTemplates(t *testing.T) {
 			"--git-dir=.bare remote show origin": {Stdout: "  HEAD branch: main\n"},
 		},
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	cfg := config.Default()
 	cfg.Setup = config.Setup{Templates: []config.Template{
 		{Name: "marker", Match: []string{"*"}, Run: `touch "$GT_WORKDIR/setup-ran.txt"`},
 	}}
 
-	err := clone.Run(context.Background(), runner, printer, cfg, clone.Options{
+	err := clone.Run(context.Background(), runner, inv, cfg, clone.Options{
 		RepoURL:     "git@github.com:pedromvgomes/gt.git",
 		NoSetupAuth: true,
 		YesSetup:    true,
@@ -198,13 +197,13 @@ func TestRunSkipsSetupWhenNoSetup(t *testing.T) {
 	runner := &fakeGitRunner{responses: map[string]git.Result{
 		"--git-dir=.bare remote show origin": {Stdout: "  HEAD branch: main\n"},
 	}}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	cfg := config.Default()
 	cfg.Setup = config.Setup{Templates: []config.Template{
 		{Name: "marker", Match: []string{"*"}, Run: `touch "$GT_WORKDIR/setup-ran.txt"`},
 	}}
 
-	err := clone.Run(context.Background(), runner, printer, cfg, clone.Options{
+	err := clone.Run(context.Background(), runner, inv, cfg, clone.Options{
 		RepoURL:     "git@github.com:pedromvgomes/gt.git",
 		NoSetupAuth: true,
 		NoSetup:     true,
@@ -233,9 +232,9 @@ func TestRunInvokesSetAuthWhenEnabled(t *testing.T) {
 		},
 		env: map[string]string{"SHELL": "zsh"},
 	}
-	printer := &ui.UI{In: strings.NewReader("\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := clone.Run(context.Background(), runner, printer, config.Default(), clone.Options{
+	err := clone.Run(context.Background(), runner, inv, config.Default(), clone.Options{
 		RepoURL:    "git@github.com:pedromvgomes/gt.git",
 		AuthRunner: authRunner,
 	})
@@ -251,14 +250,14 @@ func TestRunInvokesSetAuthWhenEnabled(t *testing.T) {
 }
 
 func TestResolveAliasUsesUserAlias(t *testing.T) {
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	ssh := config.SSH{
 		HostAliases: map[string]string{"github.com": "github-personal"},
 		UserAliases: map[string]map[string]string{
 			"pedro-work": {"github.com": "github-work"},
 		},
 	}
-	got, err := clone.ResolveAlias(printer, ssh, "github.com", "pedro-work")
+	got, err := clone.ResolveAlias(inv, ssh, "github.com", "pedro-work")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -269,14 +268,14 @@ func TestResolveAliasUsesUserAlias(t *testing.T) {
 
 func TestResolveAliasFallsBackWhenUserMissing(t *testing.T) {
 	var errBuf strings.Builder
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, &errBuf, true, false)
+	inv := testInvocation("", ioDiscard{}, &errBuf, false)
 	ssh := config.SSH{
 		HostAliases: map[string]string{"github.com": "github-personal"},
 		UserAliases: map[string]map[string]string{
 			"pedromvgomes": {"github.com": "github-personal"},
 		},
 	}
-	got, err := clone.ResolveAlias(printer, ssh, "github.com", "ghost")
+	got, err := clone.ResolveAlias(inv, ssh, "github.com", "ghost")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -289,13 +288,13 @@ func TestResolveAliasFallsBackWhenUserMissing(t *testing.T) {
 }
 
 func TestResolveAliasSingleMatchPicksSilently(t *testing.T) {
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	ssh := config.SSH{
 		UserAliases: map[string]map[string]string{
 			"pedro-work": {"github.com": "github-work"},
 		},
 	}
-	got, err := clone.ResolveAlias(printer, ssh, "github.com", "")
+	got, err := clone.ResolveAlias(inv, ssh, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -305,14 +304,14 @@ func TestResolveAliasSingleMatchPicksSilently(t *testing.T) {
 }
 
 func TestResolveAliasMultipleMatchesPrompts(t *testing.T) {
-	printer := &ui.UI{In: strings.NewReader("2\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("2\n", ioDiscard{}, ioDiscard{}, true)
 	ssh := config.SSH{
 		UserAliases: map[string]map[string]string{
 			"alice": {"github.com": "github-alice"},
 			"bob":   {"github.com": "github-bob"},
 		},
 	}
-	got, err := clone.ResolveAlias(printer, ssh, "github.com", "")
+	got, err := clone.ResolveAlias(inv, ssh, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -322,11 +321,11 @@ func TestResolveAliasMultipleMatchesPrompts(t *testing.T) {
 }
 
 func TestResolveAliasFallsBackToHostAliases(t *testing.T) {
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	ssh := config.SSH{
 		HostAliases: map[string]string{"github.com": "github-personal"},
 	}
-	got, err := clone.ResolveAlias(printer, ssh, "github.com", "")
+	got, err := clone.ResolveAlias(inv, ssh, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -336,12 +335,12 @@ func TestResolveAliasFallsBackToHostAliases(t *testing.T) {
 }
 
 func TestResolveRepoURLAppliesUserAlias(t *testing.T) {
-	printer := &ui.UI{In: strings.NewReader("Y\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("Y\n", ioDiscard{}, ioDiscard{}, true)
 	cfg := config.Default()
 	cfg.SSH.UserAliases = map[string]map[string]string{
 		"pedro-work": {"github.com": "github-work"},
 	}
-	got, err := clone.ResolveRepoURL(printer, cfg, clone.Options{
+	got, err := clone.ResolveRepoURL(inv, cfg, clone.Options{
 		RepoURL: "https://github.com/pedromvgomes/gt.git",
 		User:    "pedro-work",
 	})
@@ -354,8 +353,8 @@ func TestResolveRepoURLAppliesUserAlias(t *testing.T) {
 }
 
 func TestResolveRepoURLForceSSHSkipsPrompt(t *testing.T) {
-	printer := &ui.UI{In: strings.NewReader("n\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
-	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
+	inv := testInvocation("n\n", ioDiscard{}, ioDiscard{}, true)
+	got, err := clone.ResolveRepoURL(inv, config.Default(), clone.Options{
 		RepoURL:  "https://github.com/pedromvgomes/gt.git",
 		ForceSSH: true,
 	})
@@ -368,8 +367,8 @@ func TestResolveRepoURLForceSSHSkipsPrompt(t *testing.T) {
 }
 
 func TestResolveRepoURLNoSSHKeepsHTTPS(t *testing.T) {
-	printer := &ui.UI{In: strings.NewReader(""), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: false}
-	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	got, err := clone.ResolveRepoURL(inv, config.Default(), clone.Options{
 		RepoURL: "https://github.com/pedromvgomes/gt.git",
 		NoSSH:   true,
 	})
@@ -426,10 +425,10 @@ func TestCanonicalHostReversesAliasMaps(t *testing.T) {
 }
 
 func TestResolveRepoURLRewritesSSHInput(t *testing.T) {
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	cfg := config.Default()
 	cfg.SSH.HostAliases = map[string]string{"github.com": "github-personal"}
-	got, err := clone.ResolveRepoURL(printer, cfg, clone.Options{
+	got, err := clone.ResolveRepoURL(inv, cfg, clone.Options{
 		RepoURL: "git@github.com:wardnet/wardnet.git",
 	})
 	if err != nil {
@@ -441,11 +440,11 @@ func TestResolveRepoURLRewritesSSHInput(t *testing.T) {
 }
 
 func TestResolveRepoURLLeavesAlreadyAliasedSSH(t *testing.T) {
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	cfg := config.Default()
 	cfg.SSH.HostAliases = map[string]string{"github.com": "github-personal"}
 	in := "git@github-personal:wardnet/wardnet.git"
-	got, err := clone.ResolveRepoURL(printer, cfg, clone.Options{RepoURL: in})
+	got, err := clone.ResolveRepoURL(inv, cfg, clone.Options{RepoURL: in})
 	if err != nil {
 		t.Fatalf("ResolveRepoURL() error = %v", err)
 	}
@@ -455,9 +454,9 @@ func TestResolveRepoURLLeavesAlreadyAliasedSSH(t *testing.T) {
 }
 
 func TestResolveRepoURLSSHInputUnchangedWhenNoAlias(t *testing.T) {
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	in := "git@github.com:wardnet/wardnet.git"
-	got, err := clone.ResolveRepoURL(printer, config.Default(), clone.Options{RepoURL: in})
+	got, err := clone.ResolveRepoURL(inv, config.Default(), clone.Options{RepoURL: in})
 	if err != nil {
 		t.Fatalf("ResolveRepoURL() error = %v", err)
 	}
@@ -483,8 +482,8 @@ Host github-personal
   Hostname github.com
   IdentityFile ~/.ssh/personal_key
 `)
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
-	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -503,8 +502,8 @@ Host github-personal
   Hostname github.com
   IdentityFile ~/.ssh/personal_key
 `)
-	printer := &ui.UI{In: strings.NewReader("2\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
-	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	inv := testInvocation("2\n", ioDiscard{}, ioDiscard{}, true)
+	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -521,8 +520,8 @@ Host github.com
 Host github-personal
   Hostname github.com
 `)
-	printer := &ui.UI{In: strings.NewReader("3\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
-	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	inv := testInvocation("3\n", ioDiscard{}, ioDiscard{}, true)
+	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -539,8 +538,8 @@ Host github.com
 Host github-personal
   Hostname github.com
 `)
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
-	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -557,8 +556,8 @@ Host *
 Host github.com
   Hostname github.com
 `)
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
-	got, err := clone.ResolveAlias(printer, config.SSH{}, "github.com", "")
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
@@ -634,24 +633,28 @@ func TestFakeRunnerCanReturnErrors(t *testing.T) {
 func TestRunRejectsBadProfileBeforeCloning(t *testing.T) {
 	cfg := config.Default()
 	cfg.Profiles = []config.Profile{{Name: "work", Env: map[string]string{"CODEX_HOME": "/w"}}}
-	cases := map[string]clone.Options{
-		"unknown name":              {Profile: "typo"},
-		"profile without auth step": {Profile: "work", NoSetupAuth: true},
-		"opt-out without auth step": {NoProfile: true, NoSetupAuth: true},
+	cases := map[string]struct {
+		opts clone.Options
+		want string
+	}{
+		"unknown name":              {opts: clone.Options{Profile: "typo"}, want: `unknown profile "typo"`},
+		"profile without auth step": {opts: clone.Options{Profile: "work", NoSetupAuth: true}, want: "drop --no-setup-auth"},
+		"opt-out without auth step": {opts: clone.Options{NoProfile: true, NoSetupAuth: true}, want: "drop --no-setup-auth"},
 	}
-	for name, opts := range cases {
+	for name, tc := range cases {
+		opts := tc.opts
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Chdir(dir)
 			opts.RepoURL = "git@github.com:pedromvgomes/gt.git"
-			printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+			inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 			runner := &fakeGitRunner{}
-			err := clone.Run(context.Background(), runner, printer, cfg, opts)
+			err := clone.Run(context.Background(), runner, inv, cfg, opts)
 			if err == nil {
 				t.Fatal("Run() succeeded, want error")
 			}
-			if ui.ExitCode(err) != ui.ExitUser {
-				t.Fatalf("ExitCode() = %d, want %d", ui.ExitCode(err), ui.ExitUser)
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run() error = %v, want it to contain %q", err, tc.want)
 			}
 			if len(runner.calls) != 0 {
 				t.Fatalf("ran %#v, want nothing before validation", runner.calls)

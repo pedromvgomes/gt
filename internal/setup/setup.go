@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 const (
@@ -146,11 +146,11 @@ func detectBare(ctx context.Context, runner git.Runner, root string) (Context, e
 func detectPlain(ctx context.Context, runner git.Runner, cwd string) (Context, error) {
 	res, err := runner.Run(ctx, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return Context{}, ui.Errorf(ui.ExitUser, "not inside a git repository: %v", err)
+		return Context{}, fmt.Errorf("not inside a git repository: %v", err)
 	}
 	root := strings.TrimSpace(res.Stdout)
 	if root == "" {
-		return Context{}, ui.Errorf(ui.ExitUser, "not inside a git repository")
+		return Context{}, errors.New("not inside a git repository")
 	}
 	defaultBranch := readPlainDefaultBranch(ctx, runner, root)
 	repoURL := readOriginURL(ctx, runner, root, false)
@@ -276,7 +276,7 @@ func Select(s config.Setup, repoURL string, opts SelectOptions) ([]config.Templa
 		for _, n := range opts.Names {
 			t, ok := byName[n]
 			if !ok {
-				return nil, ui.Errorf(ui.ExitUser, "unknown setup template %q", n)
+				return nil, fmt.Errorf("unknown setup template %q", n)
 			}
 			out = append(out, t)
 		}

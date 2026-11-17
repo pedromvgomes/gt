@@ -62,7 +62,7 @@ func newCloneCommand() *spec.Command {
 			if len(inv.Args) == 2 {
 				opts.Folder = inv.Args[1]
 			}
-			return clone.Run(ctx, git.ExecRunner{}, printer(inv), cfg, opts)
+			return clone.Run(ctx, git.ExecRunner{}, inv, cfg, opts)
 		},
 	}
 }
@@ -104,7 +104,7 @@ func newWorktreeAddCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return worktree.Add(ctx, git.ExecRunner{}, printer(inv), cfg, worktree.AddOptions{
+			return worktree.Add(ctx, git.ExecRunner{}, inv, cfg, worktree.AddOptions{
 				Spec:        inv.Args[0],
 				CWD:         cwd,
 				From:        from.Get(inv),
@@ -137,7 +137,7 @@ func newWorktreeRemoveCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return worktree.Remove(ctx, git.ExecRunner{}, printer(inv), cfg, worktree.RemoveOptions{
+			return worktree.Remove(ctx, git.ExecRunner{}, inv, cfg, worktree.RemoveOptions{
 				Name:         inv.Args[0],
 				CWD:          cwd,
 				DeleteBranch: branch.Get(inv),
@@ -161,7 +161,7 @@ func newWorktreeListCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return worktree.List(ctx, git.ExecRunner{}, printer(inv), cfg, cwd)
+			return worktree.List(ctx, git.ExecRunner{}, inv, cfg, cwd)
 		},
 	}
 }
@@ -185,7 +185,7 @@ func newWorktreeNukeCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return worktree.Nuke(ctx, git.ExecRunner{}, printer(inv), cfg, worktree.NukeOptions{
+			return worktree.Nuke(ctx, git.ExecRunner{}, inv, cfg, worktree.NukeOptions{
 				CWD:            cwd,
 				DeleteBranches: branches.Get(inv),
 				Force:          force.Get(inv),
@@ -206,7 +206,7 @@ func newWorktreePruneBranchesCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return worktree.PruneBranches(ctx, git.ExecRunner{}, printer(inv), worktree.PruneBranchesOptions{
+			return worktree.PruneBranches(ctx, git.ExecRunner{}, inv, worktree.PruneBranchesOptions{
 				CWD:    cwd,
 				DryRun: dryRun.Get(inv),
 			})
@@ -229,7 +229,7 @@ func newScratchCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return scratch.Run(ctx, git.ExecRunner{}, printer(inv), scratch.Options{
+			return scratch.Run(ctx, git.ExecRunner{}, inv, scratch.Options{
 				CWD:    cwd,
 				Reset:  reset.Get(inv),
 				Delete: del.Get(inv),
@@ -260,7 +260,7 @@ func newSetAuthCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return setauth.Run(ctx, setauth.ExecRunner{}, printer(inv), setauth.Options{
+			return setauth.Run(ctx, setauth.ExecRunner{}, inv, setauth.Options{
 				CWD:       cwd,
 				Profiles:  cfg.Profiles,
 				User:      user.Get(inv),
@@ -288,7 +288,7 @@ func newSetSSHRemoteCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			return setssh.Run(ctx, git.ExecRunner{}, printer(inv), cfg, setssh.Options{
+			return setssh.Run(ctx, git.ExecRunner{}, inv, cfg, setssh.Options{
 				CWD:  cwd,
 				User: user.Get(inv),
 			})
@@ -332,7 +332,7 @@ func newSetupCommand() *spec.Command {
 				return err
 			}
 			plan := setup.Plan{Templates: templates, Ctx: rcontext}
-			return setup.Execute(ctx, printer(inv), plan, setup.RunOptions{
+			return setup.Execute(ctx, inv, plan, setup.RunOptions{
 				Yes:    yes.Get(inv),
 				Show:   show.Get(inv),
 				DryRun: dryRun.Get(inv),

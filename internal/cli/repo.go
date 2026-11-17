@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
 	"github.com/pedromvgomes/gt/internal/setup"
-	"github.com/pedromvgomes/gt/internal/ui"
 	"go.vipengele.org/cli/spec"
 )
 
@@ -57,7 +57,7 @@ func repoOptions(ctx context.Context, inv *spec.Invocation, d Deps, skipWorkflow
 
 	workdir, err := repogov.ResolveWorkDir(ctx, runner, cwd)
 	if err != nil {
-		return repogov.Options{}, ui.Errorf(ui.ExitUser, "%v", err)
+		return repogov.Options{}, err
 	}
 
 	return repogov.Options{
@@ -82,22 +82,20 @@ func newRepoInitCommand(d Deps) *spec.Command {
 		Args:  spec.NoArgs(),
 		Flags: []spec.Flag{force, dryRun},
 		Run: func(ctx context.Context, inv *spec.Invocation) error {
-			p := printer(inv)
 			govOpts, err := repoOptions(ctx, inv, d, false)
 			if err != nil {
 				return err
 			}
 			specPath := repospec.Path(govOpts.WorkDir)
 			if _, err := os.Stat(specPath); err == nil && !force.Get(inv) {
-				return ui.Errorf(ui.ExitUser,
-					"%s already exists; edit it and run 'gt repo sync', or pass --force to regenerate", specPath)
+				return fmt.Errorf("%s already exists; edit it and run 'gt repo sync', or pass --force to regenerate", specPath)
 			}
 
 			declared, err := repogov.Init(govOpts)
 			if err != nil {
 				return err
 			}
-			printSpecSummary(p, declared, govOpts)
+			printSpecSummary(inv, declared, govOpts)
 
 			if dryRun.Get(inv) {
 				return nil
@@ -105,8 +103,8 @@ func newRepoInitCommand(d Deps) *spec.Command {
 			if err := repogov.SaveSpec(govOpts.WorkDir, declared); err != nil {
 				return err
 			}
-			p.Success("Wrote %s", specPath)
-			p.Info("Review it, then run 'gt repo sync' to render the governance files.")
+			inv.Success("Wrote %s", specPath)
+			inv.Info("Review it, then run 'gt repo sync' to render the governance files.")
 			return nil
 		},
 	}
@@ -160,7 +158,6 @@ func newRepoCheckCommand(d Deps) *spec.Command {
 		Args:  spec.NoArgs(),
 		Flags: []spec.Flag{asJSON, skipWorkflows},
 		Run: func(ctx context.Context, inv *spec.Invocation) error {
-			p := printer(inv)
 			govOpts, err := repoOptions(ctx, inv, d, skipWorkflows.Get(inv))
 			if err != nil {
 				return err
@@ -172,11 +169,11 @@ func newRepoCheckCommand(d Deps) *spec.Command {
 			if asJSON.Get(inv) {
 				return printJSON(inv.Env.Stdout, report)
 			}
-			printReport(p, report, govOpts)
+			printReport(inv, report, govOpts)
 			if !report.Clean() {
-				return ui.Errorf(ui.ExitGeneral, "repository is not compliant")
+				return errors.New("repository is not compliant")
 			}
-			p.Success("Repository is compliant")
+			inv.Success("Repository is compliant")
 			return nil
 		},
 	}
@@ -199,7 +196,6 @@ func newRepoSyncCommand(d Deps) *spec.Command {
 		Args:  spec.NoArgs(),
 		Flags: []spec.Flag{dryRun, yes, skipWorkflows},
 		Run: func(ctx context.Context, inv *spec.Invocation) error {
-			p := printer(inv)
 			skip := skipWorkflows.Get(inv)
 			govOpts, err := repoOptions(ctx, inv, d, skip)
 			if err != nil {
@@ -209,18 +205,18 @@ func newRepoSyncCommand(d Deps) *spec.Command {
 			// here would abort the whole `gt clone` setup chain for every
 			// repository that has not opted in.
 			if !repospec.Exists(govOpts.WorkDir) {
-				p.Info("No %s; repository is not governed. Run 'gt repo init' to start.", repospec.FileName)
+				inv.Info("No %s; repository is not governed. Run 'gt repo init' to start.", repospec.FileName)
 				return nil
 			}
 			report, err := repogov.Check(govOpts)
 			if err != nil {
 				return err
 			}
-			printReport(p, report, govOpts)
+			printReport(inv, report, govOpts)
 
 			drifted := repogov.Drifted(report.Results)
 			if !report.NeedsWrite(skip) {
-				p.Info("Nothing to write.")
+				inv.Info("Nothing to write.")
 				return nil
 			}
 			if dryRun.Get(inv) {
@@ -228,15 +224,15 @@ func newRepoSyncCommand(d Deps) *spec.Command {
 				// here would leave `sync --dry-run` permanently green as a CI
 				// drift detector, which is exactly what someone would reach
 				// for it to do.
-				return ui.Errorf(ui.ExitGeneral, "repository is not compliant")
+				return errors.New("repository is not compliant")
 			}
 			if !yes.Get(inv) {
-				ok, err := confirmSync(p, drifted)
+				ok, err := confirmSync(inv, drifted)
 				if err != nil {
 					return err
 				}
 				if !ok {
-					p.Info("Aborted before writing")
+					inv.Info("Aborted before writing")
 					return nil
 				}
 			}
@@ -245,87 +241,86 @@ func newRepoSyncCommand(d Deps) *spec.Command {
 				return err
 			}
 			for _, path := range written {
-				p.Success("wrote %s", path)
+				inv.Success("wrote %s", path)
 			}
 			return nil
 		},
 	}
 }
 
-func confirmSync(printer *ui.UI, drifted []repogov.Result) (bool, error) {
-	if !printer.Interactive {
+func confirmSync(inv *spec.Invocation, drifted []repogov.Result) (bool, error) {
+	if !inv.Env.IsTerminal(spec.Stdin) {
 		// Writing and creating files is the whole point of sync, and the
 		// result is git-tracked and reviewable, so an unattended run proceeds.
 		// Removing an orphan is not reversible from the working tree alone, so
 		// that requires an explicit --yes rather than an assumed one.
 		for _, r := range drifted {
 			if r.Status == repogov.StatusOrphaned {
-				return false, ui.Errorf(ui.ExitUser,
-					"%s is no longer declared and would be removed; re-run with --yes to confirm", r.Path)
+				return false, fmt.Errorf("%s is no longer declared and would be removed; re-run with --yes to confirm", r.Path)
 			}
 		}
 		return true, nil
 	}
 	for {
-		answer, err := printer.Prompt("Write these? [Y/n/d] (d = show diff)", "Y", false, "")
+		answer, err := inv.Prompt("Write these? y/n/d (d = show diff)", spec.PromptOptions{Default: "y"})
 		if err != nil {
 			return false, err
 		}
 		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "", "y", "yes":
+		case "y", "yes":
 			return true, nil
 		case "n", "no":
 			return false, nil
 		case "d", "diff":
-			printDiff(printer, drifted)
+			printDiff(inv, drifted)
 		default:
-			printer.Warn("Please answer y, n, or d")
+			inv.Warning("Please answer y, n, or d")
 		}
 	}
 }
 
-func printSpecSummary(printer *ui.UI, spec repospec.Spec, opts repogov.Options) {
-	_, _ = fmt.Fprintf(printer.Out, "Detected governance for %s/%s:\n", opts.RepoOwner, opts.RepoName)
-	if len(spec.Dependabot) == 0 {
-		_, _ = fmt.Fprintln(printer.Out, "  dependabot: (no ecosystems detected)")
+func printSpecSummary(inv *spec.Invocation, declared repospec.Spec, opts repogov.Options) {
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "Detected governance for %s/%s:\n", opts.RepoOwner, opts.RepoName)
+	if len(declared.Dependabot) == 0 {
+		_, _ = fmt.Fprintln(inv.Env.Stdout, "  dependabot: (no ecosystems detected)")
 	}
-	for _, e := range spec.Dependabot {
-		_, _ = fmt.Fprintf(printer.Out, "  dependabot: %-15s %s\n", e.Ecosystem, e.Directory)
+	for _, e := range declared.Dependabot {
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  dependabot: %-15s %s\n", e.Ecosystem, e.Directory)
 	}
-	if spec.Pipeline.CI.Enabled {
-		_, _ = fmt.Fprintf(printer.Out, "  ci stages:  %s\n", strings.Join(spec.Pipeline.CI.Stages, ", "))
+	if declared.Pipeline.CI.Enabled {
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  ci stages:  %s\n", strings.Join(declared.Pipeline.CI.Stages, ", "))
 	}
-	if spec.Pipeline.CD.Enabled {
-		_, _ = fmt.Fprintf(printer.Out, "  cd stages:  %s\n", strings.Join(spec.Pipeline.CD.Stages, ", "))
-		_, _ = fmt.Fprintf(printer.Out, "  cd tags:    %s\n", strings.Join(spec.Pipeline.CD.Tags, ", "))
+	if declared.Pipeline.CD.Enabled {
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  cd stages:  %s\n", strings.Join(declared.Pipeline.CD.Stages, ", "))
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  cd tags:    %s\n", strings.Join(declared.Pipeline.CD.Tags, ", "))
 	}
-	_, _ = fmt.Fprintf(printer.Out, "  gate check: %s  (the only one branch protection needs)\n", repospec.GateCheckJob)
-	_, _ = fmt.Fprintln(printer.Out,
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "  gate check: %s  (the only one branch protection needs)\n", repospec.GateCheckJob)
+	_, _ = fmt.Fprintln(inv.Env.Stdout,
 		"\nThe ci-*/cd-* stage files are yours: gt creates them empty once, then never touches them.")
 }
 
-func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
+func printReport(inv *spec.Invocation, report repogov.Report, opts repogov.Options) {
 	if report.VersionStale {
-		printer.Warn("rendered by gt %s, running %s — sync to re-render with current policy",
+		inv.Warning("rendered by gt %s, running %s — sync to re-render with current policy",
 			report.Spec.GTVersion, opts.GTVersion)
 	}
 
 	if report.SpecStale {
-		printer.Warn("%s restates values that are gt defaults — sync rewrites it to only the overrides",
+		inv.Warning("%s restates values that are gt defaults — sync rewrites it to only the overrides",
 			repospec.FileName)
 	}
 
 	drifted := repogov.Drifted(report.Results)
 	if len(drifted) == 0 {
-		printer.Info("All %d managed file(s) match.", len(report.Results))
+		inv.Info("All %d managed file(s) match.", len(report.Results))
 	} else {
-		_, _ = fmt.Fprintf(printer.Out, "%d of %d managed file(s) need changing:\n", len(drifted), len(report.Results))
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "%d of %d managed file(s) need changing:\n", len(drifted), len(report.Results))
 		for _, r := range drifted {
 			note := ""
 			if r.Status == repogov.StatusOrphaned {
 				note = "  (no longer declared; will be removed)"
 			}
-			_, _ = fmt.Fprintf(printer.Out, "  %-9s %s%s\n", r.Status, r.Path, note)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "  %-9s %s%s\n", r.Status, r.Path, note)
 		}
 	}
 
@@ -335,25 +330,25 @@ func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
 	// before the diff, so this run does not know. The in-repo sync job answers
 	// that with a second, unfiltered `gt repo check --json`.
 	if opts.SkipWorkflows {
-		printer.Info("Skipped %s — GITHUB_TOKEN cannot write workflow files.", repogov.WorkflowDir)
+		inv.Info("Skipped %s — GITHUB_TOKEN cannot write workflow files.", repogov.WorkflowDir)
 	}
 
 }
 
-func printDiff(printer *ui.UI, drifted []repogov.Result) {
+func printDiff(inv *spec.Invocation, drifted []repogov.Result) {
 	for _, r := range drifted {
-		_, _ = fmt.Fprintf(printer.Out, "\n--- %s (%s)\n", r.Path, r.Status)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "\n--- %s (%s)\n", r.Path, r.Status)
 
 		// An orphan has no desired content — showing r.Want would print a
 		// single blank line and tell the user nothing about the deletion they
 		// are being asked to confirm. Show what is there instead.
 		body := r.Want
 		if r.Status == repogov.StatusOrphaned {
-			_, _ = fmt.Fprintln(printer.Out, "  this file will be REMOVED; its current contents are:")
+			_, _ = fmt.Fprintln(inv.Env.Stdout, "  this file will be REMOVED; its current contents are:")
 			body = r.Got
 		}
 		for _, line := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
-			_, _ = fmt.Fprintf(printer.Out, "  %s\n", line)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "  %s\n", line)
 		}
 	}
 }
@@ -382,7 +377,7 @@ func printJSON(w io.Writer, report repogov.Report) error {
 		return fmt.Errorf("encode json report: %w", err)
 	}
 	if !out.Compliant {
-		return ui.Errorf(ui.ExitGeneral, "repository is not compliant")
+		return errors.New("repository is not compliant")
 	}
 	return nil
 }

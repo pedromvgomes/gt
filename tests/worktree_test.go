@@ -12,7 +12,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
-	"github.com/pedromvgomes/gt/internal/ui"
 	"github.com/pedromvgomes/gt/internal/worktree"
 )
 
@@ -45,9 +44,9 @@ func TestWorktreeAddFromSource(t *testing.T) {
 			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/remotes/origin/feature/new-thing"): errors.New("missing"),
 		},
 	}
-	printer := quietUI()
+	inv := quietInvocation()
 
-	err := worktree.Add(context.Background(), runner, printer, testConfig(), worktree.AddOptions{
+	err := worktree.Add(context.Background(), runner, inv, testConfig(), worktree.AddOptions{
 		Spec: "feature/new-thing",
 		From: "main",
 		CWD:  root,
@@ -69,7 +68,7 @@ func TestWorktreeAddExistingRemoteBranch(t *testing.T) {
 			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/heads/fix/bug"): errors.New("missing"),
 		},
 	}
-	err := worktree.Add(context.Background(), runner, quietUI(), testConfig(), worktree.AddOptions{
+	err := worktree.Add(context.Background(), runner, quietInvocation(), testConfig(), worktree.AddOptions{
 		Spec: "fix/bug",
 		CWD:  root,
 	})
@@ -80,6 +79,40 @@ func TestWorktreeAddExistingRemoteBranch(t *testing.T) {
 	wantLast := []string{gitDir(root), "worktree", "add", "--track", "-b", "fix/bug", filepath.Join(root, "fix", "bug"), "origin/fix/bug"}
 	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, wantLast) {
 		t.Fatalf("last call = %#v, want %#v", got, wantLast)
+	}
+}
+
+// Without a terminal the source-branch question is never asked: a new branch
+// with no local or remote counterpart is cut from the default branch, so
+// `gt wt add` in a script or hook neither hangs nor fails.
+func TestWorktreeAddNonInteractiveTakesDefaultBranch(t *testing.T) {
+	root := makeManagedRoot(t)
+	runner := &fakeGitRunner{
+		responses: map[string]git.Result{
+			gitDirKey(root, "remote", "show", "origin"): {Stdout: "  HEAD branch: develop\n"},
+		},
+		errs: map[string]error{
+			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/heads/feature/new-thing"):          errors.New("missing"),
+			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/remotes/origin/feature/new-thing"): errors.New("missing"),
+		},
+	}
+	var stderr bytes.Buffer
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
+
+	err := worktree.Add(context.Background(), runner, inv, testConfig(), worktree.AddOptions{
+		Spec: "feature/new-thing",
+		CWD:  root,
+	})
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+
+	wantLast := []string{gitDir(root), "worktree", "add", "--no-track", "-b", "feature/new-thing", filepath.Join(root, "feature", "new-thing"), "origin/develop"}
+	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, wantLast) {
+		t.Fatalf("last call = %#v, want %#v", got, wantLast)
+	}
+	if strings.Contains(stderr.String(), "Enter source branch") {
+		t.Fatalf("stderr = %q, want no question asked without a terminal", stderr.String())
 	}
 }
 
@@ -97,10 +130,11 @@ func TestWorktreeRemoveCleanRemovesWithoutPrompt(t *testing.T) {
 	}
 	runner := &fakeGitRunner{} // empty status response => clean
 	var out bytes.Buffer
-	// A nil reader proves no prompt is read for a clean worktree.
-	printer := &ui.UI{Out: &out, Err: ioDiscard{}, Interactive: true}
+	// Empty input at a terminal: a question asked here would end the run
+	// with ErrAborted, so success proves a clean worktree asks nothing.
+	inv := testInvocation("", &out, ioDiscard{}, true)
 
-	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
 		Name: "clean",
 		CWD:  root,
 	})
@@ -128,9 +162,9 @@ func TestWorktreeRemoveDirtyConfirmedForces(t *testing.T) {
 		},
 	}
 	var out bytes.Buffer
-	printer := &ui.UI{In: strings.NewReader("y\n"), Out: &out, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("y\n", &out, ioDiscard{}, true)
 
-	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
 		Name:         "stale",
 		DeleteBranch: true,
 		CWD:          root,
@@ -161,10 +195,9 @@ func TestWorktreeRemoveDirtyDeclinedAborts(t *testing.T) {
 		dirtyStatusKey(path): {Stdout: "?? new.go\n"},
 	}}
 	var out bytes.Buffer
-	// EOF (empty reader) is treated as "no".
-	printer := &ui.UI{In: strings.NewReader("n\n"), Out: &out, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("n\n", &out, ioDiscard{}, true)
 
-	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
 		Name: "stale",
 		CWD:  root,
 	})
@@ -187,9 +220,9 @@ func TestWorktreeRemoveDirtyForcedSkipsPrompt(t *testing.T) {
 	// No status response is configured: --force must skip the dirty probe.
 	runner := &fakeGitRunner{}
 	var out bytes.Buffer
-	printer := &ui.UI{Out: &out, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("", &out, ioDiscard{}, true)
 
-	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
 		Name:  "stale",
 		Force: true,
 		CWD:   root,
@@ -217,9 +250,9 @@ func TestWorktreeRemoveDirtyNonInteractiveAborts(t *testing.T) {
 	runner := &fakeGitRunner{responses: map[string]git.Result{
 		dirtyStatusKey(path): {Stdout: " M file.go\n"},
 	}}
-	printer := quietUI() // Interactive: false
+	inv := quietInvocation() // no terminal
 
-	err := worktree.Remove(context.Background(), runner, printer, testConfig(), worktree.RemoveOptions{
+	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
 		Name: "stale",
 		CWD:  root,
 	})
@@ -244,9 +277,9 @@ func TestWorktreeListIncludesScratchAndTypedWorktrees(t *testing.T) {
 		"-C " + filepath.Join(root, "feature", "one") + " log -1 --format=%h %s": {Stdout: "abc123 feature commit\n"},
 	}}
 	var out bytes.Buffer
-	printer := &ui.UI{Out: &out, Err: ioDiscard{}}
+	inv := testInvocation("", &out, ioDiscard{}, false)
 
-	if err := worktree.List(context.Background(), runner, printer, testConfig(), root); err != nil {
+	if err := worktree.List(context.Background(), runner, inv, testConfig(), root); err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
 	got := out.String()
@@ -264,7 +297,7 @@ func TestWorktreeNukeDeletesBranchesWhenRequested(t *testing.T) {
 	}
 	runner := &fakeGitRunner{}
 
-	err := worktree.Nuke(context.Background(), runner, quietUI(), testConfig(), worktree.NukeOptions{
+	err := worktree.Nuke(context.Background(), runner, quietInvocation(), testConfig(), worktree.NukeOptions{
 		DeleteBranches: true,
 		CWD:            root,
 	})
@@ -285,7 +318,7 @@ func TestWorktreeNukeForceUsesForceRemoval(t *testing.T) {
 	}
 	runner := &fakeGitRunner{}
 
-	err := worktree.Nuke(context.Background(), runner, quietUI(), testConfig(), worktree.NukeOptions{
+	err := worktree.Nuke(context.Background(), runner, quietInvocation(), testConfig(), worktree.NukeOptions{
 		Force: true,
 		CWD:   root,
 	})
@@ -317,9 +350,9 @@ func TestWorktreeNukeSkipsDirtyWithoutForce(t *testing.T) {
 		gitDirKey(root, "worktree", "remove", path): errors.New("worktree is dirty"),
 	}}
 	var out bytes.Buffer
-	printer := &ui.UI{Out: &out, Err: &out}
+	inv := testInvocation("", &out, &out, false)
 
-	err := worktree.Nuke(context.Background(), runner, printer, testConfig(), worktree.NukeOptions{
+	err := worktree.Nuke(context.Background(), runner, inv, testConfig(), worktree.NukeOptions{
 		CWD: root,
 	})
 	if err != nil {
@@ -352,9 +385,9 @@ func TestPruneBranchesDryRunSkipsProtectedAndActive(t *testing.T) {
 		},
 	}}
 	var out bytes.Buffer
-	printer := &ui.UI{Out: &out, Err: ioDiscard{}}
+	inv := testInvocation("", ioDiscard{}, &out, false)
 
-	err := worktree.PruneBranches(context.Background(), runner, printer, worktree.PruneBranchesOptions{
+	err := worktree.PruneBranches(context.Background(), runner, inv, worktree.PruneBranchesOptions{
 		DryRun: true,
 		CWD:    root,
 	})
@@ -385,10 +418,6 @@ func testConfig() config.Config {
 		WorktreeTypes: []string{"feature", "fix"},
 		SSH:           config.SSH{HostAliases: map[string]string{}},
 	}
-}
-
-func quietUI() *ui.UI {
-	return &ui.UI{In: strings.NewReader(""), Out: ioDiscard{}, Err: ioDiscard{}, Quiet: true}
 }
 
 func gitDir(root string) string {

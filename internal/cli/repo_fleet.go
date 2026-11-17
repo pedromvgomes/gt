@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,6 @@ import (
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
-	"github.com/pedromvgomes/gt/internal/ui"
 	"go.vipengele.org/cli/spec"
 )
 
@@ -61,9 +61,8 @@ func newFleetSweepCommand(d Deps, apply bool) *spec.Command {
 		Args:        spec.NoArgs(),
 		Flags:       flags,
 		Run: func(ctx context.Context, inv *spec.Invocation) error {
-			p := printer(inv)
 			if owner.Get(inv) == "" {
-				return ui.Errorf(ui.ExitUser, "--owner is required")
+				return errors.New("--owner is required")
 			}
 			cache := cacheDir.Get(inv)
 			if cache == "" {
@@ -84,7 +83,7 @@ func newFleetSweepCommand(d Deps, apply bool) *spec.Command {
 			if err != nil {
 				return err
 			}
-			p.Info("Sweeping %d repositories in %s (cache: %s)...", len(repos), owner.Get(inv), cache)
+			inv.Info("Sweeping %d repositories in %s (cache: %s)...", len(repos), owner.Get(inv), cache)
 
 			results := repogov.FleetSweep(ctx, gh, git.ExecRunner{}, repos, repogov.FleetOptions{
 				CacheDir:  cache,
@@ -92,46 +91,46 @@ func newFleetSweepCommand(d Deps, apply bool) *spec.Command {
 				Branch:    pushTo,
 				Apply:     apply,
 			})
-			return printFleetResults(p, results, apply)
+			return printFleetResults(inv, results, apply)
 		},
 	}
 }
 
-func printFleetResults(printer *ui.UI, results []repogov.FleetResult, applied bool) error {
+func printFleetResults(inv *spec.Invocation, results []repogov.FleetResult, applied bool) error {
 	var failed, drifted int
 	for _, r := range results {
 		switch {
 		case r.Err != nil:
 			failed++
-			printer.Warn("%-40s %v", r.Repo, r.Err)
+			inv.Warning("%-40s %v", r.Repo, r.Err)
 		case !r.Governed:
-			_, _ = fmt.Fprintf(printer.Out, "  %-40s not governed\n", r.Repo)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "  %-40s not governed\n", r.Repo)
 		case r.Clean():
-			_, _ = fmt.Fprintf(printer.Out, "  %-40s ok\n", r.Repo)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "  %-40s ok\n", r.Repo)
 		default:
 			drifted++
 			detail := fmt.Sprintf("%d file(s) to change", len(r.Drifted))
 			if r.PR != "" {
 				detail += "  -> " + r.PR
 			}
-			_, _ = fmt.Fprintf(printer.Out, "  %-40s %s\n", r.Repo, detail)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "  %-40s %s\n", r.Repo, detail)
 		}
 	}
 
 	if drifted == 0 && failed == 0 {
-		printer.Success("Fleet is compliant.")
+		inv.Success("Fleet is compliant.")
 		return nil
 	}
 	if !applied && drifted > 0 {
-		printer.Info("%d repository(ies) need changes. Run 'gt repo fleet sync' to open PRs.", drifted)
+		inv.Info("%d repository(ies) need changes. Run 'gt repo fleet sync' to open PRs.", drifted)
 	}
 	// A sweep that could not read part of the fleet has not answered the
 	// question it was asked, so it must not exit 0.
 	if failed > 0 {
-		return ui.Errorf(ui.ExitGeneral, "%d repository(ies) could not be swept", failed)
+		return fmt.Errorf("%d repository(ies) could not be swept", failed)
 	}
 	if !applied {
-		return ui.Errorf(ui.ExitGeneral, "%d repository(ies) are not compliant", drifted)
+		return fmt.Errorf("%d repository(ies) are not compliant", drifted)
 	}
 	return nil
 }
@@ -154,7 +153,6 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 		Args:  spec.NoArgs(),
 		Flags: []spec.Flag{owner, merge, limit, maxBump},
 		Run: func(ctx context.Context, inv *spec.Invocation) error {
-			p := printer(inv)
 			if owner.Get(inv) == "" {
 				return fmt.Errorf("--owner is required")
 			}
@@ -164,7 +162,7 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 			if err != nil {
 				return err
 			}
-			p.Info("Scanning %d repositories in %s...", len(repos), owner.Get(inv))
+			inv.Info("Scanning %d repositories in %s...", len(repos), owner.Get(inv))
 
 			total := 0
 			eligible := 0
@@ -173,7 +171,7 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 				if err != nil {
 					// One inaccessible repo must not end the sweep; the point
 					// is to see the whole fleet.
-					p.Warn("%s: %v", repo, err)
+					inv.Warning("%s: %v", repo, err)
 					continue
 				}
 				for _, pr := range pending {
@@ -182,7 +180,7 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 					if !pr.Eligible {
 						status = "skip: " + pr.Reason
 					}
-					_, _ = fmt.Fprintf(p.Out, "  %s#%-5d %-40s (%s)\n", pr.Repo, pr.Number, pr.Title, status)
+					_, _ = fmt.Fprintf(inv.Env.Stdout, "  %s#%-5d %-40s (%s)\n", pr.Repo, pr.Number, pr.Title, status)
 					if !pr.Eligible {
 						continue
 					}
@@ -191,19 +189,19 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 						continue
 					}
 					if err := repogov.MergePending(ctx, gh, pr); err != nil {
-						p.Warn("  merge failed: %v", err)
+						inv.Warning("  merge failed: %v", err)
 						continue
 					}
-					p.Success("  merged %s#%d", pr.Repo, pr.Number)
+					inv.Success("  merged %s#%d", pr.Repo, pr.Number)
 				}
 			}
 
 			if total == 0 {
-				p.Success("No pending workflow PRs.")
+				inv.Success("No pending workflow PRs.")
 				return nil
 			}
 			if !merge.Get(inv) {
-				p.Info("%d pending PR(s), %d eligible. Re-run with --merge to squash-merge the eligible ones.",
+				inv.Info("%d pending PR(s), %d eligible. Re-run with --merge to squash-merge the eligible ones.",
 					total, eligible)
 			}
 			return nil

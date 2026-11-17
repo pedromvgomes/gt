@@ -7,7 +7,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
-	"github.com/pedromvgomes/gt/internal/ui"
 	"go.vipengele.org/cli/spec"
 )
 
@@ -40,7 +39,7 @@ func newRepoSettingsDiffCommand(d Deps) *spec.Command {
 			if err != nil {
 				return err
 			}
-			printSettingChanges(printer(inv), changes, govOpts)
+			printSettingChanges(inv, changes, govOpts)
 			return nil
 		},
 	}
@@ -54,7 +53,6 @@ func newRepoSettingsApplyCommand(d Deps) *spec.Command {
 		Args:    spec.NoArgs(),
 		Flags:   []spec.Flag{yes},
 		Run: func(ctx context.Context, inv *spec.Invocation) error {
-			p := printer(inv)
 			govOpts, declared, err := loadSpecContext(ctx, inv, d)
 			if err != nil {
 				return err
@@ -65,23 +63,23 @@ func newRepoSettingsApplyCommand(d Deps) *spec.Command {
 			if err != nil {
 				return err
 			}
-			printSettingChanges(p, changes, govOpts)
+			printSettingChanges(inv, changes, govOpts)
 			if len(changes) == 0 {
 				return nil
 			}
 
 			// Branch protection is the safety net for a shared branch, so
-			// changing it is never silent. No Interactive guard here on
-			// purpose: ui.Prompt already returns the default without a TTY,
-			// so a piped or scripted run declines rather than applying
+			// changing it is never silent. No terminal guard here on
+			// purpose: inv.Confirm already answers its default, no, without a
+			// TTY, so a piped or scripted run declines rather than applying
 			// unattended. Automation must say --yes explicitly.
 			if !yes.Get(inv) {
-				answer, err := p.Prompt("Apply these settings? [y/N]", "N", false, "")
+				apply, err := inv.Confirm("Apply these settings?", spec.ConfirmOptions{Default: spec.DefaultNo, Flag: "--yes"})
 				if err != nil {
 					return err
 				}
-				if !strings.EqualFold(strings.TrimSpace(answer), "y") {
-					p.Info("Aborted before applying")
+				if !apply {
+					inv.Info("Aborted before applying")
 					return nil
 				}
 			}
@@ -89,7 +87,7 @@ func newRepoSettingsApplyCommand(d Deps) *spec.Command {
 			if err := repogov.SettingsApply(ctx, gh, declared, govOpts.RepoOwner, govOpts.RepoName); err != nil {
 				return err
 			}
-			p.Success("Applied settings to %s/%s", govOpts.RepoOwner, govOpts.RepoName)
+			inv.Success("Applied settings to %s/%s", govOpts.RepoOwner, govOpts.RepoName)
 
 			// Said again, after the success line. Everything else in the list
 			// was just applied; this one thing was not, and a run that ends on
@@ -99,9 +97,9 @@ func newRepoSettingsApplyCommand(d Deps) *spec.Command {
 				if c.Field != repogov.MergeQueueChangeField {
 					continue
 				}
-				p.Warn("%s is not held to its base yet: %s",
+				inv.Warning("%s is not held to its base yet: %s",
 					declared.Settings.BranchProtection.Branch, c.Got)
-				p.Info("Everything else was applied. To finish: %s",
+				inv.Info("Everything else was applied. To finish: %s",
 					strings.TrimPrefix(c.Want, "deferred — "))
 			}
 			return nil
@@ -123,15 +121,15 @@ func loadSpecContext(ctx context.Context, inv *spec.Invocation, d Deps) (repogov
 	return govOpts, declared, nil
 }
 
-func printSettingChanges(printer *ui.UI, changes []repogov.SettingChange, opts repogov.Options) {
+func printSettingChanges(inv *spec.Invocation, changes []repogov.SettingChange, opts repogov.Options) {
 	target := fmt.Sprintf("%s/%s", opts.RepoOwner, opts.RepoName)
 	if len(changes) == 0 {
-		printer.Info("%s settings already match.", target)
+		inv.Info("%s settings already match.", target)
 		return
 	}
-	_, _ = fmt.Fprintf(printer.Out, "%s has %d setting(s) to change:\n", target, len(changes))
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "%s has %d setting(s) to change:\n", target, len(changes))
 	for _, c := range changes {
-		_, _ = fmt.Fprintf(printer.Out, "  %s\n", c)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  %s\n", c)
 	}
-	_, _ = fmt.Fprintf(printer.Out, "\nBranch protection will require exactly one check: %q\n", repospec.GateCheckJob)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "\nBranch protection will require exactly one check: %q\n", repospec.GateCheckJob)
 }

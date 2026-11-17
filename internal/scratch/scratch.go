@@ -2,13 +2,14 @@ package scratch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/git"
-	"github.com/pedromvgomes/gt/internal/ui"
+	"go.vipengele.org/cli/spec"
 )
 
 type Options struct {
@@ -17,30 +18,30 @@ type Options struct {
 	CWD    string
 }
 
-func Run(ctx context.Context, runner git.Runner, printer *ui.UI, opts Options) error {
+func Run(ctx context.Context, runner git.Runner, inv *spec.Invocation, opts Options) error {
 	if opts.Reset && opts.Delete {
-		return ui.Errorf(ui.ExitUser, "--reset and --delete are mutually exclusive")
+		return errors.New("--reset and --delete are mutually exclusive")
 	}
 	root, err := rootFrom(opts.CWD)
 	if err != nil {
-		return ui.Errorf(ui.ExitUser, "%w", err)
+		return err
 	}
 	path := filepath.Join(root, "scratch")
 
 	switch {
 	case opts.Delete:
-		return deleteScratch(ctx, runner, printer, root, path)
+		return deleteScratch(ctx, runner, inv, root, path)
 	case opts.Reset:
-		return resetScratch(ctx, runner, printer, root, path)
+		return resetScratch(ctx, runner, inv, root, path)
 	case isDir(path):
-		return showExisting(ctx, runner, printer, path)
+		return showExisting(ctx, runner, inv, path)
 	default:
-		return createScratch(ctx, runner, printer, root, path)
+		return createScratch(ctx, runner, inv, root, path)
 	}
 }
 
-func createScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root, path string) error {
-	printer.Info("Fetching latest from origin...")
+func createScratch(ctx context.Context, runner git.Runner, inv *spec.Invocation, root, path string) error {
+	inv.Info("Fetching latest from origin...")
 	if err := fetchOrigin(ctx, runner, root); err != nil {
 		return err
 	}
@@ -48,32 +49,32 @@ func createScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root,
 	if err != nil {
 		return err
 	}
-	branch, err := printer.Prompt("Enter branch name for scratch worktree", "scratch", false, "run interactively to choose a branch")
+	branch, err := inv.Prompt("Enter branch name for scratch worktree", spec.PromptOptions{Default: "scratch"})
 	if err != nil {
 		return err
 	}
-	source, err := printer.Prompt("Enter source branch to create from", defaultBranch, false, "run interactively to choose a source branch")
+	source, err := inv.Prompt("Enter source branch to create from", spec.PromptOptions{Default: defaultBranch})
 	if err != nil {
 		return err
 	}
 	if exists, err := remoteRefExists(ctx, runner, root, source); err != nil {
 		return err
 	} else if !exists {
-		return ui.Errorf(ui.ExitUser, "source branch %q does not exist on remote", source)
+		return fmt.Errorf("source branch %q does not exist on remote", source)
 	}
 	if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "add", "--no-track", "-b", branch, path, "origin/"+source); err != nil {
 		return err
 	}
-	printer.Success("Scratch worktree created at %s", path)
-	_, _ = fmt.Fprintf(printer.Out, "\nNext steps:\n  cd %s\n  git push -u origin %s  # First push sets up tracking\n", path, branch)
+	inv.Success("Scratch worktree created at %s", path)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "\nNext steps:\n  cd %s\n  git push -u origin %s  # First push sets up tracking\n", path, branch)
 	return nil
 }
 
-func resetScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root, path string) error {
+func resetScratch(ctx context.Context, runner git.Runner, inv *spec.Invocation, root, path string) error {
 	if !isDir(path) {
-		return ui.Errorf(ui.ExitUser, "scratch worktree does not exist. Create it first with 'gt scratch'")
+		return errors.New("scratch worktree does not exist. Create it first with 'gt scratch'")
 	}
-	printer.Info("Fetching latest from origin...")
+	inv.Info("Fetching latest from origin...")
 	if err := fetchOrigin(ctx, runner, root); err != nil {
 		return err
 	}
@@ -81,14 +82,14 @@ func resetScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root, 
 	if err != nil {
 		return err
 	}
-	source, err := printer.Prompt("Enter branch to reset scratch to", defaultBranch, false, "run interactively to choose a source branch")
+	source, err := inv.Prompt("Enter branch to reset scratch to", spec.PromptOptions{Default: defaultBranch})
 	if err != nil {
 		return err
 	}
 	if exists, err := remoteRefExists(ctx, runner, root, source); err != nil {
 		return err
 	} else if !exists {
-		return ui.Errorf(ui.ExitUser, "branch %q does not exist on remote", source)
+		return fmt.Errorf("branch %q does not exist on remote", source)
 	}
 	if _, err := runner.Run(ctx, "", "-C", path, "fetch", "origin"); err != nil {
 		return err
@@ -96,14 +97,14 @@ func resetScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root, 
 	if _, err := runner.Run(ctx, "", "-C", path, "checkout", "-B", "scratch", "origin/"+source); err != nil {
 		return err
 	}
-	printer.Success("Scratch reset to origin/%s", source)
-	_, _ = fmt.Fprintf(printer.Out, "\nLocation: %s\n", path)
+	inv.Success("Scratch reset to origin/%s", source)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "\nLocation: %s\n", path)
 	return nil
 }
 
-func deleteScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root, path string) error {
+func deleteScratch(ctx context.Context, runner git.Runner, inv *spec.Invocation, root, path string) error {
 	if !isDir(path) {
-		return ui.Errorf(ui.ExitUser, "scratch worktree does not exist")
+		return errors.New("scratch worktree does not exist")
 	}
 	if _, err := runner.Run(ctx, "", gitDir(root), "worktree", "remove", path); err != nil {
 		return err
@@ -115,25 +116,25 @@ func deleteScratch(ctx context.Context, runner git.Runner, printer *ui.UI, root,
 			return err
 		}
 	}
-	printer.Success("Scratch worktree removed")
+	inv.Success("Scratch worktree removed")
 	return nil
 }
 
-func showExisting(ctx context.Context, runner git.Runner, printer *ui.UI, path string) error {
-	printer.Info("Scratch worktree already exists at %s", path)
-	_, _ = fmt.Fprintln(printer.Out)
-	_, _ = fmt.Fprintln(printer.Out, "scratch")
+func showExisting(ctx context.Context, runner git.Runner, inv *spec.Invocation, path string) error {
+	inv.Info("Scratch worktree already exists at %s", path)
+	_, _ = fmt.Fprintln(inv.Env.Stdout)
+	_, _ = fmt.Fprintln(inv.Env.Stdout, "scratch")
 	if result, err := runner.Run(ctx, "", "-C", path, "log", "-1", "--format=%h %s"); err == nil {
 		commit := strings.TrimSpace(result.Stdout)
 		if len(commit) > 60 {
 			commit = commit[:60]
 		}
 		if commit != "" {
-			_, _ = fmt.Fprintf(printer.Out, "  %s\n", commit)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "  %s\n", commit)
 		}
 	}
-	_, _ = fmt.Fprintln(printer.Out)
-	_, _ = fmt.Fprintln(printer.Out, "Use 'gt scratch --reset' to reset to a different branch")
+	_, _ = fmt.Fprintln(inv.Env.Stdout)
+	_, _ = fmt.Fprintln(inv.Env.Stdout, "Use 'gt scratch --reset' to reset to a different branch")
 	return nil
 }
 

@@ -11,7 +11,6 @@ import (
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/setssh"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 func TestSetSSHRemoteRewritesOriginForUser(t *testing.T) {
@@ -26,14 +25,14 @@ func TestSetSSHRemoteRewritesOriginForUser(t *testing.T) {
 			},
 		},
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	cfg := config.Default()
 	cfg.SSH.UserAliases = map[string]map[string]string{
 		"pedromvgomes": {"github.com": "github-personal"},
 		"pedro-work":   {"github.com": "github-work"},
 	}
 
-	err := setssh.Run(context.Background(), runner, printer, cfg, setssh.Options{
+	err := setssh.Run(context.Background(), runner, inv, cfg, setssh.Options{
 		CWD:  root,
 		User: "pedro-work",
 	})
@@ -62,13 +61,13 @@ func TestSetSSHRemoteNoOpWhenAlreadyCorrect(t *testing.T) {
 			},
 		},
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
 	cfg := config.Default()
 	cfg.SSH.UserAliases = map[string]map[string]string{
 		"pedro-work": {"github.com": "github-work"},
 	}
 
-	err := setssh.Run(context.Background(), runner, printer, cfg, setssh.Options{
+	err := setssh.Run(context.Background(), runner, inv, cfg, setssh.Options{
 		CWD:  root,
 		User: "pedro-work",
 	})
@@ -94,16 +93,16 @@ func TestSetSSHRemoteRejectsHTTPSOrigin(t *testing.T) {
 			},
 		},
 	}
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, ioDiscard{}, true, false)
-	err := setssh.Run(context.Background(), runner, printer, config.Default(), setssh.Options{
+	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	err := setssh.Run(context.Background(), runner, inv, config.Default(), setssh.Options{
 		CWD:  root,
 		User: "pedro-work",
 	})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error rejecting HTTPS origin")
 	}
-	if ui.ExitCode(err) != ui.ExitUser {
-		t.Fatalf("ExitCode = %d, want ExitUser", ui.ExitCode(err))
+	if !strings.Contains(err.Error(), "is not an SSH URL") {
+		t.Fatalf("Run() error = %v, want it to reject the HTTPS origin", err)
 	}
 }
 
@@ -120,11 +119,11 @@ func TestSetSSHRemoteFallsBackWithWarning(t *testing.T) {
 		},
 	}
 	var errBuf strings.Builder
-	printer := ui.New(strings.NewReader(""), ioDiscard{}, &errBuf, true, false)
+	inv := testInvocation("", ioDiscard{}, &errBuf, false)
 	cfg := config.Default()
 	cfg.SSH.HostAliases = map[string]string{"github.com": "github-personal"}
 
-	err := setssh.Run(context.Background(), runner, printer, cfg, setssh.Options{
+	err := setssh.Run(context.Background(), runner, inv, cfg, setssh.Options{
 		CWD:  root,
 		User: "ghost",
 	})

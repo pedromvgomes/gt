@@ -12,7 +12,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/scratch"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
@@ -22,9 +21,9 @@ func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
 			Stdout: "  HEAD branch: main\n",
 		},
 	}}
-	printer := &ui.UI{In: strings.NewReader("scratch-exp\nmain\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("scratch-exp\nmain\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := scratch.Run(context.Background(), runner, printer, scratch.Options{CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -45,9 +44,9 @@ func TestScratchExistingPrintsCommitAndHint(t *testing.T) {
 		"-C " + path + " log -1 --format=%h %s": {Stdout: "abc123 scratch commit\n"},
 	}}
 	var out bytes.Buffer
-	printer := &ui.UI{Out: &out, Err: ioDiscard{}}
+	inv := testInvocation("", &out, ioDiscard{}, false)
 
-	if err := scratch.Run(context.Background(), runner, printer, scratch.Options{CWD: root}); err != nil {
+	if err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	got := out.String()
@@ -69,9 +68,9 @@ func TestScratchResetChecksOutScratchFromSelectedBranch(t *testing.T) {
 			Stdout: "  HEAD branch: main\n",
 		},
 	}}
-	printer := &ui.UI{In: strings.NewReader("develop\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("develop\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := scratch.Run(context.Background(), runner, printer, scratch.Options{Reset: true, CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{Reset: true, CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -94,7 +93,7 @@ func TestScratchDeleteRemovesWorktreeAndBranch(t *testing.T) {
 	}
 	runner := &fakeGitRunner{}
 
-	err := scratch.Run(context.Background(), runner, quietUI(), scratch.Options{Delete: true, CWD: root})
+	err := scratch.Run(context.Background(), runner, quietInvocation(), scratch.Options{Delete: true, CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -111,12 +110,12 @@ func TestScratchDeleteRemovesWorktreeAndBranch(t *testing.T) {
 }
 
 func TestScratchRejectsResetAndDeleteTogether(t *testing.T) {
-	err := scratch.Run(context.Background(), &fakeGitRunner{}, quietUI(), scratch.Options{Reset: true, Delete: true, CWD: t.TempDir()})
+	err := scratch.Run(context.Background(), &fakeGitRunner{}, quietInvocation(), scratch.Options{Reset: true, Delete: true, CWD: t.TempDir()})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error")
 	}
-	if ui.ExitCode(err) != ui.ExitUser {
-		t.Fatalf("ExitCode() = %d, want %d", ui.ExitCode(err), ui.ExitUser)
+	if !strings.Contains(err.Error(), "--reset and --delete are mutually exclusive") {
+		t.Fatalf("Run() error = %v, want the exclusive-flags message", err)
 	}
 }
 
@@ -130,9 +129,9 @@ func TestScratchCreateRejectsMissingRemoteSource(t *testing.T) {
 			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/remotes/origin/missing"): errors.New("missing"),
 		},
 	}
-	printer := &ui.UI{In: strings.NewReader("scratch\nmissing\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("scratch\nmissing\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := scratch.Run(context.Background(), runner, printer, scratch.Options{CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error")
 	}

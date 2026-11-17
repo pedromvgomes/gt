@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/config"
-	"github.com/pedromvgomes/gt/internal/ui"
 	vcli "go.vipengele.org/cli/core"
 	"go.vipengele.org/cli/spec"
 )
@@ -38,13 +37,6 @@ func Commands(d Deps) []*spec.Command {
 		newSetupCommand(),
 		newRepoCommand(d),
 	}
-}
-
-// printer builds the *ui.UI the internal packages write through, over the
-// invocation's streams. Colour follows the invocation's decision for stdout,
-// which already accounts for --no-color, NO_COLOR and GT_NO_COLOR.
-func printer(inv *spec.Invocation) *ui.UI {
-	return ui.New(inv.Env.Stdin, inv.Env.Stdout, inv.Env.Stderr, !inv.Output.Color(spec.Stdout), inv.Output.Quiet())
 }
 
 // workDir is the invocation's working directory, or the process's when the

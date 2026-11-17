@@ -9,7 +9,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/setup"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 // EnvVar is one resolved export line. Values are already expanded; escaping
@@ -54,7 +53,7 @@ func ResolveProfile(profiles []config.Profile, repoURL, explicit string, noProfi
 				return resolve(p)
 			}
 		}
-		return Profile{}, ui.Errorf(ui.ExitUser, "unknown profile %q", explicit)
+		return Profile{}, fmt.Errorf("unknown profile %q", explicit)
 	}
 	for _, p := range profiles {
 		for _, pattern := range p.Match {
