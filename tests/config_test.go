@@ -387,3 +387,147 @@ func TestMergeProfilesReplacesInPlaceAndAppends(t *testing.T) {
 		t.Fatalf("MergeProfiles() = %#v, want %#v", got, want)
 	}
 }
+
+func writeGlobalConfig(t *testing.T, body string) {
+	t.Helper()
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	path := filepath.Join(configHome, "gt", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func managedRoot(t *testing.T, overlay string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if overlay != "" {
+		if err := os.WriteFile(filepath.Join(root, ".gt.yaml"), []byte(overlay), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// A misspelled key is an error naming the key and its line, never a setting
+// that silently does nothing.
+func TestLoadRejectsUnknownKeyWithItsLine(t *testing.T) {
+	writeGlobalConfig(t, "worktree_types: [feature]\nworktree_typos: [fix]\n")
+
+	_, err := config.Load(t.TempDir())
+	if err == nil {
+		t.Fatal("Load() succeeded, want error")
+	}
+	for _, want := range []string{"worktree_typos", "config.yaml:2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load() error = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// How gt updates itself is the user's choice: a managed root's .gt.yaml that
+// sets auto_update is refused, not obeyed and not ignored.
+func TestLoadRefusesAutoUpdateFromRepoOverlay(t *testing.T) {
+	writeGlobalConfig(t, "worktree_types: [feature]\n")
+	root := managedRoot(t, "worktree_types: [feature]\nauto_update:\n  enabled: false\n")
+
+	_, err := config.Load(root)
+	if err == nil {
+		t.Fatal("Load() succeeded, want error")
+	}
+	for _, want := range []string{"auto_update", "not settable in .gt.yaml", ".gt.yaml:3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load() error = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// A template or profile the overlay shadows by name takes the global entry's
+// place: one entry under that name, at the global entry's position, so a
+// shadowed template never runs twice and first-match-wins profile order holds.
+func TestLoadReplacesShadowedNamesInPlace(t *testing.T) {
+	writeGlobalConfig(t, `worktree_types: [feature]
+setup:
+  templates:
+    - name: shared
+      run: "echo global"
+    - name: global-only
+      run: "echo global-only"
+profiles:
+  - name: work
+    env:
+      A: "global"
+  - name: personal
+    env:
+      B: "1"
+`)
+	root := managedRoot(t, `setup:
+  templates:
+    - name: shared
+      run: "echo repo"
+profiles:
+  - name: work
+    env:
+      A: "repo"
+`)
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	wantTemplates := []config.Template{
+		{Name: "shared", Run: "echo repo"},
+		{Name: "global-only", Run: "echo global-only"},
+	}
+	if !reflect.DeepEqual(cfg.Setup.Templates, wantTemplates) {
+		t.Fatalf("Templates = %#v, want %#v", cfg.Setup.Templates, wantTemplates)
+	}
+	wantProfiles := []config.Profile{
+		{Name: "work", Env: map[string]string{"A": "repo"}},
+		{Name: "personal", Env: map[string]string{"B": "1"}},
+	}
+	if !reflect.DeepEqual(cfg.Profiles, wantProfiles) {
+		t.Fatalf("Profiles = %#v, want %#v", cfg.Profiles, wantProfiles)
+	}
+}
+
+func TestOverlayPathFindsManagedRootFromNestedDir(t *testing.T) {
+	root := managedRoot(t, "")
+	nested := filepath.Join(root, "feature", "some-work", "internal", "pkg")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
+
+	got, err := config.OverlayPath(os.LookupEnv)
+	if err != nil {
+		t.Fatalf("OverlayPath() error = %v", err)
+	}
+	// The working directory comes back with symlinks resolved, so compare the
+	// resolved root rather than the path t.TempDir returned.
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(wantRoot, ".gt.yaml"); got != want {
+		t.Fatalf("OverlayPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOverlayPathIsEmptyOutsideManagedRoot(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	got, err := config.OverlayPath(os.LookupEnv)
+	if err != nil {
+		t.Fatalf("OverlayPath() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("OverlayPath() = %q, want none", got)
+	}
+}
