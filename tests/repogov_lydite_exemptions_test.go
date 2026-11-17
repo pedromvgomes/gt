@@ -105,6 +105,21 @@ func TestLyditeDependencyBumpReasonStatesTheCondition(t *testing.T) {
 	}
 }
 
+// The body is indented two spaces per level; the encoder's default is four.
+func TestLyditeExemptionsBodyIsIndentedTwoSpaces(t *testing.T) {
+	spec := repospec.Default()
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	content, _ := renderedExemptions(t, spec)
+	for _, want := range []string{
+		"\nexemptions:\n  - name: dependency-version-bump\n",
+		"\n    paths:\n      - go.mod\n",
+	} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("exemptions file lacks %q:\n%s", want, content)
+		}
+	}
+}
+
 // Ecosystems lydite has no reader for contribute nothing, and an entry with
 // no paths is one lydite refuses to load — so no file is rendered at all.
 func TestLyditeExemptionsOmittedForUnreadableEcosystems(t *testing.T) {

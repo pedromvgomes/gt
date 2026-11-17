@@ -1289,6 +1289,9 @@ func TestPendingWorkflowPRsReportsBehindAndRequestsRebase(t *testing.T) {
 	if !behind.Behind || behind.Eligible || !strings.Contains(behind.Reason, "behind the base branch") {
 		t.Errorf("PR #5 = %+v, want behind, ineligible, reason naming the base branch", behind)
 	}
+	if behind.Bump != "" {
+		t.Errorf("PR #5 Bump = %q, want empty for an ineligible behind PR", behind.Bump)
+	}
 	if blocked.Behind {
 		t.Errorf("PR #6 is BLOCKED, not behind")
 	}
