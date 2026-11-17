@@ -10,8 +10,12 @@ git push origin v1.8.0
 `.github/workflows/release.yml` runs GoReleaser, which builds darwin/linux ×
 amd64/arm64, publishes four `tar.gz` archives plus `checksums.txt`, and stamps
 `main.version`, `main.commit` and `main.date` via `-ldflags`. **Keep those
-variable names and their package stable** — `install.sh`, `internal/update` and
-the workflows all read `gt --version`.
+variable names and their package stable** — `repogov`'s `MajorTag` and
+`.gt-repo.yaml`'s recorded version read the stamp as `3.0.0`, without the `v`.
+`internal/app` adds the `v` only where it hands the version to the
+vipengele libraries, because `IsRelease` requires it. The reusable workflows
+and `ensure-gt.sh` only run `gt version` to show what was installed; none of
+them parses its output.
 
 Release notes come from `docs/releases/<tag>.md` when that file exists;
 otherwise GoReleaser generates a changelog from conventional-commit prefixes.
@@ -55,20 +59,41 @@ was right; keep it that way.
 produces a binary with `version = "dev"` — which `refuseDowngrade` treats as
 major 0, because that is what it would actually render.
 
+## Signing
+
+GoReleaser signs `checksums.txt` with minisign, producing
+`checksums.txt.minisig`; the `signs:` block reads the key from
+`MINISIGN_KEY_FILE`, which `release.yml` writes to `$RUNNER_TEMP` from the
+`MINISIGN_KEY` repository secret (an unencrypted key, from `minisign -G -W`).
+Before GoReleaser runs, `release.yml` signs a probe file and verifies it
+against the committed `internal/selfupdate/minisign.pub`, so a secret that does
+not match the embedded public key fails the release before anything is
+published. The key file is removed in an `if: always()` step.
+
+The public key is embedded in the binary and is the only thing `gt update`
+trusts. Rotating the key means a new `MINISIGN_KEY` secret and a new
+`minisign.pub` in the same release; binaries already installed cannot verify a
+release signed with a key they do not embed.
+
+The installers and the reusable workflows verify `checksums.txt` by SHA-256
+only; the minisign signature is checked by `gt update`.
+
 ## Self-update
 
-`internal/update` checks for a newer release in the background and `gt update`
-applies one. `ManagedExternally` declines to self-update a binary installed by
-a package manager. `update-check-cancelled-but-marked-checked` in the memory
-store records a live trap here: the state file can record a check that was
-cancelled rather than completed.
+`internal/selfupdate` builds the `go.vipengele.org/update` `Config`: `Base`
+sets gt's identity, the `v`-normalised version, the embedded minisign key,
+`app.PathsLayout` and the asset names GoReleaser produces
+(`gt_<os>_<arch>.tar.gz`); `ForRun` applies the user's `auto_update` settings
+for one run. `internal/app` wires the `gt update` command and the background
+check around it. The check is unauthenticated (`Token` returns "") so a
+per-repository `GH_TOKEN` never reaches it.
 
-`Check` and `Apply` use separate `HTTPClient`s because they bound very
-different requests. `Check`'s client (`defaultClient`) keeps a 10s
-`http.Client.Timeout`, sized for the small GitHub API metadata request —
-that field bounds the whole request including the body read, so it would cut
-off a release archive part way through on any connection slower than the
-field allows. `Apply`'s client carries no `Client.Timeout` at all; `download`
-instead wraps each request's context in its own deadline,
-`Options.DownloadTimeout`, which defaults to 5 minutes and is sized for a
-multi-megabyte archive rather than a JSON response.
+State is under the state directory (`~/.local/state/gt`, or `$GT_HOME/state`).
+A check cancelled by the command finishing is not recorded, so the next run
+checks again; a failed live check is recorded and throttles until
+`auto_update.check_interval`. `gt update` refuses a package-manager-managed
+binary (Homebrew) and a `dev` build, and runs the downloaded binary before
+installing it. `update --check` exits 10 when an update exists.
+
+`ForRun` rejects a `check_interval` under one hour only when the check is
+enabled; `gt update` itself does not depend on `auto_update`.
