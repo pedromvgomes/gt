@@ -141,15 +141,13 @@ jobs:
   lydite:
     needs: [attest]
     # No skip guard, unlike the stages above: this job is the only publisher
-    # of the required lydite/referral status, and that status has to be fresh
-    # for whatever SHA branch protection is evaluating. reusable-attest.yml
-    # walks a merge_group ref back to its queued PR's head, so an
-    # already-validated PR tree can report `validated` true on the queue's own
-    # commit too — skipping on that would leave lydite/referral unpublished
-    # for a SHA no earlier run ever reported it under, stalling the queue
-    # entry on a check nothing can report. `!cancelled()` alone: still runs
-    # when a dependency fails, since a real referral verdict on a failing tree
-    # is more useful than none.
+    # of the required lydite/referral status, and a skipped job publishes
+    # nothing. On a merge_group run reusable-attest.yml walks the queue ref
+    # back to the queued PRs' heads, so `validated` can be true on a commit no
+    # earlier run ever reported lydite/referral under — skipping on that
+    # stalls the entry on a check nothing can report. `!cancelled()` alone:
+    # still runs when a dependency fails, since a real referral verdict on a
+    # failing tree is more useful than none.
     if: "!cancelled()"
     uses: ./.github/workflows/reusable-lydite.yml
     permissions:

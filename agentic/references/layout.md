@@ -45,7 +45,7 @@ agentic/                # this directory — see the -repo instruction
 |---|---|
 | `internal/repospec`, `.gt-repo.yaml`, `repogov/{render,diff,service,detect}.go` | [`governance.md`](governance.md) |
 | `repogov/pipeline.go`, the orchestrator templates, `ci-gate`, attestation | [`pipeline.md`](pipeline.md) |
-| `repogov/settings.go`, branch protection, strict required checks | [`merge-queue.md`](merge-queue.md) |
+| `repogov/settings.go`, branch protection, strict required checks | [`base-freshness.md`](base-freshness.md) |
 | `repogov/fleet.go`, `fleetsync.go`, `reusable-dependabot-auto-merge.yml` | [`dependabot.md`](dependabot.md) |
 | `internal/{clone,worktree,scratch,setauth,setssh,setup,config}` | [`worktrees-and-setup.md`](worktrees-and-setup.md) |
 | `.goreleaser.yaml`, `install.sh`, `internal/update`, `docs/releases/` | [`release.md`](release.md) |

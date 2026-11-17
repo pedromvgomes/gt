@@ -85,5 +85,7 @@ stronger guarantee.
 A behind pull request needs updating before it merges, and the update re-runs
 CI. Dependabot's are the visible case: the auto-merge workflow and
 `MergePending` merge only `CLEAN`/`HAS_HOOKS`/`UNSTABLE`, so a `BEHIND` one is
-skipped — not failed — until `@dependabot rebase` or "Update branch". See
-[`dependabot.md`](dependabot.md).
+skipped — not failed — and the same path comments `@dependabot rebase` on it
+(the workflow on every run, `merge-pending` only with `--merge`). The rebase
+re-runs CI on the current base, and a later run merges it once it is clean.
+See [`dependabot.md`](dependabot.md).
