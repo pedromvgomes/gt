@@ -172,6 +172,15 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			wantSub: "at least one merge method",
 		},
 		{
+			name: "merge_commit as the only merge method",
+			mutate: func(s *repospec.Spec) {
+				s.Settings.Merge.Squash = false
+				s.Settings.Merge.Rebase = false
+				s.Settings.Merge.MergeCommit = true
+			},
+			wantSub: "linear history",
+		},
+		{
 			name:    "unknown file key",
 			mutate:  func(s *repospec.Spec) { s.Files = []string{"makefile"} },
 			wantSub: "unknown file",
@@ -188,6 +197,25 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsLinearHistoryCompatibleMergeMethods(t *testing.T) {
+	tests := map[string]repospec.MergeSettings{
+		"squash and merge_commit": {Squash: true, MergeCommit: true},
+		"rebase only":             {Rebase: true},
+		"rebase and merge_commit": {Rebase: true, MergeCommit: true},
+	}
+	for name, m := range tests {
+		t.Run(name, func(t *testing.T) {
+			spec := repospec.Default()
+			m.SquashTitle = spec.Settings.Merge.SquashTitle
+			m.SquashMessage = spec.Settings.Merge.SquashMessage
+			spec.Settings.Merge = m
+			if err := repospec.Validate(spec); err != nil {
+				t.Errorf("Validate() = %v, want nil", err)
 			}
 		})
 	}

@@ -898,6 +898,11 @@ func validateSettings(s Settings) error {
 	if !m.Squash && !m.MergeCommit && !m.Rebase {
 		return fmt.Errorf("settings.merge: at least one merge method must be enabled")
 	}
+	if m.MergeCommit && !m.Squash && !m.Rebase {
+		return fmt.Errorf("settings.merge: merge_commit cannot be the only enabled merge method; " +
+			"the branch ruleset requires linear history, which rejects merge commits, so no pull request could merge " +
+			"(enable squash or rebase)")
+	}
 	if strings.TrimSpace(s.BranchProtection.Branch) == "" {
 		return fmt.Errorf("settings.branch_protection.branch is required")
 	}
