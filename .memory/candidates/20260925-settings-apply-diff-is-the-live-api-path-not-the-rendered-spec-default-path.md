@@ -13,7 +13,7 @@ settings apply`/`diff` (`internal/repogov/settings.go`) is the only path
 that reads or writes live repository settings — branch protection, merge
 methods, rulesets, and now the `GT_LYDITE_RELAY` Actions variable
 (`findLyditeRelayVar`/`setLyditeRelayVar`/`wantsLyditeRelay`,
-settings.go:609-703, wired into `SettingsApply`/`SettingsDiff` at the end of
+in `settings.go`, wired into `SettingsApply`/`SettingsDiff` at the end of
 each function).
 
 A fleet-wide default expressed as a live setting therefore does **not**
