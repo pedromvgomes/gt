@@ -1,76 +1,89 @@
-# Base freshness and the merge queue
+# Base freshness, and why there is no merge queue
 
 An attestation reports what *was* tested. It cannot answer a question about a
 tree that does not exist yet — two pull requests touching disjoint files, each
 green, each conflict-free to git, and semantically incompatible, will both
 merge and break the default branch with nothing out of compliance anywhere.
-gt's own `main` broke this way, which is what prompted v1.7.0.
+gt's own `main` broke this way.
 
-So every governed repository is held to its base. The spec declares the
-**guarantee**; gt picks a mechanism the repository can actually have.
+So every governed repository with a required check is held to its base, by
+GitHub's "require branches to be up to date before merging":
+`strict_required_status_checks_policy: true` on the `required_status_checks`
+rule `desiredRuleset` renders in `repogov/settings.go`. Once one of the pair
+lands, the other is `BEHIND` and cannot merge until it is updated, and the
+update runs `ci-gate` against the tree that will actually land.
 
-```yaml
-settings:
-  branch_protection:
-    base_freshness: auto   # auto | queue | strict | none
-```
+## Where it applies
 
-- **`queue`** — a merge queue builds each entry against the base tip plus the
-  entries ahead of it, and rejects the second of that pair. GitHub offers these
-  only on **organization-owned public** repositories.
-- **`strict`** — "require branches to be up to date". Same guarantee, worse
-  ergonomics, works everywhere.
-- **`auto`** — reads ownership and visibility and chooses.
-- **`none`** — gives up the guarantee.
+- **Wherever `pipeline.ci` is enabled** — which is exactly where the ruleset
+  carries a `required_status_checks` rule. With CI disabled that rule is not
+  rendered, because requiring a context nothing reports blocks every pull
+  request forever, and strict has nothing to sit on.
+- **With no opt-out.** There is no spec key for it. A required check that a
+  stale tree can satisfy is the hole this closes, and a switch to reopen it is
+  a switch somebody flips to make a red PR mergeable.
 
-Exactly one is ever applied. They are branches of one decision, not two
-switches, so paying the rebase churn *and* the queue latency for a single
-guarantee is structurally impossible. `base_freshness` replaced the released
-`require_up_to_date`; a spec still carrying that key parses to `auto`.
+`settings diff` reports `ruleset.strict_required_status_checks_policy` as drift
+whenever the live flag differs from `pipeline.ci.enabled`.
 
-## resolveMergeQueue, and why the order matters
+## Retired spec keys
 
-`repogov/settings.go` resolves the mechanism in this order, and the order is
-the design:
+`settings.branch_protection.base_freshness` and `require_up_to_date` are
+retired. Both stay tagged fields on `repospec.BranchProtection` (`json:"-"`,
+`omitempty`) because `Parse` decodes with `KnownFields(true)`, and deleting them
+would make every manifest still carrying one a hard `check`/`sync` failure
+across the fleet. `dropRetiredKeys()` clears them before validation, so:
 
-1. **The spec first** — an explicit choice is not gt's to second-guess.
-2. **Is there a pipeline?** Neither mechanism means anything without a required
-   check; with `pipeline.ci` disabled both are omitted.
-3. **The platform** — `queueImpossible` establishes what the repository can
-   have from its own facts, not from a feature probe, because there is no probe
-   that answers this.
-4. **The `merge_group` trigger, last**, because its answer changes as a rollout
-   proceeds. A queued pull request reports its required check from the
-   `merge_group` event and no other, so `settings apply` reads
-   `ci-orchestration.yml` **on the default branch** and withholds the queue rule
-   until the trigger is actually there. Without that ordering every pull request
-   enters a queue that can never build it, and the `governance` stage that would
-   have warned you sits inside the check that no longer reports.
+- any value parses, and nothing downstream reads it — `base_freshness: none` is
+  not an opt-out;
+- the resolved spec omits them, so `gt repo config` never shows them;
+- the manifest does not round-trip, so `gt repo check` reports `SpecStale`
+  and `gt repo sync` rewrites `.gt-repo.yaml` without them.
 
-A read that fails yields `mergeQueueDeferred`, not a fallback: unknown is not
-the same as unavailable, and falling back to strict on a blip would turn every
-open pull request red. Strict is deliberately **not** applied in the meantime —
-the window is one sync and one merge long.
+## Converging a repository that holds a merge queue
 
-Where the queue is the mechanism, `settings apply` also enables
-`allow_auto_merge`: a queue is entered through it, and without it nobody can
-put anything into one.
+`merge_queue` is in `gtRuleTypes` — gt owns it — and `desiredRuleset` never
+renders it. So `settings apply`:
 
-## What a queue changes elsewhere
+- removes it from gt's own ruleset, since owned rules are not carried through
+  the way unmodelled ones are;
+- does not fold it in from another ruleset gt absorbs, for the same reason;
+- reports it first: `settings diff` names `ruleset.rules.merge_queue:
+  present -> absent`. This is the one owned rule with an explicit converse
+  check — the general rule that diff never reports a live rule as surplus
+  exists for *unmanaged* rules apply carries through.
 
-- **`gh pr merge --delete-branch` becomes illegal.** gh refuses the combination
-  before merging, so anything passing it unconditionally fails every merge in a
-  queued repository. `settings.merge.delete_branch_on_merge` (default true)
-  covers the deletion instead. Both the auto-merge workflow and
-  `repogov.MergePending` probe `Repository.mergeQueue(branch:)` over GraphQL and
-  drop the flag — see [`dependabot.md`](dependabot.md).
-- **The spec cannot answer "is there a queue?".** Under `auto` the mechanism is
-  chosen at `settings apply` time from live repository facts and withheld on the
-  trigger check, so the repository is the only place the answer exists. Anything
-  needing it must ask GitHub.
-- **`QueueMergeMethod()` is derived, not configured.** The queue merges on the
-  repository's behalf, so offering it a method `allowed_merge_methods` forbids
-  would let a queue land what a human could not.
+gt does not manage `allow_auto_merge`: nothing gt runs merges through it, and a
+repository may be using it for something of its own. It is left as found.
 
-The queue stays cheap because a merge group whose tree matches an
-already-validated one skips every stage.
+## What stays, and why
+
+- **The `merge_group:` trigger** in `ci-orchestration.yml.tmpl`, rendered
+  unconditionally. A queue somebody adds to a branch reports its required check
+  from that event and no other; without the trigger every entry would wait on a
+  check nothing runs. With no queue it never fires.
+- **`reusable-attest.yml`'s merge_group walk-back**, which recovers the pull
+  requests a `gh-readonly-queue` ref names so an already-validated tree still
+  skips. Dormant without a queue.
+- **The `lydite` job's `if: "!cancelled()"`**, with no skip guard — see
+  `agentic/rules/never-skip-the-sole-publisher-of-a-required-status.md`. It is
+  the sole publisher of the required `lydite/referral` status, and that holds
+  with or without a queue.
+
+## Why not a queue
+
+Recorded in [ADR 0002](../../docs/adr/0002-always-strict-freshness-instead-of-a-merge-queue.md).
+The short form: GitHub offers queues only on organization-owned public
+repositories, so most of the fleet takes strict regardless, and a queue changes
+how everything merges — `gh pr merge --delete-branch` is refused, entering one
+needs `allow_auto_merge`, and applying the rule before the `merge_group`
+trigger lands hangs every pull request — for an ergonomic gain rather than a
+stronger guarantee.
+
+## What strict costs
+
+A behind pull request needs updating before it merges, and the update re-runs
+CI. Dependabot's are the visible case: the auto-merge workflow and
+`MergePending` merge only `CLEAN`/`HAS_HOOKS`/`UNSTABLE`, so a `BEHIND` one is
+skipped — not failed — until `@dependabot rebase` or "Update branch". See
+[`dependabot.md`](dependabot.md).

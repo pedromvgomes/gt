@@ -116,7 +116,7 @@ Keep repositories structurally consistent: the CI/CD pipeline, Dependabot config
 - `gt repo check` — render the spec and diff it against the working tree. Non-zero exit on drift, so it works as a PR check. `--json` for machine-readable output.
 - `gt repo sync` — write the files that have drifted. `--dry-run`, `--yes`, and `--skip-workflows`. A repository with no `.gt-repo.yaml` is not governed; sync says so and exits 0, which makes it safe to run from a post-clone setup template.
 - `gt repo config [--json]` — print the resolved spec with defaults applied. gt's own workflows consume this rather than re-parsing the YAML.
-- `gt repo settings diff|apply` — branch protection, merge methods, the merge queue, and the single required status check, through your existing `gh` credentials. For a `lydite.enabled` repo, `apply` also sets the repository-level `GT_LYDITE_RELAY` Actions variable ([ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md)); like every other setting on this line, rollout is manual — it takes someone running `apply` against that repo, not something `gt repo fleet sync` triggers.
+- `gt repo settings diff|apply` — branch protection (including requiring branches to be up to date), merge methods, and the single required status check, through your existing `gh` credentials. For a `lydite.enabled` repo, `apply` also sets the repository-level `GT_LYDITE_RELAY` Actions variable ([ADR 0001](docs/adr/0001-lydite-relay-defaults-via-a-live-actions-variable.md)); like every other setting on this line, rollout is manual — it takes someone running `apply` against that repo, not something `gt repo fleet sync` triggers.
 - `gt repo fleet check|sync --owner <name>` — sweep every repository in an owner; `sync` opens a PR per repo. This is the escalation path for files `GITHUB_TOKEN` cannot write.
 - `gt repo fleet merge-pending --owner <name>` — list (or `--merge`) the Dependabot PRs the in-repo auto-merge cannot touch. Applies the same eligibility gates as the in-repo job.
 
@@ -336,53 +336,30 @@ commit status, and later runs compare against it:
   passing attestation. That is a stronger guarantee than re-running CI, which
   only tells you the code passes now, again.
 
-This replaces "require branches to be up to date": nobody has to rebase, so a
-merge never turns other open PRs red. It fails safe in every direction — a
-missing, unreadable or mismatched attestation means run the pipeline.
+It fails safe in every direction — a missing, unreadable or mismatched
+attestation means run the pipeline.
 
-### The merge queue
+### Pull requests are held to their base
 
 An attestation reports what *was* tested. It cannot answer a question about a
 tree that does not exist yet — and two pull requests that touch disjoint files,
 are each green, and are semantically incompatible will both merge, breaking the
 default branch with nothing out of compliance anywhere.
 
-So every governed repository is held to its base. You declare the **guarantee**,
-and gt picks a mechanism the repository can actually have:
+So wherever `pipeline.ci` is enabled, `settings apply` requires branches to be
+up to date before merging (`strict_required_status_checks_policy` on the
+ruleset's required checks). Once one of those two pull requests lands, the
+other cannot merge until it is updated, and updating it runs `ci-gate` against
+the tree that will actually land. There is no opt-out and no spec key for it:
+`base_freshness` and `require_up_to_date` still parse, but nothing reads them,
+and `gt repo sync` drops them from `.gt-repo.yaml`.
 
-```yaml
-settings:
-  branch_protection:
-    base_freshness: auto   # auto | queue | strict | none
-```
-
-- **`queue`** — a merge queue, which builds each entry against the base tip plus
-  the entries ahead of it and rejects the second of that pair. GitHub offers
-  these only on **organization-owned public** repositories.
-- **`strict`** — "require branches to be up to date", which blocks the merge
-  button until the author rebases. Same guarantee, worse ergonomics, works
-  everywhere.
-
-`auto` reads the repository's ownership and visibility and chooses. Exactly one
-is ever applied: they are branches of one decision, not two switches, so paying
-the rebase churn *and* the queue latency for a single guarantee is structurally
-impossible. `base_freshness` replaces the released `require_up_to_date`; a spec
-still carrying that key parses to `auto`.
-
-Where the queue is the mechanism, `settings apply` also enables
-`allow_auto_merge` — a queue is entered through it, and without it nobody can
-put anything into one.
-
-The queue is cheap for the same reason as everything else here: a merge group
-whose tree matches an already-validated one skips every stage, so the common
-case costs seconds.
-
-One ordering rule keeps it from failing silently. A queued pull request reports
-its required check from the `merge_group` event and no other, so `settings apply`
-reads `ci-orchestration.yml` **on the default branch** and withholds the queue
-rule until the trigger is actually there, saying why — otherwise every pull
-request would enter a queue that can never build it, with the `governance` stage
-that would have warned you sitting inside the check that no longer reports.
+gt applies no merge queue, and `settings apply` removes a `merge_queue` rule
+from the ruleset it owns — see
+[ADR 0002](docs/adr/0002-always-strict-freshness-instead-of-a-merge-queue.md).
+The cost is that somebody updates a behind pull request before it merges;
+for Dependabot, a pull request that falls behind is skipped by the nightly
+auto-merge until `@dependabot rebase` or "Update branch" brings it current.
 
 ### What CI cannot do, and why
 

@@ -28,7 +28,7 @@ read them all; do not start work in one of these areas without reading its row.
 | [`layout.md`](agentic/references/layout.md) | anything — the annotated tree, and which reference governs each package |
 | [`governance.md`](agentic/references/governance.md) | `internal/repospec`, `.gt-repo.yaml`, or `repogov/{render,diff,service,detect}.go` |
 | [`pipeline.md`](agentic/references/pipeline.md) | `repogov/pipeline.go`, an orchestrator template, `ci-gate`, or the attestation |
-| [`merge-queue.md`](agentic/references/merge-queue.md) | `repogov/settings.go`, branch protection, or `base_freshness` |
+| [`merge-queue.md`](agentic/references/merge-queue.md) | `repogov/settings.go`, branch protection, or strict required checks |
 | [`dependabot.md`](agentic/references/dependabot.md) | `repogov/fleet.go`, `fleetsync.go`, or `reusable-dependabot-auto-merge.yml` |
 | [`worktrees-and-setup.md`](agentic/references/worktrees-and-setup.md) | `internal/{clone,worktree,scratch,setauth,setssh,setup,config}` |
 | [`release.md`](agentic/references/release.md) | `.goreleaser.yaml`, `install.sh`, `internal/update`, or cutting a release |

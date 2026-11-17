@@ -64,18 +64,19 @@ In bash the pattern is held in a variable, not written inline: bash parses `(`,
 `)`, `|` and `<` in an unquoted `=~` pattern as shell metacharacters, but never
 inside a variable's expansion.
 
-## The merge queue interaction
+## Merging behind strict required checks
 
-`gh pr merge` refuses `--delete-branch` when the base branch has a merge queue,
-and refuses it *before* merging — so passing it unconditionally did not merge
-and keep the branch, it failed every merge in every queued repository. Both the
-workflow and `MergePending` ask
-`Repository.mergeQueue(branch:)` over GraphQL and drop the flag when the answer
-is a queue. There is no REST endpoint and no `gh pr` field for this.
+Both the workflow and `MergePending` merge with `gh pr merge --squash`, adding
+`--delete-branch` — the workflow when `dependabot_auto_merge.delete_branch` is
+true (the default), `MergePending` always. Neither asks GitHub anything about
+the base branch first: gt applies no merge queue, and a queue is the one thing
+that makes gh refuse `--delete-branch` outright, before merging.
 
-An unanswerable probe counts as **queued**. Being wrong that way leaves a
-branch that `delete_branch_on_merge` deletes anyway; being wrong the other way
-refuses the merge.
+What does shape the merge is strict required checks, which every governed
+repository with a gate has. A Dependabot PR that falls behind its base reports
+`mergeStateStatus` `BEHIND`, and both paths merge only `CLEAN`, `HAS_HOOKS` and
+`UNSTABLE` — so it is skipped as "checks not green", not failed, on every run
+until something updates it (`@dependabot rebase`, or "Update branch").
 
 ## The workflow-scope gap
 

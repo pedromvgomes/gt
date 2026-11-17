@@ -101,9 +101,8 @@ jobs:
           # gh-readonly-queue ref. It sits on no pull request's branch, so the
           # /pulls lookup above finds nothing and the skip would be lost —
           # every queued pull request would re-run a pipeline that had just
-          # passed on a byte-identical tree. That cost is what decides whether
-          # a queue is affordable, so the pull requests are recovered from the
-          # ref instead, which names them: refs/heads/gh-readonly-queue/main/
+          # passed on a byte-identical tree. So the pull requests are
+          # recovered from the ref instead, which names them: refs/heads/gh-readonly-queue/main/
           # pr-70-<base sha>, and pr-71-pr-70-<base sha> for a batch.
           #
           # Recovering the pull request only says where to LOOK. What decides
