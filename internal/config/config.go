@@ -20,14 +20,15 @@ import (
 // profile selection, which is first-match-wins, keeps its order. worktree_types
 // and the ssh maps are replaced whole by the last layer that sets them.
 //
-// Load reads the config tags. The yaml tags serve code that decodes these
-// types with gopkg.in/yaml.v3 directly, such as setup.LoadRepoTemplates.
+// The config tags are what go.vipengele.org/config reads. Setup and Template
+// also carry yaml tags, because setup.LoadRepoTemplates decodes a repository's
+// .gt.yaml into them with gopkg.in/yaml.v3 directly.
 type Config struct {
-	WorktreeTypes []string   `yaml:"worktree_types" config:"worktree_types" doc:"Worktree types accepted by 'gt wt add <type/name>'. 'scratch', 'main' and\n'master' are reserved."`
-	SSH           SSH        `yaml:"ssh" config:"ssh" doc:"SSH host aliases. When 'gt clone' converts an HTTPS URL to SSH, or\n'gt set-ssh-remote' rewrites origin, the URL host is replaced by its alias,\nas with per-account aliases in ~/.ssh/config."`
-	Setup         Setup      `yaml:"setup" config:"setup" doc:"Setup templates run after 'gt clone' and on demand via 'gt setup'."`
-	Profiles      []Profile  `yaml:"profiles" config:"profiles" merge:"name" doc:"Environment profiles. 'gt set-auth' and the post-clone auth step append the\nselected profile's variables to the repository's .envrc next to GH_TOKEN.\nSelection is first-match-wins against the origin URL; a profile with no\nmatch applies only via --profile. The name 'none' is reserved and exports\nnothing. Values get a leading '~/' or '$HOME' expanded and are otherwise\nemitted literally."`
-	AutoUpdate    AutoUpdate `yaml:"auto_update" config:"auto_update" doc:"Background update check. GT_NO_UPDATE_CHECK=1 disables it for one\ninvocation."`
+	WorktreeTypes []string   `config:"worktree_types" doc:"Worktree types accepted by 'gt wt add <type/name>'. 'scratch', 'main' and\n'master' are reserved."`
+	SSH           SSH        `config:"ssh" doc:"SSH host aliases. When 'gt clone' converts an HTTPS URL to SSH, or\n'gt set-ssh-remote' rewrites origin, the URL host is replaced by its alias,\nas with per-account aliases in ~/.ssh/config."`
+	Setup         Setup      `config:"setup" doc:"Setup templates run after 'gt clone' and on demand via 'gt setup'."`
+	Profiles      []Profile  `config:"profiles" merge:"name" doc:"Environment profiles. 'gt set-auth' and the post-clone auth step append the\nselected profile's variables to the repository's .envrc next to GH_TOKEN.\nSelection is first-match-wins against the origin URL; a profile with no\nmatch applies only via --profile. The name 'none' is reserved and exports\nnothing. Values get a leading '~/' or '$HOME' expanded and are otherwise\nemitted literally."`
+	AutoUpdate    AutoUpdate `config:"auto_update" doc:"Background update check. GT_NO_UPDATE_CHECK=1 disables it for one\ninvocation."`
 }
 
 // Profile is a named set of environment variables that gt exports from a
@@ -36,19 +37,19 @@ type Config struct {
 // credentials no matter which shell launched it. A profile with no match
 // patterns never applies on its own and is reachable only via --profile.
 type Profile struct {
-	Name  string            `yaml:"name" config:"name" doc:"Profile name: letters, digits, '.', '_' or '-'."`
-	Match []string          `yaml:"match,omitempty" config:"match" doc:"Globs matched against the origin URL, as setup template match patterns are."`
-	Env   map[string]string `yaml:"env" config:"env" doc:"Variables to export, by POSIX name."`
+	Name  string            `config:"name" doc:"Profile name: letters, digits, '.', '_' or '-'."`
+	Match []string          `config:"match" doc:"Globs matched against the origin URL, as setup template match patterns are."`
+	Env   map[string]string `config:"env" doc:"Variables to export, by POSIX name."`
 }
 
 type AutoUpdate struct {
-	Enabled       bool          `yaml:"enabled" config:"enabled" doc:"Check the GitHub releases API for a newer gt."`
-	CheckInterval time.Duration `yaml:"check_interval" config:"check_interval" doc:"Time between two checks, at least 1h when enabled."`
+	Enabled       bool          `config:"enabled" doc:"Check the GitHub releases API for a newer gt."`
+	CheckInterval time.Duration `config:"check_interval" doc:"Time between two checks, at least 1h when enabled."`
 }
 
 type SSH struct {
-	HostAliases map[string]string            `yaml:"host_aliases" config:"host_aliases" doc:"Alias per URL host, such as github.com: github-personal."`
-	UserAliases map[string]map[string]string `yaml:"user_aliases" config:"user_aliases" doc:"Per-user host aliases, used over host_aliases when --user names an entry.\nA user with no entry falls back to host_aliases with a warning."`
+	HostAliases map[string]string            `config:"host_aliases" doc:"Alias per URL host, such as github.com: github-personal."`
+	UserAliases map[string]map[string]string `config:"user_aliases" doc:"Per-user host aliases, used over host_aliases when --user names an entry.\nA user with no entry falls back to host_aliases with a warning."`
 }
 
 type Setup struct {
@@ -80,16 +81,15 @@ func Default() Config {
 	}
 }
 
-// Load resolves the configuration for a command run from cwd: the defaults,
-// then the global config file, then the .gt.yaml at cwd's managed root
-// restricted to OverlayAllow, then GT_* environment variables. The global file
-// is seeded first when it does not exist.
+// Load resolves the configuration for a command run from cwd, in the layers
+// gt's App loads: the defaults, then the global config file, then the .gt.yaml
+// at cwd's managed root restricted to OverlayAllow, then GT_* environment
+// variables. The global file is the one GlobalPath names, which is where the
+// App finds it too unless GT_HOME relocates it. A missing global file sets
+// nothing; nothing here writes one.
 func Load(cwd string) (Config, error) {
 	path, err := GlobalPath()
 	if err != nil {
-		return Config{}, err
-	}
-	if err := ensureGlobal(path); err != nil {
 		return Config{}, err
 	}
 	overlay, err := overlayPathFrom(cwd)
@@ -375,19 +375,6 @@ func ValidateSetup(s Setup) error {
 				return fieldError(at+".match", "template %q: match[%d]: pattern cannot be empty", tpl.Name, j)
 			}
 		}
-	}
-	return nil
-}
-
-// ensureGlobal writes the documented defaults to path when no file is there.
-func ensureGlobal(path string) error {
-	// 0700/0600: this is the user's own config under their home directory.
-	// Nothing else needs to read it, so nothing else should be able to.
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	if _, err := vconfig.Seed(path, Default()); err != nil {
-		return fmt.Errorf("write default config: %w", err)
 	}
 	return nil
 }

@@ -1,9 +1,10 @@
-package main
+package cli
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -12,25 +13,26 @@ import (
 	"github.com/pedromvgomes/gt/internal/repospec"
 	"github.com/pedromvgomes/gt/internal/setup"
 	"github.com/pedromvgomes/gt/internal/ui"
-	"github.com/spf13/cobra"
+	"go.vipengele.org/cli/spec"
 )
 
-func newRepoCommand(opts *options) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "repo",
-		Short: "Manage repository governance from .gt-repo.yaml",
-		Long: "Render, verify and repair the governance files a repository is expected to carry:\n" +
+func newRepoCommand(d Deps) *spec.Command {
+	return &spec.Command{
+		Name:    "repo",
+		Summary: "Manage repository governance from .gt-repo.yaml",
+		Description: "Render, verify and repair the governance files a repository is expected to carry:\n" +
 			"Dependabot config, the PR gate, conventional-commit enforcement and auto-merge.\n\n" +
 			"The committed " + repospec.FileName + " is the source of truth. Shared policy lives in gt's\n" +
 			"templates, so changing it for every repo is a single gt release.",
+		Commands: []*spec.Command{
+			newRepoInitCommand(d),
+			newRepoConfigCommand(d),
+			newRepoCheckCommand(d),
+			newRepoSyncCommand(d),
+			newRepoSettingsCommand(d),
+			newRepoFleetCommand(d),
+		},
 	}
-	cmd.AddCommand(newRepoInitCommand(opts))
-	cmd.AddCommand(newRepoConfigCommand(opts))
-	cmd.AddCommand(newRepoCheckCommand(opts))
-	cmd.AddCommand(newRepoSyncCommand(opts))
-	cmd.AddCommand(newRepoSettingsCommand(opts))
-	cmd.AddCommand(newRepoFleetCommand(opts))
-	return cmd
 }
 
 // repoOptions resolves the repository context every `gt repo` subcommand needs.
@@ -41,12 +43,11 @@ func newRepoCommand(opts *options) *cobra.Command {
 // that is what post-clone setup templates operate on. Governance has to act on
 // the worktree you are standing in, or `gt repo sync` run from a feature
 // worktree would silently write its changes into the main checkout.
-func repoOptions(skipWorkflows bool) (repogov.Options, error) {
-	cwd, err := os.Getwd()
+func repoOptions(ctx context.Context, inv *spec.Invocation, d Deps, skipWorkflows bool) (repogov.Options, error) {
+	cwd, err := workDir(inv)
 	if err != nil {
-		return repogov.Options{}, fmt.Errorf("resolve current directory: %w", err)
+		return repogov.Options{}, err
 	}
-	ctx := context.Background()
 	runner := git.ExecRunner{}
 
 	rcontext, err := setup.DetectFromCWD(ctx, runner, cwd)
@@ -63,103 +64,104 @@ func repoOptions(skipWorkflows bool) (repogov.Options, error) {
 		WorkDir:       workdir,
 		RepoOwner:     rcontext.RepoOwner,
 		RepoName:      rcontext.RepoName,
-		GTVersion:     version,
+		GTVersion:     d.Version,
 		SkipWorkflows: skipWorkflows,
 	}, nil
 }
 
-func newRepoInitCommand(opts *options) *cobra.Command {
+func newRepoInitCommand(d Deps) *spec.Command {
 	var (
-		force  bool
-		dryRun bool
+		force  = spec.BoolFlag("force", "overwrite an existing "+repospec.FileName)
+		dryRun = spec.BoolFlag("dry-run", "print the detected spec without writing it")
 	)
-	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Create " + repospec.FileName + " from what the repository already contains",
-		Long: "Detects Dependabot ecosystems from the files on disk and writes a spec with\n" +
+	return &spec.Command{
+		Name:    "init",
+		Summary: "Create " + repospec.FileName + " from what the repository already contains",
+		Description: "Detects Dependabot ecosystems from the files on disk and writes a spec with\n" +
 			"gt's defaults. The result is a starting point to edit, not a final answer.",
-		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			govOpts, err := repoOptions(false)
+		Args:  spec.NoArgs(),
+		Flags: []spec.Flag{force, dryRun},
+		Run: func(ctx context.Context, inv *spec.Invocation) error {
+			p := printer(inv)
+			govOpts, err := repoOptions(ctx, inv, d, false)
 			if err != nil {
 				return err
 			}
 			specPath := repospec.Path(govOpts.WorkDir)
-			if _, err := os.Stat(specPath); err == nil && !force {
+			if _, err := os.Stat(specPath); err == nil && !force.Get(inv) {
 				return ui.Errorf(ui.ExitUser,
 					"%s already exists; edit it and run 'gt repo sync', or pass --force to regenerate", specPath)
 			}
 
-			spec, err := repogov.Init(govOpts)
+			declared, err := repogov.Init(govOpts)
 			if err != nil {
 				return err
 			}
-			printSpecSummary(opts.ui, spec, govOpts)
+			printSpecSummary(p, declared, govOpts)
 
-			if dryRun {
+			if dryRun.Get(inv) {
 				return nil
 			}
-			if err := repogov.SaveSpec(govOpts.WorkDir, spec); err != nil {
+			if err := repogov.SaveSpec(govOpts.WorkDir, declared); err != nil {
 				return err
 			}
-			opts.ui.Success("Wrote %s", specPath)
-			opts.ui.Info("Review it, then run 'gt repo sync' to render the governance files.")
+			p.Success("Wrote %s", specPath)
+			p.Info("Review it, then run 'gt repo sync' to render the governance files.")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing "+repospec.FileName)
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the detected spec without writing it")
-	return cmd
 }
 
-func newRepoConfigCommand(_ *options) *cobra.Command {
-	var asJSON bool
-	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Print the resolved " + repospec.FileName + ", with defaults applied",
-		Long: "Emits the spec exactly as gt understands it, after defaults and validation.\n\n" +
+func newRepoConfigCommand(d Deps) *spec.Command {
+	asJSON := spec.BoolFlag("json", "emit JSON instead of YAML")
+	return &spec.Command{
+		Name:    "config",
+		Summary: "Print the resolved " + repospec.FileName + ", with defaults applied",
+		Description: "Emits the spec exactly as gt understands it, after defaults and validation.\n\n" +
 			"gt's workflows consume this rather than parsing " + repospec.FileName + " themselves.\n" +
 			"Re-implementing the defaults in yq had already produced three bugs: `//` is\n" +
 			"the alternative operator, so an explicit `false` reads back as the default,\n" +
 			"and a key gt defaults in Go had no fallback at all in the workflow.",
-		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			govOpts, err := repoOptions(false)
+		Args:  spec.NoArgs(),
+		Flags: []spec.Flag{asJSON},
+		Run: func(ctx context.Context, inv *spec.Invocation) error {
+			govOpts, err := repoOptions(ctx, inv, d, false)
 			if err != nil {
 				return err
 			}
-			spec, err := repospec.Load(govOpts.WorkDir)
+			resolved, err := repospec.Load(govOpts.WorkDir)
 			if err != nil {
 				return err
 			}
-			if !asJSON {
-				return repogov.WriteSpecTo(os.Stdout, spec)
+			if !asJSON.Get(inv) {
+				return repogov.WriteSpecTo(inv.Env.Stdout, resolved)
 			}
-			enc := json.NewEncoder(os.Stdout)
+			enc := json.NewEncoder(inv.Env.Stdout)
 			enc.SetIndent("", "  ")
-			if err := enc.Encode(spec); err != nil {
+			if err := enc.Encode(resolved); err != nil {
 				return fmt.Errorf("encode spec: %w", err)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of YAML")
-	return cmd
 }
 
-func newRepoCheckCommand(opts *options) *cobra.Command {
+func newRepoCheckCommand(d Deps) *spec.Command {
 	var (
-		asJSON        bool
-		skipWorkflows bool
+		asJSON        = spec.BoolFlag("json", "emit machine-readable output")
+		skipWorkflows = spec.BoolFlag("skip-workflows",
+			"ignore .github/workflows/** (for CI, where GITHUB_TOKEN cannot write them)")
 	)
-	cmd := &cobra.Command{
-		Use:   "check",
-		Short: "Report governance drift and gate-configuration problems",
-		Long: "Renders " + repospec.FileName + " and compares it against the working tree.\n" +
+	return &spec.Command{
+		Name:    "check",
+		Summary: "Report governance drift and gate-configuration problems",
+		Description: "Renders " + repospec.FileName + " and compares it against the working tree.\n" +
 			"Exits non-zero on drift, which is what makes it usable as a PR check.",
-		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			govOpts, err := repoOptions(skipWorkflows)
+		Args:  spec.NoArgs(),
+		Flags: []spec.Flag{asJSON, skipWorkflows},
+		Run: func(ctx context.Context, inv *spec.Invocation) error {
+			p := printer(inv)
+			govOpts, err := repoOptions(ctx, inv, d, skipWorkflows.Get(inv))
 			if err != nil {
 				return err
 			}
@@ -167,39 +169,39 @@ func newRepoCheckCommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if asJSON {
-				return printJSON(report)
+			if asJSON.Get(inv) {
+				return printJSON(inv.Env.Stdout, report)
 			}
-			printReport(opts.ui, report, govOpts)
+			printReport(p, report, govOpts)
 			if !report.Clean() {
 				return ui.Errorf(ui.ExitGeneral, "repository is not compliant")
 			}
-			opts.ui.Success("Repository is compliant")
+			p.Success("Repository is compliant")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable output")
-	cmd.Flags().BoolVar(&skipWorkflows, "skip-workflows", false,
-		"ignore .github/workflows/** (for CI, where GITHUB_TOKEN cannot write them)")
-	return cmd
 }
 
-func newRepoSyncCommand(opts *options) *cobra.Command {
+func newRepoSyncCommand(d Deps) *spec.Command {
 	var (
-		dryRun        bool
-		yes           bool
-		skipWorkflows bool
+		dryRun        = spec.BoolFlag("dry-run", "print what would change without writing")
+		yes           = spec.BoolFlag("yes", "skip the confirmation prompt")
+		skipWorkflows = spec.BoolFlag("skip-workflows",
+			"leave .github/workflows/** alone (for CI, where GITHUB_TOKEN cannot write them)")
 	)
-	cmd := &cobra.Command{
-		Use:   "sync",
-		Short: "Write the governance files declared by " + repospec.FileName,
-		Long: "Renders and writes the files " + repospec.FileName + " declares.\n\n" +
+	return &spec.Command{
+		Name:    "sync",
+		Summary: "Write the governance files declared by " + repospec.FileName,
+		Description: "Renders and writes the files " + repospec.FileName + " declares.\n\n" +
 			"A repository without that file is not governed, which is a valid state: sync\n" +
 			"reports it and exits successfully. That is what makes it safe to run from a\n" +
 			"post-clone setup template matching every repository you clone.",
-		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			govOpts, err := repoOptions(skipWorkflows)
+		Args:  spec.NoArgs(),
+		Flags: []spec.Flag{dryRun, yes, skipWorkflows},
+		Run: func(ctx context.Context, inv *spec.Invocation) error {
+			p := printer(inv)
+			skip := skipWorkflows.Get(inv)
+			govOpts, err := repoOptions(ctx, inv, d, skip)
 			if err != nil {
 				return err
 			}
@@ -207,34 +209,34 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 			// here would abort the whole `gt clone` setup chain for every
 			// repository that has not opted in.
 			if !repospec.Exists(govOpts.WorkDir) {
-				opts.ui.Info("No %s; repository is not governed. Run 'gt repo init' to start.", repospec.FileName)
+				p.Info("No %s; repository is not governed. Run 'gt repo init' to start.", repospec.FileName)
 				return nil
 			}
 			report, err := repogov.Check(govOpts)
 			if err != nil {
 				return err
 			}
-			printReport(opts.ui, report, govOpts)
+			printReport(p, report, govOpts)
 
 			drifted := repogov.Drifted(report.Results)
-			if !report.NeedsWrite(skipWorkflows) {
-				opts.ui.Info("Nothing to write.")
+			if !report.NeedsWrite(skip) {
+				p.Info("Nothing to write.")
 				return nil
 			}
-			if dryRun {
+			if dryRun.Get(inv) {
 				// Same exit code as `check` for the same state. Returning 0
-				// here made `sync --dry-run` permanently green as a CI drift
-				// detector, which is exactly what someone would reach for it to
-				// do.
+				// here would leave `sync --dry-run` permanently green as a CI
+				// drift detector, which is exactly what someone would reach
+				// for it to do.
 				return ui.Errorf(ui.ExitGeneral, "repository is not compliant")
 			}
-			if !yes {
-				ok, err := confirmSync(opts.ui, drifted)
+			if !yes.Get(inv) {
+				ok, err := confirmSync(p, drifted)
 				if err != nil {
 					return err
 				}
 				if !ok {
-					opts.ui.Info("Aborted before writing")
+					p.Info("Aborted before writing")
 					return nil
 				}
 			}
@@ -242,17 +244,12 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, p := range written {
-				opts.ui.Success("wrote %s", p)
+			for _, path := range written {
+				p.Success("wrote %s", path)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would change without writing")
-	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
-	cmd.Flags().BoolVar(&skipWorkflows, "skip-workflows", false,
-		"leave .github/workflows/** alone (for CI, where GITHUB_TOKEN cannot write them)")
-	return cmd
 }
 
 func confirmSync(printer *ui.UI, drifted []repogov.Result) (bool, error) {
@@ -361,7 +358,7 @@ func printDiff(printer *ui.UI, drifted []repogov.Result) {
 	}
 }
 
-func printJSON(report repogov.Report) error {
+func printJSON(w io.Writer, report repogov.Report) error {
 	type jsonFile struct {
 		Path     string `json:"path"`
 		Status   string `json:"status"`
@@ -379,7 +376,7 @@ func printJSON(report repogov.Report) error {
 	for _, r := range report.Results {
 		out.Files = append(out.Files, jsonFile{Path: r.Path, Status: string(r.Status), Workflow: r.Workflow})
 	}
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		return fmt.Errorf("encode json report: %w", err)

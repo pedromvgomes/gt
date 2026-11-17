@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -8,62 +8,64 @@ import (
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
 	"github.com/pedromvgomes/gt/internal/ui"
-	"github.com/spf13/cobra"
+	"go.vipengele.org/cli/spec"
 )
 
-func newRepoSettingsCommand(opts *options) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "settings",
-		Short: "Diff or apply the GitHub settings gt manages",
-		Long: "Branch protection, merge methods and the single required status check.\n" +
+func newRepoSettingsCommand(d Deps) *spec.Command {
+	return &spec.Command{
+		Name:    "settings",
+		Summary: "Diff or apply the GitHub settings gt manages",
+		Description: "Branch protection, merge methods and the single required status check.\n" +
 			"These cannot be expressed as committed files, so gt drives them through the\n" +
 			"GitHub API using your existing gh credentials.",
+		Commands: []*spec.Command{
+			newRepoSettingsDiffCommand(d),
+			newRepoSettingsApplyCommand(d),
+		},
 	}
-	cmd.AddCommand(newRepoSettingsDiffCommand(opts))
-	cmd.AddCommand(newRepoSettingsApplyCommand(opts))
-	return cmd
 }
 
-func newRepoSettingsDiffCommand(opts *options) *cobra.Command {
-	return &cobra.Command{
-		Use:   "diff",
-		Short: "Show how live GitHub settings differ from " + repospec.FileName,
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			govOpts, spec, err := loadSpecContext()
+func newRepoSettingsDiffCommand(d Deps) *spec.Command {
+	return &spec.Command{
+		Name:    "diff",
+		Summary: "Show how live GitHub settings differ from " + repospec.FileName,
+		Args:    spec.NoArgs(),
+		Run: func(ctx context.Context, inv *spec.Invocation) error {
+			govOpts, declared, err := loadSpecContext(ctx, inv, d)
 			if err != nil {
 				return err
 			}
-			changes, err := repogov.SettingsDiff(context.Background(), repogov.ExecGH{},
-				spec, govOpts.RepoOwner, govOpts.RepoName)
+			changes, err := repogov.SettingsDiff(ctx, repogov.ExecGH{},
+				declared, govOpts.RepoOwner, govOpts.RepoName)
 			if err != nil {
 				return err
 			}
-			printSettingChanges(opts.ui, changes, govOpts)
+			printSettingChanges(printer(inv), changes, govOpts)
 			return nil
 		},
 	}
 }
 
-func newRepoSettingsApplyCommand(opts *options) *cobra.Command {
-	var yes bool
-	cmd := &cobra.Command{
-		Use:   "apply",
-		Short: "Push the GitHub settings declared in " + repospec.FileName,
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			govOpts, spec, err := loadSpecContext()
+func newRepoSettingsApplyCommand(d Deps) *spec.Command {
+	yes := spec.BoolFlag("yes", "skip the confirmation prompt")
+	return &spec.Command{
+		Name:    "apply",
+		Summary: "Push the GitHub settings declared in " + repospec.FileName,
+		Args:    spec.NoArgs(),
+		Flags:   []spec.Flag{yes},
+		Run: func(ctx context.Context, inv *spec.Invocation) error {
+			p := printer(inv)
+			govOpts, declared, err := loadSpecContext(ctx, inv, d)
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
 			gh := repogov.ExecGH{}
 
-			changes, err := repogov.SettingsDiff(ctx, gh, spec, govOpts.RepoOwner, govOpts.RepoName)
+			changes, err := repogov.SettingsDiff(ctx, gh, declared, govOpts.RepoOwner, govOpts.RepoName)
 			if err != nil {
 				return err
 			}
-			printSettingChanges(opts.ui, changes, govOpts)
+			printSettingChanges(p, changes, govOpts)
 			if len(changes) == 0 {
 				return nil
 			}
@@ -73,21 +75,21 @@ func newRepoSettingsApplyCommand(opts *options) *cobra.Command {
 			// purpose: ui.Prompt already returns the default without a TTY,
 			// so a piped or scripted run declines rather than applying
 			// unattended. Automation must say --yes explicitly.
-			if !yes {
-				answer, err := opts.ui.Prompt("Apply these settings? [y/N]", "N", false, "")
+			if !yes.Get(inv) {
+				answer, err := p.Prompt("Apply these settings? [y/N]", "N", false, "")
 				if err != nil {
 					return err
 				}
 				if !strings.EqualFold(strings.TrimSpace(answer), "y") {
-					opts.ui.Info("Aborted before applying")
+					p.Info("Aborted before applying")
 					return nil
 				}
 			}
 
-			if err := repogov.SettingsApply(ctx, gh, spec, govOpts.RepoOwner, govOpts.RepoName); err != nil {
+			if err := repogov.SettingsApply(ctx, gh, declared, govOpts.RepoOwner, govOpts.RepoName); err != nil {
 				return err
 			}
-			opts.ui.Success("Applied settings to %s/%s", govOpts.RepoOwner, govOpts.RepoName)
+			p.Success("Applied settings to %s/%s", govOpts.RepoOwner, govOpts.RepoName)
 
 			// Said again, after the success line. Everything else in the list
 			// was just applied; this one thing was not, and a run that ends on
@@ -97,30 +99,28 @@ func newRepoSettingsApplyCommand(opts *options) *cobra.Command {
 				if c.Field != repogov.MergeQueueChangeField {
 					continue
 				}
-				opts.ui.Warn("%s is not held to its base yet: %s",
-					spec.Settings.BranchProtection.Branch, c.Got)
-				opts.ui.Info("Everything else was applied. To finish: %s",
+				p.Warn("%s is not held to its base yet: %s",
+					declared.Settings.BranchProtection.Branch, c.Got)
+				p.Info("Everything else was applied. To finish: %s",
 					strings.TrimPrefix(c.Want, "deferred — "))
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
-	return cmd
 }
 
 // loadSpecContext resolves the repository and its committed spec together,
 // which every settings subcommand needs.
-func loadSpecContext() (repogov.Options, repospec.Spec, error) {
-	govOpts, err := repoOptions(false)
+func loadSpecContext(ctx context.Context, inv *spec.Invocation, d Deps) (repogov.Options, repospec.Spec, error) {
+	govOpts, err := repoOptions(ctx, inv, d, false)
 	if err != nil {
 		return repogov.Options{}, repospec.Spec{}, err
 	}
-	spec, err := repospec.Load(govOpts.WorkDir)
+	declared, err := repospec.Load(govOpts.WorkDir)
 	if err != nil {
 		return repogov.Options{}, repospec.Spec{}, err
 	}
-	return govOpts, spec, nil
+	return govOpts, declared, nil
 }
 
 func printSettingChanges(printer *ui.UI, changes []repogov.SettingChange, opts repogov.Options) {

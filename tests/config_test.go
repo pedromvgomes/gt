@@ -10,7 +10,9 @@ import (
 	"github.com/pedromvgomes/gt/internal/config"
 )
 
-func TestLoadBootstrapsGlobalConfig(t *testing.T) {
+// A missing global file is valid: the defaults apply, and loading writes
+// nothing. Only `gt config edit` creates the file.
+func TestLoadWithoutGlobalConfigUsesDefaults(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 
@@ -21,8 +23,8 @@ func TestLoadBootstrapsGlobalConfig(t *testing.T) {
 	if !reflect.DeepEqual(cfg.WorktreeTypes, []string{"feature", "fix", "chore"}) {
 		t.Fatalf("WorktreeTypes = %#v", cfg.WorktreeTypes)
 	}
-	if _, err := os.Stat(filepath.Join(configHome, "gt", "config.yaml")); err != nil {
-		t.Fatalf("global config was not created: %v", err)
+	if _, err := os.Stat(filepath.Join(configHome, "gt", "config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("Load() wrote a global config, stat error = %v", err)
 	}
 }
 

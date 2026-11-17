@@ -1,0 +1,151 @@
+command gt clone
+  aliases: -
+  summary: Clone a repository into a bare repo + worktree layout
+  args: between 1 and 2 arguments
+  flag --dry-run-setup bool default=false "print the setup plan without executing it"
+  flag --no-profile bool default=false "export no environment profile even if a match pattern applies"
+  flag --no-setup bool default=false "skip post-clone setup templates"
+  flag --no-setup-auth bool default=false "skip post-clone direnv authentication setup"
+  flag --no-ssh bool default=false "keep HTTPS repository URLs without prompting"
+  flag --profile string default="" "environment profile to export from .envrc (overrides match patterns)"
+  flag --setup string default="" "comma-separated setup template names to run after clone"
+  flag --show-setup bool default=false "show full template bodies before prompting"
+  flag --ssh bool default=false "force HTTPS repository URLs to SSH"
+  flag --user string default="" "GitHub user (selects ssh.user_aliases entry and post-clone GH_TOKEN)"
+  flag --yes bool default=false "skip the setup confirmation prompt"
+  exclusive: no-profile profile
+  exclusive: no-setup setup
+  exclusive: no-ssh ssh
+command gt repo
+  aliases: -
+  summary: Manage repository governance from .gt-repo.yaml
+  args: -
+command gt repo check
+  aliases: -
+  summary: Report governance drift and gate-configuration problems
+  args: no arguments
+  flag --json bool default=false "emit machine-readable output"
+  flag --skip-workflows bool default=false "ignore .github/workflows/** (for CI, where GITHUB_TOKEN cannot write them)"
+command gt repo config
+  aliases: -
+  summary: Print the resolved .gt-repo.yaml, with defaults applied
+  args: no arguments
+  flag --json bool default=false "emit JSON instead of YAML"
+command gt repo fleet
+  aliases: -
+  summary: Operate across every repository in an owner
+  args: -
+command gt repo fleet check
+  aliases: -
+  summary: Report governance drift across every repository in an owner
+  args: no arguments
+  flag --cache-dir string default="" "where working clones are kept (default: user cache dir)"
+  flag --limit int default=200 "maximum repositories to enumerate"
+  flag --owner string default="" "GitHub user or organization to sweep"
+command gt repo fleet merge-pending
+  aliases: -
+  summary: List Dependabot PRs the in-repo auto-merge cannot merge
+  args: no arguments
+  flag --limit int default=200 "maximum repositories to enumerate"
+  flag --max-bump string default="minor" "highest bump level to consider eligible (patch, minor, major)"
+  flag --merge bool default=false "merge the eligible PRs instead of only reporting them"
+  flag --owner string default="" "GitHub user or organization to scan"
+command gt repo fleet sync
+  aliases: -
+  summary: Repair governance across every repository, opening a PR per repo
+  args: no arguments
+  flag --branch string default="gt/repo-sync" "branch to push the sync to"
+  flag --cache-dir string default="" "where working clones are kept (default: user cache dir)"
+  flag --limit int default=200 "maximum repositories to enumerate"
+  flag --owner string default="" "GitHub user or organization to sweep"
+command gt repo init
+  aliases: -
+  summary: Create .gt-repo.yaml from what the repository already contains
+  args: no arguments
+  flag --dry-run bool default=false "print the detected spec without writing it"
+  flag --force bool default=false "overwrite an existing .gt-repo.yaml"
+command gt repo settings
+  aliases: -
+  summary: Diff or apply the GitHub settings gt manages
+  args: -
+command gt repo settings apply
+  aliases: -
+  summary: Push the GitHub settings declared in .gt-repo.yaml
+  args: no arguments
+  flag --yes bool default=false "skip the confirmation prompt"
+command gt repo settings diff
+  aliases: -
+  summary: Show how live GitHub settings differ from .gt-repo.yaml
+  args: no arguments
+command gt repo sync
+  aliases: -
+  summary: Write the governance files declared by .gt-repo.yaml
+  args: no arguments
+  flag --dry-run bool default=false "print what would change without writing"
+  flag --skip-workflows bool default=false "leave .github/workflows/** alone (for CI, where GITHUB_TOKEN cannot write them)"
+  flag --yes bool default=false "skip the confirmation prompt"
+command gt scratch
+  aliases: -
+  summary: Create or manage the scratch worktree
+  args: no arguments
+  flag -d, --delete bool default=false "remove the scratch worktree and scratch branch"
+  flag -r, --reset bool default=false "reset scratch to a different branch"
+command gt set-auth
+  aliases: -
+  summary: Scope gh authentication and an environment profile to this repository with direnv
+  args: no arguments
+  flag --no-profile bool default=false "export no environment profile even if a match pattern applies"
+  flag --profile string default="" "environment profile to export from .envrc (overrides match patterns)"
+  flag --user string default="" "GitHub user to bind GH_TOKEN to (default: the user already in .envrc)"
+  flag --yes bool default=false "overwrite a differing .envrc without confirming"
+  exclusive: no-profile profile
+command gt set-ssh-remote
+  aliases: -
+  summary: Rewrite origin to use the SSH alias for a configured user
+  args: no arguments
+  flag --user string default="" "GitHub user whose SSH alias should be applied to origin"
+command gt setup
+  aliases: -
+  summary: Run configured setup templates against the current git repository
+  args: no arguments
+  flag --dry-run bool default=false "print the plan without executing it"
+  flag --from string default="" "resume from this template name"
+  flag --no-setup bool default=false "skip all templates"
+  flag --setup string default="" "comma-separated template names to run (overrides match)"
+  flag --show bool default=false "show full template bodies before prompting"
+  flag --yes bool default=false "skip the confirmation prompt"
+  exclusive: no-setup setup
+command gt wt
+  aliases: worktree
+  summary: Manage gt worktrees
+  args: -
+command gt wt add
+  aliases: -
+  summary: Create a worktree for a typed branch
+  args: exactly 1 argument
+  flag --dry-run-setup bool default=false "print the setup plan without executing it"
+  flag --from string default="" "create the branch from this source branch"
+  flag --no-setup bool default=false "skip the repo's .gt.yaml setup templates"
+  flag --show-setup bool default=false "show full template bodies before prompting"
+  flag --yes bool default=false "skip the setup confirmation prompt"
+command gt wt list
+  aliases: -
+  summary: List gt worktrees
+  args: no arguments
+command gt wt nuke
+  aliases: -
+  summary: Remove all typed worktrees
+  args: no arguments
+  flag -b, --branches bool default=false "also delete corresponding local branches"
+  flag -f, --force bool default=false "force removal, discarding uncommitted changes in dirty worktrees"
+command gt wt prune-branches
+  aliases: -
+  summary: Delete local branches without active worktrees
+  args: no arguments
+  flag -n, --dry-run bool default=false "show what would be deleted without deleting"
+command gt wt rm
+  aliases: remove, delete
+  summary: Remove a worktree by name
+  args: exactly 1 argument
+  flag -b, --branch bool default=false "also delete the local branch"
+  flag -f, --force bool default=false "remove without prompting, even with uncommitted changes"
