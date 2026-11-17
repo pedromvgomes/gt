@@ -24,25 +24,19 @@ on:
   # On the default branch an already-validated tree skips every stage.
   push:
     branches: [main]
-  # Unconditional, and load-bearing. A queued pull request reports its required
-  # check from this event and no other, so a repository whose orchestrator lacks
-  # it would sit in the queue forever waiting on a check nothing can report —
-  # and the governance stage that would have said so is inside that same check.
-  #
-  # Rendered even where there is no queue — most repositories cannot have one,
-  # since GitHub offers them only on organization-owned public repositories —
-  # so the file is ready before the rule that needs it. `gt repo settings apply`
-  # withholds the queue rule until this trigger is on the default branch, which
-  # is what makes that ordering a guarantee rather than a habit. An unused
-  # trigger costs nothing.
+  # gt applies no merge queue — branch protection holds every pull request to
+  # its base by requiring it to be up to date, and `gt repo settings apply`
+  # removes a merge_queue rule from the ruleset it owns. The trigger is
+  # rendered anyway so a queue somebody adds between applies still gets its
+  # required check reported for each entry, rather than waiting on a check
+  # nothing runs. With no queue on the branch it never fires.
   merge_group:
   workflow_dispatch:
 
-# Superseded pushes to the same PR are cancelled; runs on the default branch and
-# in a merge queue are not. Cancelling a PR run costs nothing — a newer commit
-# is about to be validated anyway — whereas cancelling a default-branch run
-# discards the attestation it was about to record, and cancelling a queued
-# merge would drop it from the queue.
+# Superseded pushes to the same PR are cancelled; every other run is not.
+# Cancelling a PR run costs nothing — a newer commit is about to be validated
+# anyway — whereas cancelling a default-branch run discards the attestation it
+# was about to record.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -147,15 +141,13 @@ jobs:
   lydite:
     needs: [attest]
     # No skip guard, unlike the stages above: this job is the only publisher
-    # of the required lydite/referral status, and that status has to be fresh
-    # for whatever SHA branch protection is evaluating. reusable-attest.yml
-    # walks a merge_group ref back to its queued PR's head, so an
-    # already-validated PR tree can report `validated` true on the queue's own
-    # commit too — skipping on that would leave lydite/referral unpublished
-    # for a SHA no earlier run ever reported it under, stalling the queue
-    # entry on a check nothing can report. `!cancelled()` alone: still runs
-    # when a dependency fails, since a real referral verdict on a failing tree
-    # is more useful than none.
+    # of the required lydite/referral status, and a skipped job publishes
+    # nothing. On a merge_group run reusable-attest.yml walks the queue ref
+    # back to the queued PRs' heads, so `validated` can be true on a commit no
+    # earlier run ever reported lydite/referral under — skipping on that
+    # stalls the entry on a check nothing can report. `!cancelled()` alone:
+    # still runs when a dependency fails, since a real referral verdict on a
+    # failing tree is more useful than none.
     if: "!cancelled()"
     uses: ./.github/workflows/reusable-lydite.yml
     permissions:

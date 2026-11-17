@@ -180,53 +180,6 @@ jobs:
             *) echo "::error::dependabot_auto_merge.max_bump=$MAX_BUMP is not one of patch, minor, major"; exit 1 ;;
           esac
 
-          owner="${REPO%%/*}"
-          name="${REPO##*/}"
-
-          # Whether a branch is behind a merge queue, cached per branch.
-          #
-          # gh refuses `--delete-branch` outright when the base branch has a
-          # queue — "Cannot use `-d` or `--delete-branch` when merge queue
-          # enabled" — and it refuses before merging, so passing the flag
-          # unconditionally did not merge and keep the branch, it failed every
-          # merge in every queued repository, every night.
-          #
-          # Nothing is lost by dropping it there: delete_branch_on_merge is a
-          # gt-managed repository setting that defaults to true, and the queue
-          # honours it when it lands the group.
-          #
-          # Asked of GitHub rather than read from the spec, because the spec
-          # does not know: `base_freshness: auto` names the guarantee and lets
-          # `gt repo settings apply` pick the mechanism from the repository's
-          # ownership and visibility — and withhold the queue until
-          # ci-orchestration.yml carries a merge_group trigger. The repository
-          # is the only place the answer exists. There is no REST endpoint and
-          # no `gh pr` field for it; Repository.mergeQueue(branch:) is null
-          # where the branch has none.
-          # Answers through its exit status, not stdout. A `$(...)` call would
-          # run the body in a subshell and throw the cache away with it, so the
-          # probe would repeat for every pull request in the batch.
-          declare -A queue_cache=()
-          merge_queue_enabled() {
-            local branch="$1" answer probe
-            if [[ -z "${queue_cache[$branch]+set}" ]]; then
-              # An unanswerable probe counts as queued. Being wrong that way
-              # leaves a branch the repository setting deletes anyway; being
-              # wrong the other way refuses the merge, which is the bug above.
-              answer=true
-              # shellcheck disable=SC2016 # $owner/$name/$branch are GraphQL variables, bound by the -f flags below; the shell must not touch them
-              if probe=$(gh api graphql \
-                -f query='query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id}}}' \
-                -f owner="$owner" -f name="$name" -f branch="$branch" \
-                --jq '.data.repository.mergeQueue != null' 2>/dev/null); then
-                answer="$probe"
-              fi
-              queue_cache[$branch]="$answer"
-              echo "   base ${branch}: merge queue = ${answer}"
-            fi
-            [[ "${queue_cache[$branch]}" == "true" ]]
-          }
-
           # mergeStateStatus ∈ {BEHIND, BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS,
           # UNKNOWN, UNSTABLE}.
           # --limit is required: gh defaults to 30, which silently drops the
@@ -292,6 +245,17 @@ jobs:
               echo "   → skip: not mergeable (conflicts?)"
               continue
             fi
+            # BEHIND = mergeable, but strict required checks refuse a PR that is
+            # not up to date with its base. Every merge to the base leaves the
+            # other open PRs here. Ask Dependabot to rebase it, once per run;
+            # the list only holds Dependabot PRs.
+            if [[ "$state" == "BEHIND" ]]; then
+              echo "   → skip: behind the base branch; asking Dependabot to rebase"
+              if ! gh pr comment "$number" --repo "$REPO" --body "@dependabot rebase"; then
+                echo "   → could not comment on #${number}; continuing with the rest"
+              fi
+              continue
+            fi
             # UNSTABLE = required checks passed but optional ones failed.
             # Branch protection already enforces the required set, so this is
             # eligible.
@@ -353,7 +317,7 @@ jobs:
             fi
 
             merge_args=(--squash)
-            if [[ "$DELETE_BRANCH" == "true" ]] && ! merge_queue_enabled "$base"; then
+            if [[ "$DELETE_BRANCH" == "true" ]]; then
               merge_args+=(--delete-branch)
             fi
 

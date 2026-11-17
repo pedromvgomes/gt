@@ -8,7 +8,7 @@ committing `.gt-repo.yaml`, and that one file drives three mechanisms.
 |---|---|---|
 | Stage logic (attestation, conventional commits, lydite, governance) | gt's reusable workflows, pinned to a moving major tag | nothing — a gt release is enough |
 | Files that must exist in-repo (orchestrators, `dependabot.yml`, CODEOWNERS) | `gt repo sync` | a local run or the weekly in-repo job |
-| GitHub API state (branch protection, merge methods, the queue) | `gt repo settings apply` | your own `gh` credentials |
+| GitHub API state (branch protection, merge methods, strict required checks) | `gt repo settings apply` | your own `gh` credentials |
 
 ## Only overrides are written
 
@@ -52,6 +52,39 @@ still running while `check` called the repository compliant. Scaffolds are
 deliberately absent from `managedPaths()`: an orphaned scaffold holds the
 repository's own work.
 
+## lydite's exemptions file
+
+Wherever `lydite.enabled` is true, gt renders `.lydite/exemptions.yml` as a
+**managed** file (`repogov/exemptions.go`, registered in `registry()`). Without
+it lydite declares no exemptions and refers every change, so every Dependabot
+pull request waits on `lydite/referral` for a human. The file holds:
+
+- **`dependency-version-bump`**, derived from `dependabot:` while
+  `lydite.exempt_dependency_bumps` is true (the default), with `versions:
+  patch-and-minor`. Its paths are the files lydite can measure, joined under
+  each entry's `directory`, sorted and de-duplicated: `gomod` → `go.mod`, `go.sum`;
+  `cargo` → `Cargo.lock`; `npm` → `package-lock.json`. `pip`, `docker`,
+  `terraform` and `github-actions` contribute nothing: lydite cannot yet
+  measure an action bump, so a workflow path would pass vacuously and the
+  bump stays referred. Manifests (`Cargo.toml`, `package.json`) are never
+  listed: lydite reads no comparison from them, so the condition would pass
+  vacuously over a manifest-only edit.
+- **`lydite.exemptions`**, the repository's own entries, rendered after the
+  derived one in declared order. `repospec.validateLydite` refuses what lydite
+  would refuse to load, plus the derived entry's name while it is on.
+
+No entries means no file, and a file the spec stops asking for is orphaned and
+removed. lydite reads the file from its scan root, so `lydite.dir` moves it;
+patterns stay repository-root-relative. Orphan detection checks both the root
+location and the one the current spec puts it at (`DiffSpec`), but a file left
+under a `lydite.dir` the spec no longer names is invisible to it.
+
+lydite reads the file from the base commit, disqualifies any change under
+`.lydite/`, and wants a pull request that changes the file to change nothing
+else. A sync that changes it is therefore always referred and needs a `/lydite
+clear`; gt does not split sync pull requests to isolate it. See [ADR 0003](../../docs/adr/0003-lydite-exemptions-are-managed-not-scaffolded.md)
+for why the file is managed rather than scaffolded.
+
 ## The version gate
 
 `Spec.GTVersion` (`gt_version`) records the gt release that last rendered the
@@ -70,24 +103,31 @@ in force — indistinguishable, from the repo's side, from the setting actually
 applying.
 
 Retiring a key is therefore not the same as deleting its struct field.
-`BranchProtection.RequireUpToDate` in `internal/repospec/spec.go` stays a real,
-tagged field so a manifest still carrying it keeps parsing, and
-`resolveFreshness()` translates it onto `BaseFreshness` and clears it before
-validation runs. Removing the field outright would turn every manifest still
-carrying the old spelling into a hard `gt repo check`/`sync` failure across
-the fleet.
+`BranchProtection.BaseFreshness` and `RequireUpToDate` in
+`internal/repospec/spec.go` stay real, tagged fields (`omitempty`, `json:"-"`)
+so a manifest still carrying either keeps parsing, and `dropRetiredKeys()`
+clears them before validation runs. Removing the fields outright would turn
+every manifest still carrying them into a hard `gt repo check`/`sync` failure
+across the fleet.
+
+Clearing is what retires the key from the fleet without breaking anyone on the
+way out: the resolved spec does not hold it, so the manifest does not
+round-trip, `check` reports it as spec drift, and `sync` writes the file back
+without it.
 
 ## Working on this
 
 - Adding a rendered file means adding a `fileSpec` to `registry()`, a template
   under `internal/repogov/templates/`, and — if it is managed — an entry that
-  orphan detection will see. Do not add a second list.
+  orphan detection will see. Do not add a second list. A file whose location
+  depends on the spec sets `pathFor`; its `path` stays the default location,
+  and orphan detection checks both.
 - Adding a spec field means a default in `Default()`, validation if the value
   can be wrong, and a decision about whether `sync` should strip it when it
   merely restates the default.
-- Retiring a spec field means giving it the same translate-then-clear treatment
-  as `require_up_to_date`, not deleting it — see "Retired and unknown keys"
-  above.
+- Retiring a spec field means giving it the same keep-the-tag-then-clear
+  treatment as `base_freshness` and `require_up_to_date`, not deleting it — see
+  "Retired and unknown keys" above.
 - Shared policy (Dependabot cooldown, commit-message prefixes, the sync
   schedule) belongs in gt's templates, never in `.gt-repo.yaml` — that is what
   makes changing it everywhere one gt release.

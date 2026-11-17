@@ -506,27 +506,13 @@ func TestCDTriggersOnConfiguredTags(t *testing.T) {
 	}
 }
 
-// merge_group is what lets a queued PR report its required check, and it is
-// rendered unconditionally — including where the queue is switched off.
-//
-// The order is the point. `gt repo settings apply` will not add the merge_queue
-// rule until this trigger is already on the default branch, so the trigger has
-// to arrive first and cannot be gated on the setting that comes second. An
-// unused trigger on a repository with no queue costs nothing; a missing one on
-// a repository with a queue hangs every pull request on a check that never
-// reports.
+// merge_group is rendered even though gt applies no merge queue: a queue
+// somebody adds to the branch reports its required check only from this event,
+// and without the trigger every entry would wait on a check nothing runs.
 func TestMergeGroupTriggerAlwaysRendered(t *testing.T) {
-	for _, queued := range []bool{false, true} {
-		spec := repospec.Default()
-		spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessQueue
-		if !queued {
-			spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessStrict
-		}
-
-		content := string(pipelineFiles(t, spec)[".github/workflows/ci-orchestration.yml"])
-		if !strings.Contains(content, "merge_group:") {
-			t.Errorf("base_freshness queue = %v: no merge_group trigger rendered", queued)
-		}
+	content := string(pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"])
+	if !strings.Contains(content, "merge_group:") {
+		t.Error("no merge_group trigger rendered")
 	}
 }
 
@@ -821,9 +807,11 @@ func TestSyncAllowsUpgrade(t *testing.T) {
 	}
 }
 
-// gt scaffolds no lydite configuration at all. lydite runs its own suites and
-// reads its own `.lydite/` config from the scan root, so a gt-written file
-// here would be configuration a repository carries and nobody can explain.
+// gt scaffolds no repository-owned lydite configuration. lydite runs its own
+// suites and reads its own `.lydite/` config from the scan root, so a
+// scaffolded file would be configuration a repository carries and nobody can
+// explain. The managed exemptions file is the exception that is not a
+// scaffold: it is derived from the spec on every sync.
 //
 // Asserted across every combination the spec can produce, so a conditional
 // scaffold cannot slip back in for only the combinations that hit its guard.

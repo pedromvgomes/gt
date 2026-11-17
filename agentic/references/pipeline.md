@@ -66,7 +66,7 @@ Wherever lydite is enabled, `settings.go`'s `desiredRuleset` also requires a
 second, unrelated context: **`lydite/referral`** (`repospec.LyditeReferralContext`),
 the commit status lydite's referral step publishes directly rather than a job
 in this workflow. That is what actually blocks a referred pull request from
-merging — see [`merge-queue.md`](merge-queue.md) for how required checks are
+merging — see [`base-freshness.md`](base-freshness.md) for how required checks are
 assembled, and the comment on `LyditeReferralContext` in `repospec/spec.go` for
 why it has to be kept in sync with `lydite/lydite`'s `internal/clearance.Context`
 by hand.
