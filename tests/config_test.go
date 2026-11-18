@@ -4,55 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/pedromvgomes/gt/internal/config"
 )
-
-func TestLoadBootstrapsGlobalConfig(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	cfg, err := config.Load(t.TempDir())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if !reflect.DeepEqual(cfg.WorktreeTypes, []string{"feature", "fix", "chore"}) {
-		t.Fatalf("WorktreeTypes = %#v", cfg.WorktreeTypes)
-	}
-	if _, err := os.Stat(filepath.Join(configHome, "gt", "config.yaml")); err != nil {
-		t.Fatalf("global config was not created: %v", err)
-	}
-}
-
-func TestLoadMergesRepoConfig(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".gt.yaml"), []byte(`worktree_types:
-  - hotfix
-ssh:
-  host_aliases:
-    github.com: github-personal
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := config.Load(root)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if !reflect.DeepEqual(cfg.WorktreeTypes, []string{"hotfix"}) {
-		t.Fatalf("WorktreeTypes = %#v", cfg.WorktreeTypes)
-	}
-	if cfg.SSH.HostAliases["github.com"] != "github-personal" {
-		t.Fatalf("HostAliases = %#v", cfg.SSH.HostAliases)
-	}
-}
 
 func TestMergeKeepsBaseForEmptyOverride(t *testing.T) {
 	base := config.Default()
@@ -90,41 +45,6 @@ func stringsForName(values []string) string {
 	return values[0]
 }
 
-func TestLoadParsesSetupTemplates(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	if err := os.MkdirAll(filepath.Join(configHome, "gt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configHome, "gt", "config.yaml"), []byte(`worktree_types: [feature]
-setup:
-  templates:
-    - name: agentic-toolkit
-      match: ["github.com:pedromvgomes/*"]
-      run: |
-        echo hi
-    - name: golang-extras
-      match: ["*"]
-      script: /path/to/script.sh
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := config.Load(t.TempDir())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if len(cfg.Setup.Templates) != 2 {
-		t.Fatalf("len(Templates) = %d, want 2", len(cfg.Setup.Templates))
-	}
-	if cfg.Setup.Templates[0].Name != "agentic-toolkit" {
-		t.Fatalf("Templates[0].Name = %q", cfg.Setup.Templates[0].Name)
-	}
-	if cfg.Setup.Templates[1].Script != "/path/to/script.sh" {
-		t.Fatalf("Templates[1].Script = %q", cfg.Setup.Templates[1].Script)
-	}
-}
-
 func TestValidateSetupRejectsBadTemplates(t *testing.T) {
 	cases := map[string]config.Setup{
 		"missing-name": {Templates: []config.Template{{Run: "echo"}}},
@@ -155,36 +75,6 @@ func TestValidateSetupAcceptsValid(t *testing.T) {
 	}}
 	if err := config.ValidateSetup(s); err != nil {
 		t.Fatalf("ValidateSetup() error = %v", err)
-	}
-}
-
-func TestLoadParsesUserAliases(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	if err := os.MkdirAll(filepath.Join(configHome, "gt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configHome, "gt", "config.yaml"), []byte(`worktree_types: [feature]
-ssh:
-  host_aliases:
-    github.com: github-personal
-  user_aliases:
-    pedromvgomes:
-      github.com: github-personal
-    pedro-work:
-      github.com: github-work
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(t.TempDir())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if got := cfg.SSH.UserAliases["pedromvgomes"]["github.com"]; got != "github-personal" {
-		t.Fatalf("UserAliases[pedromvgomes][github.com] = %q", got)
-	}
-	if got := cfg.SSH.UserAliases["pedro-work"]["github.com"]; got != "github-work" {
-		t.Fatalf("UserAliases[pedro-work][github.com] = %q", got)
 	}
 }
 
@@ -222,62 +112,6 @@ func TestValidateSSHRejectsEmptyEntries(t *testing.T) {
 	}
 }
 
-func TestLoadMergesRepoSetupTemplates(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	if err := os.MkdirAll(filepath.Join(configHome, "gt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configHome, "gt", "config.yaml"), []byte(`worktree_types: [feature]
-setup:
-  templates:
-    - name: global-only
-      match: ["*"]
-      run: "echo global"
-    - name: shared
-      match: ["*"]
-      run: "echo global-shared"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// The per-repo config overrides "shared" by name and adds "repo-only".
-	if err := os.WriteFile(filepath.Join(root, ".gt.yaml"), []byte(`setup:
-  templates:
-    - name: shared
-      match: ["*"]
-      run: "echo repo-shared"
-    - name: repo-only
-      match: ["*"]
-      run: "echo repo"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := config.Load(root)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	got := make(map[string]string, len(cfg.Setup.Templates))
-	var order []string
-	for _, tpl := range cfg.Setup.Templates {
-		got[tpl.Name] = tpl.Run
-		order = append(order, tpl.Name)
-	}
-	if !reflect.DeepEqual(order, []string{"global-only", "shared", "repo-only"}) {
-		t.Fatalf("template order = %#v", order)
-	}
-	if got["shared"] != "echo repo-shared" {
-		t.Fatalf("per-repo override did not win: shared = %q", got["shared"])
-	}
-	if got["repo-only"] != "echo repo" {
-		t.Fatalf("per-repo template missing: repo-only = %q", got["repo-only"])
-	}
-}
-
 func TestValidateProfilesRejectsBadShapes(t *testing.T) {
 	cases := map[string][]config.Profile{
 		"missing-name":       {{Env: map[string]string{"A": "1"}}},
@@ -309,63 +143,6 @@ func TestValidateProfilesAcceptsValid(t *testing.T) {
 	}
 }
 
-func TestLoadParsesProfiles(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	path := filepath.Join(dir, "gt", "config.yaml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := `worktree_types: [feature]
-profiles:
-  - name: work
-    match: ["github.com:acme/*"]
-    env:
-      CLAUDE_CONFIG_DIR: ~/.claude
-  - name: personal
-    env:
-      CODEX_HOME: ~/.codex
-`
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(t.TempDir())
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if len(cfg.Profiles) != 2 {
-		t.Fatalf("len(Profiles) = %d, want 2", len(cfg.Profiles))
-	}
-	if cfg.Profiles[0].Name != "work" || cfg.Profiles[0].Env["CLAUDE_CONFIG_DIR"] != "~/.claude" {
-		t.Fatalf("Profiles[0] = %#v", cfg.Profiles[0])
-	}
-	if len(cfg.Profiles[1].Match) != 0 {
-		t.Fatalf("Profiles[1].Match = %#v, want none", cfg.Profiles[1].Match)
-	}
-}
-
-// A malformed profile must fail the load with a message naming the profile,
-// not surface later as an .envrc missing a variable.
-func TestLoadRejectsMalformedProfiles(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	path := filepath.Join(dir, "gt", "config.yaml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := "worktree_types: [feature]\nprofiles:\n  - name: work\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := config.Load(t.TempDir())
-	if err == nil {
-		t.Fatal("Load() succeeded, want error")
-	}
-	if !strings.Contains(err.Error(), "work") {
-		t.Fatalf("Load() error = %v, want the profile name", err)
-	}
-}
-
 // Profiles layer like setup templates: a same-named profile is replaced in
 // place, keeping its position, because selection is first-match-wins.
 func TestMergeProfilesReplacesInPlaceAndAppends(t *testing.T) {
@@ -385,5 +162,54 @@ func TestMergeProfilesReplacesInPlaceAndAppends(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("MergeProfiles() = %#v, want %#v", got, want)
+	}
+}
+
+func managedRoot(t *testing.T, overlay string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".bare"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if overlay != "" {
+		if err := os.WriteFile(filepath.Join(root, ".gt.yaml"), []byte(overlay), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+func TestOverlayPathFindsManagedRootFromNestedDir(t *testing.T) {
+	root := managedRoot(t, "")
+	nested := filepath.Join(root, "feature", "some-work", "internal", "pkg")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
+
+	got, err := config.OverlayPath(os.LookupEnv)
+	if err != nil {
+		t.Fatalf("OverlayPath() error = %v", err)
+	}
+	// The working directory comes back with symlinks resolved, so compare the
+	// resolved root rather than the path t.TempDir returned.
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(wantRoot, ".gt.yaml"); got != want {
+		t.Fatalf("OverlayPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOverlayPathIsEmptyOutsideManagedRoot(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	got, err := config.OverlayPath(os.LookupEnv)
+	if err != nil {
+		t.Fatalf("OverlayPath() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("OverlayPath() = %q, want none", got)
 	}
 }

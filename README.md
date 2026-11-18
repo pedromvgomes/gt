@@ -125,13 +125,27 @@ See [Repository governance](#repository-governance) for the full model.
 ### `gt config <path|show|validate|edit>`
 
 - `gt config path` — print the absolute path of the global config file.
-- `gt config show` — print the current contents.
-- `gt config validate` — parse and validate, surfacing any errors.
-- `gt config edit` — open the config in `$VISUAL`/`$EDITOR`. On save, the file is parsed and validated; if invalid, you are prompted to re-open the editor and the original file is left untouched until a valid edit is saved.
+- `gt config show` — print every key's merged value and the layer it came from (default, file, `.gt.yaml` overlay or `GT_*` environment).
+- `gt config validate` — parse and validate every layer, surfacing errors as `file:line`.
+- `gt config edit` — open the config in `$VISUAL`/`$EDITOR`, creating it with the defaults and a commented key reference when it does not exist. On save, the file is parsed and validated; if invalid, you are prompted to re-open the editor and the original file is left untouched until a valid edit is saved.
+
+### `gt version [--json]`
+
+Print the version and build information, for example `v3.0.0 build <commit>`. `--json` prints the same as a machine-readable object. There is no `--version` flag.
+
+### `gt update [--check]`
+
+Update gt to the latest release. Every release is verified against its signed `checksums.txt.minisig` (minisign) with the public key embedded in the binary, and the downloaded binary is run before it replaces the installed one. `--check` only reports: it exits 10 when an update is available and 0 when gt is current. A binary installed by a package manager (Homebrew) is refused; upgrade it with the package manager. A development build (`version` is `dev`) is refused.
+
+gt also checks in the background after a command, at most once per `auto_update.check_interval`, and prints a one-line notice on stderr when a newer release exists. The check runs only when stderr is a terminal, and never when `CI` or `GT_NO_UPDATE_CHECK` is set. It is unauthenticated: gt never sends `GH_TOKEN` to it. A check cut short by the command finishing is not recorded, so the next run checks again; a check that fails is recorded and not retried until the interval has passed. Turn it off with `auto_update.enabled: false`.
 
 ## Configuration
 
-`gt` bootstraps YAML config on first command run at `$XDG_CONFIG_HOME/gt/config.yaml`, or `~/.config/gt/config.yaml` when `XDG_CONFIG_HOME` is unset.
+The global config is `$XDG_CONFIG_HOME/gt/config.yaml`, or `~/.config/gt/config.yaml` when `XDG_CONFIG_HOME` is unset, on macOS as well as Linux. `gt config edit` creates it; no other command does. Update state lives under `$XDG_STATE_HOME/gt` (`~/.local/state/gt`). `GT_HOME=<dir>` relocates both: config under `<dir>/config`, state under `<dir>/state`.
+
+Unknown keys are errors, reported with their file and line. Scalar keys can be overridden from the environment with `GT_<KEY>`, the key path joined by underscores: `GT_AUTO_UPDATE_ENABLED=false`, `GT_AUTO_UPDATE_CHECK_INTERVAL=48h`, `GT_WORKTREE_TYPES=feature,fix`. `gt config show` prints which layer each value came from.
+
+Root flags: `-v`/`--verbose`, `-q`/`--quiet`, `--no-color`, `--log-level debug|info|warn|error` and `--log-format text|json`. `--log-level` cannot be combined with `-v` or `-q`. `gt <command> --help` prints a command's help.
 
 ```yaml
 worktree_types:
@@ -187,7 +201,7 @@ profiles:
 - Values get a leading `~/` or `$HOME` expanded and are then emitted literally into `export VAR="..."`, with `"`, `$`, `` ` `` and `\` escaped. gt does not check that a path exists — both agent CLIs create their profile directory on first use, so a fresh clone legitimately precedes it.
 - There is no prompt. `gt clone` and `gt set-auth` run from clone hooks and CI, where a question is a hang; the config already holds the answer.
 
-Per-repo overrides live at `<gt-managed-root>/.gt.yaml` and override global config per key. A per-repo config **may** declare its own `setup.templates`; they are merged on top of the global templates by name — a per-repo template that reuses a global template's `name` replaces it in place, and new names are appended after the global ones. This file lives at your gt-managed root (not committed inside the repo), so its templates are as trusted as the ones in your global config.
+Per-repo overrides live at `<gt-managed-root>/.gt.yaml`, found by walking up from the current directory to the directory holding `.bare/`. The overlay may set only `worktree_types`, `ssh`, `setup` and `profiles`; any other key, `auto_update` included, is an error that stops every command run in that repo, and `worktree_types: []` is an error. `worktree_types` and an `ssh` map replace the global value as a whole; an overlay that leaves `ssh` unset keeps the global maps. `profiles` and `setup.templates` merge by `name`: a per-repo entry that reuses a global entry's `name` replaces it in place, and new names are appended after the global ones. This file lives at your gt-managed root (not committed inside the repo), so its templates are as trusted as the ones in your global config.
 
 ### Setup templates
 
@@ -201,7 +215,7 @@ Templates run after `gt clone` and on demand via `gt setup`. They are simple she
   - `GT_WORKDIR` — `${GT_ROOT}/${GT_DEFAULT_BRANCH}` in bare layout, `${GT_ROOT}` in plain.
   - `GT_LAYOUT` — `bare` or `plain`.
   - `GT_DEFAULT_BRANCH`, `GT_REPO_OWNER`, `GT_REPO_NAME`, `GT_REPO_URL`.
-- Before running, gt prints the list of templates that will execute and prompts `[Y/n/d]` (`d` shows the full bodies). The prompt is skipped when `--yes` is passed or stdin is not a TTY.
+- Before running, gt prints the list of templates that will execute and prompts `y/n/d [y]` (`d` shows the full bodies). The prompt is skipped when `--yes` is passed or stdin is not a TTY.
 - On the first non-zero exit gt stops and tells you to resume with `gt setup --from <template>`.
 
 ### Security model
@@ -501,4 +515,4 @@ golangci-lint run
 
 A release is the merge of its notes: a pull request that adds `docs/releases/vX.Y.Z.md` and merges to `main` is tagged and released by `.github/workflows/release.yml`. Nobody pushes a tag.
 
-The workflow runs GoReleaser and publishes four `tar.gz` archives plus `checksums.txt`.
+The workflow runs GoReleaser and publishes four `tar.gz` archives plus `checksums.txt` and its minisign signature, `checksums.txt.minisig`.

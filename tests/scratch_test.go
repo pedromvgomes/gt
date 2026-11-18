@@ -12,7 +12,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/scratch"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
@@ -22,9 +21,10 @@ func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
 			Stdout: "  HEAD branch: main\n",
 		},
 	}}
-	printer := &ui.UI{In: strings.NewReader("scratch-exp\nmain\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	var stderr bytes.Buffer
+	inv := testInvocation("scratch-exp\nmain\n", ioDiscard{}, &stderr, true)
 
-	err := scratch.Run(context.Background(), runner, printer, scratch.Options{CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -32,6 +32,11 @@ func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
 	want := []string{gitDir(root), "worktree", "add", "--no-track", "-b", "scratch-exp", filepath.Join(root, "scratch"), "origin/main"}
 	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("last call = %#v, want %#v", got, want)
+	}
+	for _, msg := range []string{"Fetching latest from origin...", "Scratch worktree created at " + filepath.Join(root, "scratch")} {
+		if !strings.Contains(stderr.String(), msg) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), msg)
+		}
 	}
 }
 
@@ -44,10 +49,10 @@ func TestScratchExistingPrintsCommitAndHint(t *testing.T) {
 	runner := &fakeGitRunner{responses: map[string]git.Result{
 		"-C " + path + " log -1 --format=%h %s": {Stdout: "abc123 scratch commit\n"},
 	}}
-	var out bytes.Buffer
-	printer := &ui.UI{Out: &out, Err: ioDiscard{}}
+	var out, stderr bytes.Buffer
+	inv := testInvocation("", &out, &stderr, false)
 
-	if err := scratch.Run(context.Background(), runner, printer, scratch.Options{CWD: root}); err != nil {
+	if err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	got := out.String()
@@ -55,6 +60,9 @@ func TestScratchExistingPrintsCommitAndHint(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, missing %q", got, want)
 		}
+	}
+	if want := "Scratch worktree already exists at " + path; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 }
 
@@ -69,11 +77,17 @@ func TestScratchResetChecksOutScratchFromSelectedBranch(t *testing.T) {
 			Stdout: "  HEAD branch: main\n",
 		},
 	}}
-	printer := &ui.UI{In: strings.NewReader("develop\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	var stderr bytes.Buffer
+	inv := testInvocation("develop\n", ioDiscard{}, &stderr, true)
 
-	err := scratch.Run(context.Background(), runner, printer, scratch.Options{Reset: true, CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{Reset: true, CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	for _, msg := range []string{"Fetching latest from origin...", "Scratch reset to origin/develop"} {
+		if !strings.Contains(stderr.String(), msg) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), msg)
+		}
 	}
 
 	wantSuffix := [][]string{
@@ -93,10 +107,15 @@ func TestScratchDeleteRemovesWorktreeAndBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeGitRunner{}
+	var stderr bytes.Buffer
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 
-	err := scratch.Run(context.Background(), runner, quietUI(), scratch.Options{Delete: true, CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{Delete: true, CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Scratch worktree removed") {
+		t.Fatalf("stderr = %q, want the removal confirmed", stderr.String())
 	}
 
 	wantSuffix := [][]string{
@@ -111,12 +130,12 @@ func TestScratchDeleteRemovesWorktreeAndBranch(t *testing.T) {
 }
 
 func TestScratchRejectsResetAndDeleteTogether(t *testing.T) {
-	err := scratch.Run(context.Background(), &fakeGitRunner{}, quietUI(), scratch.Options{Reset: true, Delete: true, CWD: t.TempDir()})
+	err := scratch.Run(context.Background(), &fakeGitRunner{}, quietInvocation(), scratch.Options{Reset: true, Delete: true, CWD: t.TempDir()})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error")
 	}
-	if ui.ExitCode(err) != ui.ExitUser {
-		t.Fatalf("ExitCode() = %d, want %d", ui.ExitCode(err), ui.ExitUser)
+	if !strings.Contains(err.Error(), "--reset and --delete are mutually exclusive") {
+		t.Fatalf("Run() error = %v, want the exclusive-flags message", err)
 	}
 }
 
@@ -130,9 +149,9 @@ func TestScratchCreateRejectsMissingRemoteSource(t *testing.T) {
 			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/remotes/origin/missing"): errors.New("missing"),
 		},
 	}
-	printer := &ui.UI{In: strings.NewReader("scratch\nmissing\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("scratch\nmissing\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := scratch.Run(context.Background(), runner, printer, scratch.Options{CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root})
 	if err == nil {
 		t.Fatal("Run() succeeded, want error")
 	}

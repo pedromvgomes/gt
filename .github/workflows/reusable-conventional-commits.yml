@@ -91,7 +91,7 @@ jobs:
           (cd "$tmp" && grep " ${ASSET}\$" checksums.txt | sha256sum -c -)
           tar -xzf "${tmp}/${ASSET}" -C "$tmp"
           sudo install -m 0755 "${tmp}/gt" /usr/local/bin/gt
-          gt --version
+          gt version
 
       - name: Read config
         id: spec

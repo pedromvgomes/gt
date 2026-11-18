@@ -2,13 +2,14 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/config"
-	"github.com/pedromvgomes/gt/internal/ui"
+	"go.vipengele.org/cli/spec"
 )
 
 // Plan is the resolved set of templates to run, with variables already
@@ -33,7 +34,7 @@ type RunOptions struct {
 // Execute runs the plan, printing it first and (for interactive sessions)
 // prompting the user to confirm. On the first non-zero exit it stops and
 // returns a directive to resume with `gt setup --from <name>`.
-func Execute(ctx context.Context, printer *ui.UI, plan Plan, opts RunOptions) error {
+func Execute(ctx context.Context, inv *spec.Invocation, plan Plan, opts RunOptions) error {
 	templates := plan.Templates
 	if opts.From != "" {
 		idx := -1
@@ -44,20 +45,20 @@ func Execute(ctx context.Context, printer *ui.UI, plan Plan, opts RunOptions) er
 			}
 		}
 		if idx == -1 {
-			return ui.Errorf(ui.ExitUser, "template %q is not in the resolved plan", opts.From)
+			return fmt.Errorf("template %q is not in the resolved plan", opts.From)
 		}
 		templates = templates[idx:]
 	}
 
 	if len(templates) == 0 {
-		printer.Info("No setup templates apply.")
+		inv.Info("No setup templates apply.")
 		return nil
 	}
 
 	if opts.Show {
-		printDetailed(printer, templates, plan.Ctx.Vars())
+		printDetailed(inv, templates, plan.Ctx.Vars())
 	} else {
-		printTerse(printer, templates, plan.Ctx.Root)
+		printTerse(inv, templates, plan.Ctx.Root)
 	}
 
 	if opts.DryRun {
@@ -65,41 +66,45 @@ func Execute(ctx context.Context, printer *ui.UI, plan Plan, opts RunOptions) er
 	}
 
 	if !opts.Yes {
-		if plan.Untrusted && !printer.Interactive {
-			return ui.Errorf(ui.ExitUser,
+		if plan.Untrusted && !inv.Env.IsTerminal(spec.Stdin) {
+			return errors.New(
 				"refusing to auto-run repo-declared setup templates without a TTY; re-run with --yes to confirm")
 		}
 		if plan.Untrusted {
-			printer.Warn("These setup templates are declared by the repository's .gt.yaml and will run shell commands.")
+			// Written past --quiet, like the question it introduces: it is what
+			// tells the user the commands they are confirming come from the
+			// repository rather than from their own config.
+			_, _ = fmt.Fprintln(inv.Env.Stderr, inv.Output.Styler(spec.Stderr).Warning(
+				"These setup templates are declared by the repository's .gt.yaml and will run shell commands."))
 		}
-		ok, err := promptConfirm(printer, templates, plan.Ctx.Vars())
+		ok, err := promptConfirm(inv, templates, plan.Ctx.Vars())
 		if err != nil {
 			return err
 		}
 		if !ok {
-			printer.Info("Aborted before running setup")
+			inv.Info("Aborted before running setup")
 			return nil
 		}
 	}
 
 	for i, t := range templates {
-		_, _ = fmt.Fprintf(printer.Out, "\n==> [%d/%d] %s\n", i+1, len(templates), t.Name)
-		if err := runTemplate(ctx, printer, t, plan.Ctx); err != nil {
-			return ui.Errorf(ui.ExitGeneral,
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "\n==> [%d/%d] %s\n", i+1, len(templates), t.Name)
+		if err := runTemplate(ctx, inv, t, plan.Ctx); err != nil {
+			return fmt.Errorf(
 				"setup template %q failed: %v\n  resume with: gt setup --from %s",
 				t.Name, err, t.Name)
 		}
 	}
-	printer.Success("Setup complete")
+	inv.Success("Setup complete")
 	return nil
 }
 
-func printTerse(printer *ui.UI, templates []config.Template, root string) {
+func printTerse(inv *spec.Invocation, templates []config.Template, root string) {
 	location := root
 	if location == "" {
 		location = "(current repo)"
 	}
-	_, _ = fmt.Fprintf(printer.Out, "Will run %d setup template(s) at %s:\n", len(templates), location)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "Will run %d setup template(s) at %s:\n", len(templates), location)
 	width := nameWidth(templates)
 	for i, t := range templates {
 		match := strings.Join(t.Match, ", ")
@@ -110,60 +115,60 @@ func printTerse(printer *ui.UI, templates []config.Template, root string) {
 		if t.Script != "" {
 			body = "script: " + t.Script
 		}
-		_, _ = fmt.Fprintf(printer.Out, "  %d. %-*s  (match: %s)  %s\n", i+1, width, t.Name, match, body)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  %d. %-*s  (match: %s)  %s\n", i+1, width, t.Name, match, body)
 	}
 }
 
-func printDetailed(printer *ui.UI, templates []config.Template, vars map[string]string) {
-	_, _ = fmt.Fprintf(printer.Out, "Will run %d setup template(s):\n", len(templates))
+func printDetailed(inv *spec.Invocation, templates []config.Template, vars map[string]string) {
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "Will run %d setup template(s):\n", len(templates))
 	for i, t := range templates {
-		_, _ = fmt.Fprintf(printer.Out, "\n%d. %s\n", i+1, t.Name)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "\n%d. %s\n", i+1, t.Name)
 		if len(t.Match) > 0 {
-			_, _ = fmt.Fprintf(printer.Out, "   match: %s\n", strings.Join(t.Match, ", "))
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "   match: %s\n", strings.Join(t.Match, ", "))
 		}
 		if t.Run != "" {
-			_, _ = fmt.Fprintln(printer.Out, "   run: |")
+			_, _ = fmt.Fprintln(inv.Env.Stdout, "   run: |")
 			for line := range strings.SplitSeq(strings.TrimRight(t.Run, "\n"), "\n") {
-				_, _ = fmt.Fprintf(printer.Out, "     %s\n", line)
+				_, _ = fmt.Fprintf(inv.Env.Stdout, "     %s\n", line)
 			}
 			continue
 		}
 		resolved := substituteVars(t.Script, vars)
-		_, _ = fmt.Fprintf(printer.Out, "   script: %s\n", resolved)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "   script: %s\n", resolved)
 		// #nosec G304 -- reads a setup script the user configured gt to run.
 		if data, err := os.ReadFile(resolved); err == nil {
 			for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
-				_, _ = fmt.Fprintf(printer.Out, "     %s\n", line)
+				_, _ = fmt.Fprintf(inv.Env.Stdout, "     %s\n", line)
 			}
 		} else {
-			_, _ = fmt.Fprintf(printer.Out, "     (could not read: %v)\n", err)
+			_, _ = fmt.Fprintf(inv.Env.Stdout, "     (could not read: %v)\n", err)
 		}
 	}
 }
 
-func promptConfirm(printer *ui.UI, templates []config.Template, vars map[string]string) (bool, error) {
-	if !printer.Interactive {
+func promptConfirm(inv *spec.Invocation, templates []config.Template, vars map[string]string) (bool, error) {
+	if !inv.Env.IsTerminal(spec.Stdin) {
 		return true, nil
 	}
 	for {
-		answer, err := printer.Prompt("Run these? [Y/n/d] (d = show details)", "Y", false, "")
+		answer, err := inv.Prompt("Run these? y/n/d (d = show details)", spec.PromptOptions{Default: "y"})
 		if err != nil {
 			return false, err
 		}
 		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "", "y", "yes":
+		case "y", "yes":
 			return true, nil
 		case "n", "no":
 			return false, nil
 		case "d", "details":
-			printDetailed(printer, templates, vars)
+			printDetailed(inv, templates, vars)
 		default:
-			printer.Warn("Please answer y, n, or d")
+			inv.Warning("Please answer y, n, or d")
 		}
 	}
 }
 
-func runTemplate(ctx context.Context, printer *ui.UI, t config.Template, c Context) error {
+func runTemplate(ctx context.Context, inv *spec.Invocation, t config.Template, c Context) error {
 	var cmd *exec.Cmd
 	switch {
 	case strings.TrimSpace(t.Run) != "":
@@ -187,8 +192,8 @@ func runTemplate(ctx context.Context, printer *ui.UI, t config.Template, c Conte
 	default:
 		return fmt.Errorf("template has neither run nor script")
 	}
-	cmd.Stdout = printer.Out
-	cmd.Stderr = printer.Err
+	cmd.Stdout = inv.Env.Stdout
+	cmd.Stderr = inv.Env.Stderr
 	cmd.Env = c.Env()
 	if c.WorkDir != "" {
 		if _, err := os.Stat(c.WorkDir); err == nil {

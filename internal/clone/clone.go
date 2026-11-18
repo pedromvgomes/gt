@@ -2,6 +2,7 @@ package clone
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,7 +15,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/setauth"
 	"github.com/pedromvgomes/gt/internal/setup"
-	"github.com/pedromvgomes/gt/internal/ui"
+	"go.vipengele.org/cli/spec"
 )
 
 type Options struct {
@@ -42,7 +43,7 @@ type Options struct {
 func checkProfileSelection(cfg config.Config, opts Options) error {
 	selected := strings.TrimSpace(opts.Profile)
 	if opts.NoSetupAuth && (selected != "" || opts.NoProfile) {
-		return ui.Errorf(ui.ExitUser, "--profile and --no-profile need the post-clone auth step; drop --no-setup-auth")
+		return errors.New("--profile and --no-profile need the post-clone auth step; drop --no-setup-auth")
 	}
 	if selected == "" {
 		return nil
@@ -51,17 +52,17 @@ func checkProfileSelection(cfg config.Config, opts Options) error {
 	return err
 }
 
-func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Config, opts Options) error {
+func Run(ctx context.Context, runner git.Runner, inv *spec.Invocation, cfg config.Config, opts Options) error {
 	if strings.TrimSpace(opts.RepoURL) == "" {
-		return ui.Errorf(ui.ExitUser, "repository URL is required")
+		return errors.New("repository URL is required")
 	}
 	if opts.ForceSSH && opts.NoSSH {
-		return ui.Errorf(ui.ExitUser, "--ssh and --no-ssh are mutually exclusive")
+		return errors.New("--ssh and --no-ssh are mutually exclusive")
 	}
 	if err := checkProfileSelection(cfg, opts); err != nil {
 		return err
 	}
-	repoURL, err := ResolveRepoURL(printer, cfg, opts)
+	repoURL, err := ResolveRepoURL(inv, cfg, opts)
 	if err != nil {
 		return err
 	}
@@ -72,19 +73,19 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 			return err
 		}
 		folder = derived
-		printer.Info("Using folder name: %s", folder)
+		inv.Info("Using folder name: %s", folder)
 	}
 	if err := ValidateFolder(folder); err != nil {
 		return err
 	}
 	if _, err := os.Stat(folder); err == nil {
-		return ui.Errorf(ui.ExitUser, "folder %q already exists", folder)
+		return fmt.Errorf("folder %q already exists", folder)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat folder %s: %w", folder, err)
 	}
 
 	barePath := filepath.Join(folder, ".bare")
-	printer.Info("Cloning %s into %s...", repoURL, barePath)
+	inv.Info("Cloning %s into %s...", repoURL, barePath)
 	if _, err := runner.Run(ctx, "", "clone", "--bare", repoURL, barePath); err != nil {
 		return err
 	}
@@ -111,9 +112,9 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 			defaultBranch = parsed
 		}
 	} else {
-		printer.Warn("Could not detect default branch, using 'main'")
+		inv.Warning("Could not detect default branch, using 'main'")
 	}
-	printer.Info("Default branch: %s", defaultBranch)
+	inv.Info("Default branch: %s", defaultBranch)
 
 	if result, err := runner.Run(ctx, folder, "--git-dir=.bare", "rev-parse", "refs/heads/"+defaultBranch); err == nil {
 		commit := strings.TrimSpace(result.Stdout)
@@ -124,7 +125,7 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		}
 	}
 
-	printer.Info("Creating %s worktree...", defaultBranch)
+	inv.Info("Creating %s worktree...", defaultBranch)
 	if _, err := runner.Run(ctx, folder, "--git-dir=.bare", "worktree", "add", defaultBranch, defaultBranch); err != nil {
 		return err
 	}
@@ -136,18 +137,18 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 		}
 	}
 
-	printer.Success("Repository cloned successfully")
-	_, _ = fmt.Fprintf(printer.Out, "\nStructure:\n  %s/\n  |-- .bare/\n  |-- .git\n  |-- %s/\n", folder, defaultBranch)
+	inv.Success("Repository cloned successfully")
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "\nStructure:\n  %s/\n  |-- .bare/\n  |-- .git\n  |-- %s/\n", folder, defaultBranch)
 	for _, typ := range cfg.WorktreeTypes {
-		_, _ = fmt.Fprintf(printer.Out, "  |-- %s/\n", typ)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  |-- %s/\n", typ)
 	}
-	_, _ = fmt.Fprintf(printer.Out, "\nNext steps:\n  cd %s/%s\n", folder, defaultBranch)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "\nNext steps:\n  cd %s/%s\n", folder, defaultBranch)
 	if !opts.NoSetupAuth {
 		authRunner := opts.AuthRunner
 		if authRunner == nil {
 			authRunner = setauth.ExecRunner{}
 		}
-		if err := setauth.Run(ctx, authRunner, printer, setauth.Options{
+		if err := setauth.Run(ctx, authRunner, inv, setauth.Options{
 			CWD:       folder,
 			User:      opts.User,
 			Profiles:  cfg.Profiles,
@@ -187,7 +188,7 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 			return nil
 		}
 		plan := setup.Plan{Templates: templates, Ctx: rcontext, Untrusted: untrusted}
-		if err := setup.Execute(ctx, printer, plan, setup.RunOptions{
+		if err := setup.Execute(ctx, inv, plan, setup.RunOptions{
 			Yes:    opts.YesSetup,
 			Show:   opts.ShowSetup,
 			DryRun: opts.DryRunSetup,
@@ -198,14 +199,14 @@ func Run(ctx context.Context, runner git.Runner, printer *ui.UI, cfg config.Conf
 	return nil
 }
 
-func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, error) {
+func ResolveRepoURL(inv *spec.Invocation, cfg config.Config, opts Options) (string, error) {
 	if opts.NoSSH {
 		return opts.RepoURL, nil
 	}
 
 	if host, owner, repo, ok := ParseSSHURL(opts.RepoURL); ok {
 		canonical := CanonicalHost(cfg.SSH, host)
-		alias, err := ResolveAlias(printer, cfg.SSH, canonical, opts.User)
+		alias, err := ResolveAlias(inv, cfg.SSH, canonical, opts.User)
 		if err != nil {
 			return "", err
 		}
@@ -222,7 +223,7 @@ func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, er
 	if !isHTTPS {
 		return opts.RepoURL, nil
 	}
-	alias, err := ResolveAlias(printer, cfg.SSH, parsed.host, opts.User)
+	alias, err := ResolveAlias(inv, cfg.SSH, parsed.host, opts.User)
 	if err != nil {
 		return "", err
 	}
@@ -230,12 +231,12 @@ func ResolveRepoURL(printer *ui.UI, cfg config.Config, opts Options) (string, er
 	if opts.ForceSSH {
 		return sshURL, nil
 	}
-	printer.Warn("HTTPS repository URL detected; equivalent SSH URL: %s", sshURL)
-	answer, err := printer.Prompt("Use SSH instead? [Y/n]", "Y", false, "")
+	inv.Warning("HTTPS repository URL detected; equivalent SSH URL: %s", sshURL)
+	useSSH, err := inv.Confirm("Use SSH instead?", spec.ConfirmOptions{Default: spec.DefaultYes, Flag: "--ssh"})
 	if err != nil {
 		return "", err
 	}
-	if isYes(answer) {
+	if useSSH {
 		return sshURL, nil
 	}
 	return opts.RepoURL, nil
@@ -312,22 +313,22 @@ func parseHTTPSRepo(raw string) (repoParts, bool, error) {
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return repoParts{}, false, ui.Errorf(ui.ExitUser, "parse repository URL: %v", err)
+		return repoParts{}, false, fmt.Errorf("parse repository URL: %v", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return repoParts{}, false, nil
 	}
 	host := parsed.Hostname()
 	if host == "" {
-		return repoParts{}, false, ui.Errorf(ui.ExitUser, "repository URL host is required")
+		return repoParts{}, false, errors.New("repository URL host is required")
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return repoParts{}, false, ui.Errorf(ui.ExitUser, "HTTPS repository URL must look like https://<host>/<owner>/<repo>")
+		return repoParts{}, false, errors.New("HTTPS repository URL must look like https://<host>/<owner>/<repo>")
 	}
 	repo := strings.TrimSuffix(parts[1], ".git")
 	if repo == "" {
-		return repoParts{}, false, ui.Errorf(ui.ExitUser, "repository URL repo name is required")
+		return repoParts{}, false, errors.New("repository URL repo name is required")
 	}
 	return repoParts{host: host, owner: parts[0], repo: repo}, true, nil
 }
@@ -341,10 +342,10 @@ func parseHTTPSRepo(raw string) (repoParts, bool, error) {
 //  3. user == "" and exactly one user has an entry for host -> use silently.
 //  4. user == "" and multiple users have entries -> interactive prompt.
 //  5. Otherwise -> host_aliases[host], then ~/.ssh/config, else host itself.
-func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, error) {
+func ResolveAlias(inv *spec.Invocation, ssh config.SSH, host, user string) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
-		return "", ui.Errorf(ui.ExitUser, "host is required")
+		return "", errors.New("host is required")
 	}
 	user = strings.TrimSpace(user)
 	if user != "" {
@@ -353,11 +354,11 @@ func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, er
 				return alias, nil
 			}
 		}
-		printer.Warn("user %q has no SSH alias configured for host %q; falling back to host_aliases", user, host)
+		inv.Warning("user %q has no SSH alias configured for host %q; falling back to host_aliases", user, host)
 		if alias := strings.TrimSpace(ssh.HostAliases[host]); alias != "" {
 			return alias, nil
 		}
-		return resolveFromSSHConfig(printer, host)
+		return resolveFromSSHConfig(inv, host)
 	}
 
 	var users []string
@@ -373,97 +374,85 @@ func ResolveAlias(printer *ui.UI, ssh config.SSH, host, user string) (string, er
 		if alias := strings.TrimSpace(ssh.HostAliases[host]); alias != "" {
 			return alias, nil
 		}
-		return resolveFromSSHConfig(printer, host)
+		return resolveFromSSHConfig(inv, host)
 	case 1:
 		return ssh.UserAliases[users[0]][host], nil
 	default:
-		return promptForUserAlias(printer, ssh.UserAliases, host, users)
+		return promptForUserAlias(inv, ssh.UserAliases, host, users)
 	}
 }
 
-func resolveFromSSHConfig(printer *ui.UI, host string) (string, error) {
+func resolveFromSSHConfig(inv *spec.Invocation, host string) (string, error) {
 	entries, err := findSSHAliasesFor(host)
 	if err != nil {
-		printer.Warn("could not read %s: %v", SSHConfigPath, err)
+		inv.Warning("could not read %s: %v", SSHConfigPath, err)
 		return host, nil
 	}
 	if len(entries) == 0 {
 		return host, nil
 	}
 	if len(entries) == 1 {
-		printer.Info("using SSH alias %q from ~/.ssh/config (Hostname matches %s)", entries[0].Alias, host)
+		inv.Info("using SSH alias %q from ~/.ssh/config (Hostname matches %s)", entries[0].Alias, host)
 		return entries[0].Alias, nil
 	}
-	if !printer.Interactive {
-		printer.Warn("multiple SSH aliases for %s in ~/.ssh/config but no gt alias configured; not rewriting URL", host)
+	if !inv.Env.IsTerminal(spec.Stdin) {
+		inv.Warning("multiple SSH aliases for %s in ~/.ssh/config but no gt alias configured; not rewriting URL", host)
 		return host, nil
 	}
-	return promptForSSHConfigAlias(printer, host, entries)
+	return promptForSSHConfigAlias(inv, host, entries)
 }
 
-func promptForSSHConfigAlias(printer *ui.UI, host string, entries []SSHHostEntry) (string, error) {
-	_, _ = fmt.Fprintf(printer.Out, "No gt alias configured for host %q.\n", host)
-	_, _ = fmt.Fprintf(printer.Out, "Found these SSH aliases in ~/.ssh/config:\n")
+func promptForSSHConfigAlias(inv *spec.Invocation, host string, entries []SSHHostEntry) (string, error) {
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "No gt alias configured for host %q.\n", host)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "Found these SSH aliases in ~/.ssh/config:\n")
 	for i, e := range entries {
 		identity := e.Identity
 		if identity == "" {
 			identity = "<no IdentityFile>"
 		}
-		_, _ = fmt.Fprintf(printer.Out, "  [%d] %s  (IdentityFile: %s)\n", i+1, e.Alias, identity)
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  [%d] %s  (IdentityFile: %s)\n", i+1, e.Alias, identity)
 	}
 	keepIdx := len(entries) + 1
-	_, _ = fmt.Fprintf(printer.Out, "  [%d] keep %s (no rewrite)\n", keepIdx, host)
-	answer, err := printer.Prompt(
-		fmt.Sprintf("Pick one [1-%d]", keepIdx),
-		"1",
-		false,
-		"add ssh.host_aliases or ssh.user_aliases to your gt config to skip this prompt",
-	)
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "  [%d] keep %s (no rewrite)\n", keepIdx, host)
+	answer, err := inv.Prompt(fmt.Sprintf("Pick one [1-%d]", keepIdx), spec.PromptOptions{Default: "1"})
 	if err != nil {
 		return "", err
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(answer))
 	if err != nil || n < 1 || n > keepIdx {
-		return "", ui.Errorf(ui.ExitUser, "invalid choice %q", answer)
+		return "", fmt.Errorf("invalid choice %q", answer)
 	}
 	if n == keepIdx {
 		return host, nil
 	}
 	chosen := entries[n-1].Alias
-	printer.Info("To persist this, add the following under ssh: in your gt config:\n  host_aliases:\n    %s: %s", host, chosen)
+	inv.Info("To persist this, add the following under ssh: in your gt config:\n  host_aliases:\n    %s: %s", host, chosen)
 	return chosen, nil
 }
 
-func promptForUserAlias(printer *ui.UI, userAliases map[string]map[string]string, host string, users []string) (string, error) {
-	_, _ = fmt.Fprintf(printer.Out, "Multiple SSH aliases configured for host %s:\n", host)
+func promptForUserAlias(inv *spec.Invocation, userAliases map[string]map[string]string, host string, users []string) (string, error) {
+	_, _ = fmt.Fprintf(inv.Env.Stdout, "Multiple SSH aliases configured for host %s:\n", host)
 	for i, u := range users {
-		_, _ = fmt.Fprintf(printer.Out, "  [%d] %s -> %s\n", i+1, u, userAliases[u][host])
+		_, _ = fmt.Fprintf(inv.Env.Stdout, "  [%d] %s -> %s\n", i+1, u, userAliases[u][host])
 	}
-	answer, err := printer.Prompt(
-		fmt.Sprintf("Pick a user [1-%d]", len(users)),
-		"1",
-		false,
-		"set --user to skip this prompt",
-	)
+	answer, err := inv.Prompt(fmt.Sprintf("Pick a user [1-%d]", len(users)), spec.PromptOptions{
+		Default: "1",
+		Flag:    "--user",
+	})
 	if err != nil {
 		return "", err
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(answer))
 	if err != nil || n < 1 || n > len(users) {
-		return "", ui.Errorf(ui.ExitUser, "invalid choice %q", answer)
+		return "", fmt.Errorf("invalid choice %q", answer)
 	}
 	return userAliases[users[n-1]][host], nil
-}
-
-func isYes(answer string) bool {
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	return answer == "" || answer == "y" || answer == "yes"
 }
 
 func DeriveFolder(raw string) (string, error) {
 	raw = strings.TrimSpace(strings.TrimSuffix(raw, "/"))
 	if raw == "" {
-		return "", ui.Errorf(ui.ExitUser, "repository URL is required")
+		return "", errors.New("repository URL is required")
 	}
 	trimmed := strings.TrimSuffix(raw, ".git")
 	if parsed, err := url.Parse(trimmed); err == nil && parsed.Host != "" {
@@ -478,21 +467,21 @@ func DeriveFolder(raw string) (string, error) {
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || name == "." || name == "/" {
-		return "", ui.Errorf(ui.ExitUser, "could not derive folder name from %q", raw)
+		return "", fmt.Errorf("could not derive folder name from %q", raw)
 	}
 	return name, nil
 }
 
 func ValidateFolder(folder string) error {
 	if strings.TrimSpace(folder) == "" {
-		return ui.Errorf(ui.ExitUser, "folder cannot be empty")
+		return errors.New("folder cannot be empty")
 	}
 	if filepath.IsAbs(folder) {
-		return ui.Errorf(ui.ExitUser, "folder must be relative")
+		return errors.New("folder must be relative")
 	}
 	clean := filepath.Clean(folder)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return ui.Errorf(ui.ExitUser, "folder must stay within the current directory")
+		return errors.New("folder must stay within the current directory")
 	}
 	return nil
 }

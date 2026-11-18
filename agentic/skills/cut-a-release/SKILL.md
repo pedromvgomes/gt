@@ -33,8 +33,9 @@ is no tag trigger, and a hand-pushed tag releases nothing.
 5. **After the merge**, watch the run: `gh run list --workflow release.yml
    --limit 3`, then `gh run watch <id>`. When it finishes, `git fetch origin
    --tags --force` and confirm that `vX.Y.Z` exists, that `gh release view
-   vX.Y.Z` lists four archives plus `checksums.txt`, and that the major tag
-   (`v2`, ...) points at the same commit.
+   vX.Y.Z` lists four archives plus `checksums.txt` and
+   `checksums.txt.minisig`, and that the major tag (`v2`, ...) points at the
+   same commit.
 
 ## Constraints
 

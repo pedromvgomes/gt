@@ -11,7 +11,7 @@ import (
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/setup"
-	"github.com/pedromvgomes/gt/internal/ui"
+	"go.vipengele.org/cli/spec"
 )
 
 func TestParseRepoURL(t *testing.T) {
@@ -213,8 +213,8 @@ func TestSelectEmptyMatchSkipsAuto(t *testing.T) {
 
 func TestExecuteEmptyPlanIsNoop(t *testing.T) {
 	out := &bytes.Buffer{}
-	printer := ui.New(strings.NewReader(""), out, out, true, false)
-	err := setup.Execute(context.Background(), printer, setup.Plan{}, setup.RunOptions{Yes: true})
+	inv := testInvocation("", out, out, false)
+	err := setup.Execute(context.Background(), inv, setup.Plan{}, setup.RunOptions{Yes: true})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -226,7 +226,7 @@ func TestExecuteEmptyPlanIsNoop(t *testing.T) {
 func TestExecuteRunsTemplatesInOrder(t *testing.T) {
 	dir := t.TempDir()
 	out := &bytes.Buffer{}
-	printer := ui.New(strings.NewReader(""), out, out, true, false)
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{
 			{Name: "first", Run: "echo first > " + filepath.Join(dir, "1.txt")},
@@ -234,7 +234,7 @@ func TestExecuteRunsTemplatesInOrder(t *testing.T) {
 		},
 		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain, DefaultBranch: "main"},
 	}
-	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{Yes: true})
+	err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{Yes: true})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -247,12 +247,15 @@ func TestExecuteRunsTemplatesInOrder(t *testing.T) {
 	if !strings.Contains(output, "==> [1/2] first") || !strings.Contains(output, "==> [2/2] second") {
 		t.Fatalf("output missing step headers: %q", output)
 	}
+	if !strings.Contains(output, "Setup complete") {
+		t.Fatalf("output = %q, want the run reported complete", output)
+	}
 }
 
 func TestExecuteStopsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	out := &bytes.Buffer{}
-	printer := ui.New(strings.NewReader(""), out, out, true, false)
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{
 			{Name: "ok", Run: "true"},
@@ -261,7 +264,7 @@ func TestExecuteStopsOnFailure(t *testing.T) {
 		},
 		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
 	}
-	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{Yes: true})
+	err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{Yes: true})
 	if err == nil {
 		t.Fatal("Execute() succeeded, want error")
 	}
@@ -276,7 +279,7 @@ func TestExecuteStopsOnFailure(t *testing.T) {
 func TestExecuteFromSkipsEarlierTemplates(t *testing.T) {
 	dir := t.TempDir()
 	out := &bytes.Buffer{}
-	printer := ui.New(strings.NewReader(""), out, out, true, false)
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{
 			{Name: "skip", Run: "touch " + filepath.Join(dir, "skip.txt")},
@@ -284,7 +287,7 @@ func TestExecuteFromSkipsEarlierTemplates(t *testing.T) {
 		},
 		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
 	}
-	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{Yes: true, From: "run-me"})
+	err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{Yes: true, From: "run-me"})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -299,12 +302,12 @@ func TestExecuteFromSkipsEarlierTemplates(t *testing.T) {
 func TestExecuteDryRunDoesNotRun(t *testing.T) {
 	dir := t.TempDir()
 	out := &bytes.Buffer{}
-	printer := ui.New(strings.NewReader(""), out, out, true, false)
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{{Name: "x", Run: "touch " + filepath.Join(dir, "x.txt")}},
 		Ctx:       setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
 	}
-	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{DryRun: true, Yes: true})
+	err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{DryRun: true, Yes: true})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -313,17 +316,65 @@ func TestExecuteDryRunDoesNotRun(t *testing.T) {
 	}
 }
 
+// The plan is listed before anything runs, numbered from 1 in run order, so
+// the user can see what a confirmation or a --dry-run covers.
+func TestExecuteListsTersePlanNumberedFromOne(t *testing.T) {
+	dir := t.TempDir()
+	out := &bytes.Buffer{}
+	inv := testInvocation("", out, out, false)
+	plan := setup.Plan{
+		Templates: []config.Template{
+			{Name: "first", Match: []string{"*"}, Run: "true"},
+			{Name: "second", Script: "setup.sh"},
+		},
+		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
+	}
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{DryRun: true}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{
+		"Will run 2 setup template(s) at " + dir + ":\n",
+		"  1. first   (match: *)  run\n",
+		"  2. second  (match: (explicit))  script: setup.sh\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output = %q, missing %q", out.String(), want)
+		}
+	}
+}
+
+func TestExecuteListsDetailedPlanNumberedFromOne(t *testing.T) {
+	dir := t.TempDir()
+	out := &bytes.Buffer{}
+	inv := testInvocation("", out, out, false)
+	plan := setup.Plan{
+		Templates: []config.Template{
+			{Name: "first", Run: "true"},
+			{Name: "second", Run: "true"},
+		},
+		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
+	}
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{DryRun: true, Show: true}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{"\n1. first\n", "\n2. second\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output = %q, missing %q", out.String(), want)
+		}
+	}
+}
+
 func TestExecuteExportsGTVarsToRunSteps(t *testing.T) {
 	dir := t.TempDir()
 	out := &bytes.Buffer{}
-	printer := ui.New(strings.NewReader(""), out, out, true, false)
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{
 			{Name: "env", Run: `printf '%s\n' "$GT_REPO_NAME" > "$GT_WORKDIR/repo.txt"`},
 		},
 		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain, RepoName: "gt"},
 	}
-	if err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{Yes: true}); err != nil {
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{Yes: true}); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "repo.txt"))
@@ -337,16 +388,44 @@ func TestExecuteExportsGTVarsToRunSteps(t *testing.T) {
 
 func TestExecutePromptDeclines(t *testing.T) {
 	out := &bytes.Buffer{}
-	printer := &ui.UI{In: strings.NewReader("n\n"), Out: out, Err: out, Interactive: true}
+	inv := testInvocation("n\n", out, out, true)
 	plan := setup.Plan{
 		Templates: []config.Template{{Name: "x", Run: "touch /tmp/should-not-exist.gt"}},
 	}
-	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{})
+	err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if !strings.Contains(out.String(), "Aborted") {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+// The y/n/d question asks again after any answer that is not one of its
+// three, and after showing the details, until it gets a yes or a no.
+func TestExecutePromptReasksUntilAnswered(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran.txt")
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	inv := testInvocation("maybe\nd\ny\n", stdout, stderr, true)
+	plan := setup.Plan{
+		Templates: []config.Template{{Name: "x", Run: "touch " + marker}},
+		Ctx:       setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
+	}
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected template to run after y: %v", err)
+	}
+	if got := strings.Count(stderr.String(), "Run these?"); got != 3 {
+		t.Fatalf("asked %d times, want 3; stderr = %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Please answer y, n, or d") {
+		t.Fatalf("stderr = %q, want the re-ask hint", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "run: |") {
+		t.Fatalf("stdout = %q, want the detailed view after d", stdout.String())
 	}
 }
 
@@ -434,13 +513,13 @@ func TestSetupPhaseInContext(t *testing.T) {
 
 func TestExecuteUntrustedNonInteractiveRefuses(t *testing.T) {
 	out := &bytes.Buffer{}
-	// Non-interactive (no In) + untrusted plan + no --yes must refuse to run.
-	printer := &ui.UI{Out: out, Err: out, Interactive: false}
+	// No terminal + untrusted plan + no --yes must refuse to run.
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{{Name: "x", Run: "echo hi"}},
 		Untrusted: true,
 	}
-	err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{})
+	err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{})
 	if err == nil {
 		t.Fatal("Execute() expected refusal error for untrusted non-interactive plan, got nil")
 	}
@@ -453,13 +532,13 @@ func TestExecuteUntrustedNonInteractiveYesRuns(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "ran.txt")
 	out := &bytes.Buffer{}
-	printer := &ui.UI{Out: out, Err: out, Interactive: false}
+	inv := testInvocation("", out, out, false)
 	plan := setup.Plan{
 		Templates: []config.Template{{Name: "x", Run: "touch " + marker}},
 		Untrusted: true,
 	}
 	// --yes is the explicit opt-in that bypasses the TTY gate.
-	if err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{Yes: true}); err != nil {
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{Yes: true}); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if _, err := os.Stat(marker); err != nil {
@@ -467,16 +546,34 @@ func TestExecuteUntrustedNonInteractiveYesRuns(t *testing.T) {
 	}
 }
 
+// The untrusted warning survives --quiet: quiet drops informational output,
+// never the notice that the commands about to be confirmed are the repo's.
+func TestExecuteUntrustedInteractiveWarnsEvenWhenQuiet(t *testing.T) {
+	stderr := &bytes.Buffer{}
+	inv := testInvocation("n\n", nil, stderr, true)
+	inv.Output = spec.NewOutput(spec.OutputOptions{Quiet: true, NoColorStdout: true, NoColorStderr: true})
+	plan := setup.Plan{
+		Templates: []config.Template{{Name: "x", Run: "echo hi"}},
+		Untrusted: true,
+	}
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "declared by the repository's .gt.yaml") {
+		t.Fatalf("stderr = %q, want the untrusted-template warning", stderr.String())
+	}
+}
+
 func TestExecuteTrustedNonInteractiveStillRuns(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "ran.txt")
 	out := &bytes.Buffer{}
-	printer := &ui.UI{Out: out, Err: out, Interactive: false}
+	inv := testInvocation("", out, out, false)
 	// Trusted (global-config) plans keep auto-running without a TTY.
 	plan := setup.Plan{
 		Templates: []config.Template{{Name: "x", Run: "touch " + marker}},
 	}
-	if err := setup.Execute(context.Background(), printer, plan, setup.RunOptions{}); err != nil {
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{}); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if _, err := os.Stat(marker); err != nil {

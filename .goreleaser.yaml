@@ -32,6 +32,16 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# gt update verifies checksums.txt.minisig against the key embedded from
+# internal/selfupdate/minisign.pub before it trusts any checksum. The key is
+# unencrypted (minisign -G -W), so signing never prompts; release.yml writes
+# it to MINISIGN_KEY_FILE from the MINISIGN_KEY secret.
+signs:
+  - artifacts: checksum
+    cmd: minisign
+    args: ["-S", "-s", "{{ .Env.MINISIGN_KEY_FILE }}", "-m", "${artifact}", "-x", "${signature}"]
+    signature: "${artifact}.minisig"
+
 changelog:
   use: git
   groups:

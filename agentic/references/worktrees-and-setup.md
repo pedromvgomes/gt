@@ -1,7 +1,7 @@
 # Worktrees, auth and setup
 
 The half of gt that runs on a developer's machine: `clone`, `wt`, `scratch`,
-`set-auth`, `set-ssh`, `setup`, `config`.
+`set-auth`, `set-ssh-remote`, `setup`, `config`.
 
 ## The layout
 
@@ -38,6 +38,36 @@ tells agents, and what the `use-gt` skill exists to make automatic.
 The default-branch worktree is never touched by `wt list`/`wt nuke` **only
 because it lives outside `cfg.WorktreeTypes`** — no code protects it by name.
 Adding the default branch to the type list would make `nuke` delete it.
+
+## Configuration
+
+`internal/config` defines `Config` on `go.vipengele.org/config`: `Default()`,
+the `config:`/`doc:`/`merge:` struct tags, and `Validate()`, which carries
+every rule (reserved worktree types, profile and template name rules, ssh
+aliases, `check_interval >= 1h` only when `auto_update` is enabled). `internal/app`
+passes it to the App with `WithConfig` and `WithConfigOverlay`; commands read
+it with `cli.ConfigFrom[config.Config](ctx)`. The `config` command group and
+`GT_<KEY>` environment overrides are the library's.
+
+- The global file is `$XDG_CONFIG_HOME/gt/config.yaml` (`~/.config/gt` on macOS
+  too, because `app.PathsLayout` is the XDG layout); `GT_HOME` relocates it.
+  Only `gt config edit` creates it.
+- `.gt.yaml` at the managed root is an overlay, located by `OverlayPath`
+  (walk up from the working directory to the directory holding `.bare/`) and
+  restricted to `OverlayAllow`: `worktree_types`, `ssh`, `setup`, `profiles`.
+  Anything else, `auto_update` included, stops the command.
+- `profiles` and `setup.templates` are tagged `merge:"name"`, so an overlay
+  entry replaces a same-named global entry in place. The untrusted-template
+  gate depends on that in-place merge; `worktree_types` and the `ssh` maps are
+  untagged and replaced whole.
+- `setup.LoadRepoTemplates` is a separate reader of a repository's own
+  committed `.gt.yaml`; those templates ignore `match` and are untrusted. The
+  `yaml:` tags on `Setup` and `Template` exist for it.
+
+Prompts, messages and exit codes go through `*spec.Invocation`. Info, success,
+warning and error lines and prompts write to stderr; stdout carries only result
+text. A prompt without a terminal takes its default; a required one is a usage
+error naming the flag. Usage errors exit 2, other errors 1.
 
 ## Auth and environment profiles
 
@@ -77,7 +107,7 @@ shell; gt does not introspect them.
 - Environment: `GT_ROOT`, `GT_WORKDIR`, `GT_LAYOUT` (`bare` or `plain`),
   `GT_DEFAULT_BRANCH`, `GT_REPO_OWNER`, `GT_REPO_NAME`, `GT_REPO_URL`, and
   `GT_SETUP_PHASE` (`clone`, `worktree` or `manual`).
-- gt prints the plan and prompts `[Y/n/d]`, skipped with `--yes` or no TTY.
+- gt prints the plan and prompts `y/n/d [y]`, skipped with `--yes` or no TTY.
 - On the first non-zero exit gt stops and tells you to resume with
   `gt setup --from <template>`.
 

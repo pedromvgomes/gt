@@ -11,7 +11,6 @@ import (
 
 	"github.com/pedromvgomes/gt/internal/config"
 	"github.com/pedromvgomes/gt/internal/setauth"
-	"github.com/pedromvgomes/gt/internal/ui"
 )
 
 // baseEnvrc is the exact content gt emitted before profiles existed. Every
@@ -102,9 +101,9 @@ func TestRunWritesEnvrcAndAllowsDirenv(t *testing.T) {
 		paths: map[string]bool{"direnv": true},
 		env:   map[string]string{"SHELL": "bash"},
 	}
-	printer := quietUI()
+	inv := quietInvocation()
 
-	err := setauth.Run(context.Background(), runner, printer, setauth.Options{
+	err := setauth.Run(context.Background(), runner, inv, setauth.Options{
 		CWD:  root,
 		User: "pedromvgomes",
 	})
@@ -131,9 +130,9 @@ func TestRunPromptsBeforeOverwritingEnvrc(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeCommandRunner{paths: map[string]bool{"direnv": true}}
-	printer := &ui.UI{In: strings.NewReader("y\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("y\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := setauth.Run(context.Background(), runner, printer, setauth.Options{
+	err := setauth.Run(context.Background(), runner, inv, setauth.Options{
 		CWD:  root,
 		User: "pedromvgomes",
 	})
@@ -152,9 +151,9 @@ func TestRunPromptsBeforeOverwritingEnvrc(t *testing.T) {
 func TestRunInstallsDirenvOnMacOSWhenAccepted(t *testing.T) {
 	root := makeManagedRoot(t)
 	runner := &fakeCommandRunner{goos: "darwin"}
-	printer := &ui.UI{In: strings.NewReader("\n"), Out: ioDiscard{}, Err: ioDiscard{}, Interactive: true}
+	inv := testInvocation("\n", ioDiscard{}, ioDiscard{}, true)
 
-	err := setauth.Run(context.Background(), runner, printer, setauth.Options{
+	err := setauth.Run(context.Background(), runner, inv, setauth.Options{
 		CWD:  root,
 		User: "pedromvgomes",
 	})
@@ -169,7 +168,7 @@ func TestRunInstallsDirenvOnMacOSWhenAccepted(t *testing.T) {
 func TestRunErrorsWhenDirenvMissingOnLinux(t *testing.T) {
 	root := makeManagedRoot(t)
 	runner := &fakeCommandRunner{goos: "linux"}
-	err := setauth.Run(context.Background(), runner, quietUI(), setauth.Options{
+	err := setauth.Run(context.Background(), runner, quietInvocation(), setauth.Options{
 		CWD:  root,
 		User: "pedromvgomes",
 	})
@@ -178,6 +177,33 @@ func TestRunErrorsWhenDirenvMissingOnLinux(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "direnv.net") {
 		t.Fatalf("Run() error = %v, want installation URL", err)
+	}
+}
+
+// direnv only loads .envrc in a shell that has its hook installed, so a shell
+// that does not pick up DIRENV_DIR after 'direnv allow' gets the hook line to
+// add, rather than a silently unscoped GH_TOKEN.
+func TestRunWarnsWhenShellHookIsMissing(t *testing.T) {
+	root := makeManagedRoot(t)
+	probe := "/bin/zsh -lc cd '" + root + `' && test -n "${DIRENV_DIR:-}"`
+	runner := &fakeCommandRunner{
+		paths:     map[string]bool{"direnv": true},
+		env:       map[string]string{"SHELL": "/bin/zsh"},
+		responses: map[string]setauthResult{probe: {exit: 1, err: errors.New("exit 1")}},
+	}
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
+
+	if err := setauth.Run(context.Background(), runner, inv, setauth.Options{CWD: root, User: "pedromvgomes"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !runner.hasCall(probe) {
+		t.Fatalf("calls = %#v, missing the shell hook probe %q", runner.calls, probe)
+	}
+	for _, want := range []string{"your shell hook may be missing", `eval "$(direnv hook zsh)"`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
+		}
 	}
 }
 
@@ -358,8 +384,14 @@ func TestRunRetrofitsExistingEnvrcWithoutAskingForUser(t *testing.T) {
 
 	runner := newRunner()
 	// Non-interactive: a prompt here would be an error, which is the point.
-	if err := setauth.Run(context.Background(), runner, quietUI(), opts); err != nil {
+	var firstOut strings.Builder
+	if err := setauth.Run(context.Background(), runner, testInvocation("", ioDiscard{}, &firstOut, false), opts); err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	for _, want := range []string{`Applied profile "personal" (CODEX_HOME)`, "Updated " + envrcPath} {
+		if !strings.Contains(firstOut.String(), want) {
+			t.Fatalf("first run output = %q, missing %q", firstOut.String(), want)
+		}
 	}
 	if runner.hasCall("gh api user --jq .login") {
 		t.Fatalf("calls = %#v, want no gh lookup", runner.calls)
@@ -378,8 +410,8 @@ func TestRunRetrofitsExistingEnvrcWithoutAskingForUser(t *testing.T) {
 	// Idempotence: the second run changes nothing and reports it.
 	before := string(data)
 	out := &strings.Builder{}
-	printer := &ui.UI{In: strings.NewReader(""), Out: out, Err: ioDiscard{}}
-	if err := setauth.Run(context.Background(), newRunner(), printer, opts); err != nil {
+	inv := testInvocation("", ioDiscard{}, out, false)
+	if err := setauth.Run(context.Background(), newRunner(), inv, opts); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
 	after, err := os.ReadFile(envrcPath)
@@ -408,7 +440,7 @@ func TestRunLeavesNonOptedInEnvrcByteIdentical(t *testing.T) {
 			"git remote get-url origin": {stdout: "git@github.com:other/thing.git\n"},
 		},
 	}
-	err := setauth.Run(context.Background(), runner, quietUI(), setauth.Options{
+	err := setauth.Run(context.Background(), runner, quietInvocation(), setauth.Options{
 		CWD:      root,
 		Profiles: []config.Profile{{Name: "work", Match: []string{"github.com:acme/*"}, Env: map[string]string{"CODEX_HOME": "/w"}}},
 	})

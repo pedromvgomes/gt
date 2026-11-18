@@ -21,4 +21,4 @@ EOF
   exit 1
 fi
 
-echo "gt installed: $(gt --version 2>/dev/null || command -v gt)"
+echo "gt installed: $(gt version 2>/dev/null || command -v gt)"

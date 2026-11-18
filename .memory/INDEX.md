@@ -42,6 +42,15 @@ docs/pipeline-design.md still says "design, not implemented" but describes the s
 - internal/repogov/pipeline.go
 - internal/repospec/spec.go
 
+## quiet-silences-warnings-so-failures-need-exit-status  (invariant, verified)
+inv.Warning prints nothing under --quiet, so every warn-and-continue loop must also count failures and return an error, or a quiet partial failure exits 0 silently.
+
+- internal/worktree/*.go
+- internal/cli/*.go
+- internal/setup/runner.go
+- tests/worktree_test.go
+- tests/setup_test.go
+
 ## registry-path-rename-strands-the-old-managed-file  (gotcha, verified)
 Orphan detection only knows the current registry()'s paths, so renaming a managed file's path leaves the old marked file live on every governed repo, never reported.
 
@@ -70,12 +79,6 @@ Rendered stage jobs carry no status-check function in their `if:`, so a prefligh
 - internal/repogov/pipeline.go
 - internal/repogov/templates/workflows/*-orchestration.yml.tmpl
 - tests/repogov_pipeline_test.go
-
-## update-check-cancelled-but-marked-checked  (gotcha, verified)
-The background update check gets ~50ms, not its 3s timeout, and records LastCheckedAt even when the context cancelled it — suppressing retries for 24h.
-
-- cmd/gt/main.go
-- internal/config/config.go
 
 ## userfromenvrc-regex-couples-to-envrccontent  (gotcha, verified)
 envrcUserPattern is an independent literal copy of the GH_TOKEN line EnvrcContent renders; drift makes set-auth start prompting for an identity it already knows.

@@ -30,8 +30,8 @@ read them all; do not start work in one of these areas without reading its row.
 | [`pipeline.md`](agentic/references/pipeline.md) | `repogov/pipeline.go`, an orchestrator template, `ci-gate`, or the attestation |
 | [`base-freshness.md`](agentic/references/base-freshness.md) | `repogov/settings.go`, branch protection, or strict required checks |
 | [`dependabot.md`](agentic/references/dependabot.md) | `repogov/fleet.go`, `fleetsync.go`, or `reusable-dependabot-auto-merge.yml` |
-| [`worktrees-and-setup.md`](agentic/references/worktrees-and-setup.md) | `internal/{clone,worktree,scratch,setauth,setssh,setup,config}` |
-| [`release.md`](agentic/references/release.md) | `.goreleaser.yaml`, `install.sh`, `internal/update`, or cutting a release |
+| [`worktrees-and-setup.md`](agentic/references/worktrees-and-setup.md) | `internal/{clone,worktree,scratch,setauth,setssh,setup,config,app,cli}` |
+| [`release.md`](agentic/references/release.md) | `.goreleaser.yaml`, `install.sh`, `internal/selfupdate`, signing, or cutting a release |
 
 ## Prescriptive rules
 
