@@ -48,7 +48,7 @@ agentic/                # this directory — see the -repo instruction
 | `repogov/settings.go`, branch protection, strict required checks | [`base-freshness.md`](base-freshness.md) |
 | `repogov/fleet.go`, `fleetsync.go`, `reusable-dependabot-auto-merge.yml` | [`dependabot.md`](dependabot.md) |
 | `internal/{clone,worktree,scratch,setauth,setssh,setup,config}` | [`worktrees-and-setup.md`](worktrees-and-setup.md) |
-| `.goreleaser.yaml`, `install.sh`, `internal/update`, `docs/releases/` | [`release.md`](release.md) |
+| `.goreleaser.yaml`, `install.sh`, `internal/update`, `docs/releases/`, `release.yml`, `.github/scripts/release/` | [`release.md`](release.md) |
 
 ## Two structural rules
 

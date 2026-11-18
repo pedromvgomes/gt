@@ -95,6 +95,9 @@ func compliantRulesetJSON(t *testing.T, checks ...string) string {
 	}
 	body, err := json.Marshal(map[string]any{
 		"id": 100, "name": repogov.RulesetName, "target": "branch", "enforcement": "active",
+		"bypass_actors": []map[string]any{
+			{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"},
+		},
 		"conditions": map[string]any{"ref_name": map[string]any{"include": []string{"refs/heads/main"}}},
 		"rules": []map[string]any{
 			{"type": "deletion"},
@@ -1308,5 +1311,165 @@ func TestPendingWorkflowPRsReportsBehindAndRequestsRebase(t *testing.T) {
 	}
 	if len(gh.calls) != 1 || gh.calls[0] != "pr comment 5 --repo pedromvgomes/demo --body @dependabot rebase" {
 		t.Errorf("calls = %v, want exactly one rebase comment", gh.calls)
+	}
+}
+
+func lastApplyBody(t *testing.T, gh *fakeGH) map[string]any {
+	t.Helper()
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("ruleset payload is not JSON: %v\n%s", err, body)
+	}
+	return out
+}
+
+func bypassActors(t *testing.T, payload map[string]any) []map[string]any {
+	t.Helper()
+	raw, ok := payload["bypass_actors"].([]any)
+	if !ok {
+		t.Fatalf("bypass_actors missing or not a list: %v", payload["bypass_actors"])
+	}
+	var out []map[string]any
+	for _, a := range raw {
+		out = append(out, a.(map[string]any))
+	}
+	return out
+}
+
+func TestBypassDefaultsToAdminForPullRequestsOnly(t *testing.T) {
+	if got := repospec.Default().Settings.BranchProtection.Bypass; got != repospec.BypassAdmin {
+		t.Fatalf("default bypass = %q, want %q", got, repospec.BypassAdmin)
+	}
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = `[]`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	actors := bypassActors(t, lastApplyBody(t, gh))
+	if len(actors) != 1 || actors[0]["actor_type"] != "RepositoryRole" ||
+		actors[0]["actor_id"] != float64(5) || actors[0]["bypass_mode"] != "pull_request" {
+		t.Errorf("bypass_actors = %v, want the Admin role for pull requests only", actors)
+	}
+}
+
+func TestBypassNoneRemovesTheAdminRoleAndKeepsOtherActors(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "bypass_actors":[
+	    {"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"},
+	    {"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	spec := repospec.Default()
+	spec.Settings.BranchProtection.Bypass = repospec.BypassNone
+
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	actors := bypassActors(t, lastApplyBody(t, gh))
+	if len(actors) != 1 || actors[0]["actor_type"] != "Integration" {
+		t.Errorf("bypass_actors = %v, want only the Integration kept", actors)
+	}
+}
+
+func TestBypassNoneWritesAnEmptyListSoAnAdminBypassIsCleared(t *testing.T) {
+	gh := alignedGH(t)
+	spec := repospec.Default()
+	spec.Settings.BranchProtection.Bypass = repospec.BypassNone
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	if actors := bypassActors(t, lastApplyBody(t, gh)); len(actors) != 0 {
+		t.Errorf("bypass_actors = %v, want an empty list", actors)
+	}
+}
+
+func TestBypassAdminRewritesAnAlwaysModeToPullRequest(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var found bool
+	for _, c := range changes {
+		if c.Field == "ruleset.bypass.admin" && c.Want == "pull_request" && c.Got == "always" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("diff = %v, want ruleset.bypass.admin: pull_request vs always", changes)
+	}
+}
+
+func TestBypassRejectsUnknownValue(t *testing.T) {
+	_, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    bypass: everyone\n"), "x")
+	if err == nil || !strings.Contains(err.Error(), "bypass") {
+		t.Fatalf("Parse() error = %v, want a bypass complaint", err)
+	}
+}
+
+func TestBypassKeepsOtherActorsOfAPausedGtRuleset(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"disabled",
+	  "bypass_actors":[{"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var kept, admin bool
+	for _, a := range bypassActors(t, lastApplyBody(t, gh)) {
+		kept = kept || a["actor_type"] == "Integration"
+		admin = admin || a["actor_type"] == "RepositoryRole"
+	}
+	if !kept || !admin {
+		t.Errorf("bypass_actors lost the Integration (%t) or the Admin role (%t)", kept, admin)
+	}
+}
+
+func applyWithAbsorbed(t *testing.T, enforcement string) []map[string]any {
+	t.Helper()
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "main branch protection")
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"main branch protection","target":"branch","enforcement":"` + enforcement + `",
+	  "bypass_actors":[{"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "rules":[{"type":"deletion"}]}`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	return bypassActors(t, lastApplyBody(t, gh))
+}
+
+func hasActorType(actors []map[string]any, kind string) bool {
+	for _, a := range actors {
+		if a["actor_type"] == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBypassCarriesAnActiveAbsorbedRulesetsActors(t *testing.T) {
+	if actors := applyWithAbsorbed(t, "active"); !hasActorType(actors, "Integration") {
+		t.Errorf("bypass_actors = %v, want the absorbed ruleset's Integration carried", actors)
+	}
+}
+
+func TestBypassIgnoresADisabledAbsorbedRulesetsActors(t *testing.T) {
+	if actors := applyWithAbsorbed(t, "disabled"); hasActorType(actors, "Integration") {
+		t.Errorf("bypass_actors = %v, want a disabled ruleset's exemption not switched back on", actors)
 	}
 }

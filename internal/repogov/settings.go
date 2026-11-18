@@ -188,12 +188,68 @@ type liveRuleset struct {
 			Include []string `json:"include"`
 		} `json:"ref_name"`
 	} `json:"conditions"`
-	// BypassActors is kept as raw JSON and written back untouched. gt has no
-	// opinion about who may bypass a branch's rules — that is a per-repository
-	// fact about people and apps — and dropping it on apply would quietly
-	// revoke an exemption somebody relies on.
+	// BypassActors is kept as raw JSON. gt owns exactly one entry, the
+	// repository Admin role (see withAdminBypass); every other actor is a fact about
+	// a person or an app, written back untouched, because dropping it on apply
+	// would quietly revoke an exemption somebody relies on.
 	BypassActors []json.RawMessage `json:"bypass_actors"`
 	Rules        []liveRule        `json:"rules"`
+}
+
+// adminRoleID is GitHub's id for the repository Admin role, the only bypass
+// actor gt manages. A personal repository has no bypass actor for an individual
+// account, so the owner is reached through this role.
+const adminRoleID = 5
+
+// bypassActor is the part of a bypass actor entry gt reads.
+type bypassActor struct {
+	ActorID    int    `json:"actor_id"`
+	ActorType  string `json:"actor_type"`
+	BypassMode string `json:"bypass_mode"`
+}
+
+func (b bypassActor) isAdminRole() bool {
+	return b.ActorType == "RepositoryRole" && b.ActorID == adminRoleID
+}
+
+// adminBypassMode is the bypass mode the live ruleset gives the Admin role, or
+// "none" when it gives it nothing.
+func adminBypassMode(live []json.RawMessage) string {
+	for _, raw := range live {
+		var a bypassActor
+		if json.Unmarshal(raw, &a) == nil && a.isAdminRole() {
+			return a.BypassMode
+		}
+	}
+	return repospec.BypassNone
+}
+
+// wantedAdminBypassMode is the mode the spec asks of the Admin role. Admins
+// bypass for pull requests only: merging past an unmet requirement is the
+// break-glass, and a direct push to the protected branch is not.
+func wantedAdminBypassMode(spec repospec.Spec) string {
+	if spec.Settings.BranchProtection.Bypass == repospec.BypassAdmin {
+		return "pull_request"
+	}
+	return repospec.BypassNone
+}
+
+// withAdminBypass returns the bypass actors with the Admin role set the way the
+// spec asks and every other actor left exactly as it was.
+func withAdminBypass(live []json.RawMessage, spec repospec.Spec) []json.RawMessage {
+	out := []json.RawMessage{}
+	for _, raw := range live {
+		var a bypassActor
+		if json.Unmarshal(raw, &a) == nil && a.isAdminRole() {
+			continue
+		}
+		out = append(out, raw)
+	}
+	if mode := wantedAdminBypassMode(spec); mode != repospec.BypassNone {
+		entry, _ := json.Marshal(bypassActor{ActorID: adminRoleID, ActorType: "RepositoryRole", BypassMode: mode})
+		out = append(out, entry)
+	}
+	return out
 }
 
 // liveRule keeps the parsed fields gt compares AND the original JSON, so a rule
@@ -478,6 +534,8 @@ func rulesetChanges(spec repospec.Spec, live *liveRuleset) []SettingChange {
 		"refs/heads/"+bp.Branch,
 		strings.Join(live.Conditions.RefName.Include, ", "))
 
+	add("ruleset.bypass.admin", wantedAdminBypassMode(spec), adminBypassMode(live.BypassActors))
+
 	wantTypes := map[string]bool{}
 	for _, r := range want["rules"].([]map[string]any) {
 		wantTypes[r["type"].(string)] = true
@@ -717,7 +775,13 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 				carried[r.Type] = r.raw
 			}
 		}
-		if len(bypass) == 0 && src.Enforcement == "active" {
+		// gt's own ruleset keeps its actors while paused, because apply
+		// re-activates it and always writes the list: taking them only from an
+		// active source would replace a paused ruleset's exemptions with the
+		// Admin entry alone. Another ruleset's actors count only while it is
+		// active, the same gate its absorbed rules pass through.
+		own := i == 0 && mine != nil
+		if len(bypass) == 0 && (own || src.Enforcement == "active") {
 			bypass = src.BypassActors
 		}
 	}
@@ -741,9 +805,9 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 		}
 		payload["rules"] = raw
 	}
-	if len(bypass) > 0 {
-		payload["bypass_actors"] = bypass
-	}
+	// Always written, empty included: a PUT that omits the field would leave an
+	// Admin bypass in place when the spec asks for none.
+	payload["bypass_actors"] = withAdminBypass(bypass, spec)
 
 	body, err := json.Marshal(payload)
 	if err != nil {

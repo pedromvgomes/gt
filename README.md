@@ -384,7 +384,7 @@ ruleset's required checks). Once one of those two pull requests lands, the
 other cannot merge until it is updated, and updating it runs `ci-gate` against
 the tree that will actually land. There is no opt-out and no spec key for it:
 `base_freshness` and `require_up_to_date` still parse, but nothing reads them,
-and `gt repo sync` drops them from `.gt-repo.yaml`.
+and `gt repo sync` drops them from `.gt-repo.yaml`. The one break-glass is `settings.branch_protection.bypass` (`admin` by default, `none` to remove): repository admins may merge a pull request past unmet requirements, and cannot push to the branch directly.
 
 gt applies no merge queue, and `settings apply` removes a `merge_queue` rule
 from the ruleset it owns — see
@@ -456,7 +456,7 @@ agentic/
   references/                   # the detail, one file per concern, read on demand
 ```
 
-Everything under `agentic/` is the **source**; the files an agent actually reads — `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.agents/`, `.codex/`, `.mcp.json` — are rendered from it by [agentic-toolkit](https://github.com/pedromvgomes/agentic-toolkit) (`agtk sync`) and are gitignored. `.agentic-toolkit.yaml` opts this repo into both the `claude` and `codex` targets, which is why `AGENTS.md` is generated here rather than written by hand. Edit `agentic/`, never the rendered output.
+Everything under `agentic/` is the **source**; the files an agent actually reads — `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.agents/`, `.codex/`, `.mcp.json` — are rendered from it by [agentic-toolkit](https://github.com/pedromvgomes/agentic-toolkit) (`agtk sync`) and are gitignored. `.agentic-toolkit.yaml` opts this repo into both the `claude` and `codex` targets, which is why `AGENTS.md` is generated here rather than written by hand. The lockfile `.agentic-toolkit.lock.yaml` is gitignored too, so every fresh checkout locks the toolkit's sources at their current heads with no manual bump. A repository that wants them pinned sets `agent_lock: tracked` in `.gt-repo.yaml`. Edit `agentic/`, never the rendered output.
 
 - **`agentic/skills/use-gt/`** is a skill (with the standard `name` + `description` frontmatter). Point your agent at it once and it will reach for `gt clone` / `gt wt add` / `gt wt rm` instead of raw `git`, install `gt` on demand via the helper script, and ask the right pre-clone questions (which `gh` user to authenticate as, SSH vs HTTPS, etc.).
 - **[Environment profiles](#environment-profiles)** close the other half of the loop: they pin which credential store the agent CLIs themselves read (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), so a run launched from the checkout bills the account you chose rather than the one the launching shell happened to export.
@@ -499,11 +499,6 @@ go vet ./...
 golangci-lint run
 ```
 
-Releases are cut by pushing a semver tag:
+A release is the merge of its notes: a pull request that adds `docs/releases/vX.Y.Z.md` and merges to `main` is tagged and released by `.github/workflows/release.yml`. Nobody pushes a tag.
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow runs GoReleaser and publishes four `tar.gz` archives plus `checksums.txt`.
+The workflow runs GoReleaser and publishes four `tar.gz` archives plus `checksums.txt`.

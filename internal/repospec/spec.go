@@ -39,7 +39,25 @@ type Spec struct {
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
 	Files               []string            `yaml:"files" json:"files"`
+
+	// AgentLock is whether the agentic-toolkit lockfile is gitignored or
+	// committed. Ignored (the default) means every fresh checkout locks the
+	// toolkit's sources at their current heads; tracked pins them. It only
+	// applies to a repository that has an .agentic-toolkit.yaml.
+	AgentLock string `yaml:"agent_lock" json:"agent_lock"`
 }
+
+// The accepted values of BranchProtection.Bypass.
+const (
+	BypassAdmin = "admin"
+	BypassNone  = "none"
+)
+
+// The accepted values of Spec.AgentLock.
+const (
+	AgentLockIgnored = "ignored"
+	AgentLockTracked = "tracked"
+)
 
 // DependabotEntry is one ecosystem/directory pair. Note carries the per-repo
 // rationale that would otherwise live as a YAML comment; it is re-emitted as a
@@ -300,7 +318,13 @@ type MergeSettings struct {
 // where it disagrees — and an explicit `false` still overrides, because Parse
 // unmarshals over Default() rather than over a zero value.
 type BranchProtection struct {
-	Branch            string `yaml:"branch" json:"branch"`
+	Branch string `yaml:"branch" json:"branch"`
+
+	// Bypass is who may merge a pull request past the ruleset's unmet
+	// requirements. `admin` lets repository admins do so, for pull requests
+	// only: a direct push to the branch stays blocked. `none` lets nobody.
+	// Other bypass actors somebody set on the ruleset are left as they are.
+	Bypass            string `yaml:"bypass" json:"bypass"`
 	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
 	// BaseFreshness and RequireUpToDate are retired keys. Neither is
 	// configurable: wherever a required check exists, gt requires a pull
@@ -473,6 +497,9 @@ func Default() Spec {
 			},
 			BranchProtection: BranchProtection{
 				Branch: "main",
+				// A break-glass for the repository's admin when a required check
+				// is stuck or the fix for it is itself blocked.
+				Bypass: BypassAdmin,
 				// The two opinions worth holding: an approval is of a diff, and
 				// an unresolved thread is an unanswered question.
 				DismissStaleReviews:     true,
@@ -492,7 +519,8 @@ func Default() Spec {
 				Tags:    []string{"v*.*.*"},
 			},
 		},
-		Files: []string{"sync", "dependabot-auto-merge"},
+		Files:     []string{"sync", "dependabot-auto-merge"},
+		AgentLock: AgentLockIgnored,
 	}
 }
 
@@ -572,7 +600,17 @@ func Validate(s Spec) error {
 	if err := validatePipeline(s.Pipeline); err != nil {
 		return err
 	}
+	if err := validateAgentLock(s.AgentLock); err != nil {
+		return err
+	}
 	return validateFiles(s.Files)
+}
+
+func validateAgentLock(v string) error {
+	if v == AgentLockIgnored || v == AgentLockTracked {
+		return nil
+	}
+	return fmt.Errorf("agent_lock %q is not valid: use %q or %q", v, AgentLockIgnored, AgentLockTracked)
 }
 
 func validateDependabot(entries []DependabotEntry) error {
@@ -908,6 +946,9 @@ func validateSettings(s Settings) error {
 	}
 	if s.BranchProtection.RequiredApprovals < 0 {
 		return fmt.Errorf("settings.branch_protection.required_approvals cannot be negative")
+	}
+	if b := s.BranchProtection.Bypass; b != BypassAdmin && b != BypassNone {
+		return fmt.Errorf("settings.branch_protection.bypass %q is not one of %s, %s", b, BypassAdmin, BypassNone)
 	}
 	switch m.SquashTitle {
 	case SquashTitlePR, SquashTitleCommitPR:
