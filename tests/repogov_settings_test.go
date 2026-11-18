@@ -1436,3 +1436,40 @@ func TestBypassKeepsOtherActorsOfAPausedGtRuleset(t *testing.T) {
 		t.Errorf("bypass_actors lost the Integration (%t) or the Admin role (%t)", kept, admin)
 	}
 }
+
+func applyWithAbsorbed(t *testing.T, enforcement string) []map[string]any {
+	t.Helper()
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "main branch protection")
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"main branch protection","target":"branch","enforcement":"` + enforcement + `",
+	  "bypass_actors":[{"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "rules":[{"type":"deletion"}]}`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	return bypassActors(t, lastApplyBody(t, gh))
+}
+
+func hasActorType(actors []map[string]any, kind string) bool {
+	for _, a := range actors {
+		if a["actor_type"] == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBypassCarriesAnActiveAbsorbedRulesetsActors(t *testing.T) {
+	if actors := applyWithAbsorbed(t, "active"); !hasActorType(actors, "Integration") {
+		t.Errorf("bypass_actors = %v, want the absorbed ruleset's Integration carried", actors)
+	}
+}
+
+func TestBypassIgnoresADisabledAbsorbedRulesetsActors(t *testing.T) {
+	if actors := applyWithAbsorbed(t, "disabled"); hasActorType(actors, "Integration") {
+		t.Errorf("bypass_actors = %v, want a disabled ruleset's exemption not switched back on", actors)
+	}
+}
