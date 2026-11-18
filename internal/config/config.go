@@ -81,35 +81,6 @@ func Default() Config {
 	}
 }
 
-// Load resolves the configuration for a command run from cwd, in the layers
-// gt's App loads: the defaults, then the global config file, then the .gt.yaml
-// at cwd's managed root restricted to OverlayAllow, then GT_* environment
-// variables. The global file is the one GlobalPath names, which is where the
-// App finds it too unless GT_HOME relocates it. A missing global file sets
-// nothing; nothing here writes one.
-func Load(cwd string) (Config, error) {
-	path, err := GlobalPath()
-	if err != nil {
-		return Config{}, err
-	}
-	overlay, err := overlayPathFrom(cwd)
-	if err != nil {
-		return Config{}, err
-	}
-
-	providers := []vconfig.Provider{vconfig.File(path)}
-	if overlay != "" {
-		providers = append(providers, vconfig.File(overlay).Allow(OverlayAllow...))
-	}
-	providers = append(providers, vconfig.Env("GT", os.LookupEnv))
-
-	res, err := vconfig.Load(Default(), providers...)
-	if err != nil {
-		return Config{}, err
-	}
-	return res.Value(), nil
-}
-
 // OverlayPath returns the path of the .gt.yaml overlay for the working
 // directory: <root>/.gt.yaml, where root is the nearest directory at or above
 // it holding a .bare directory. It returns "" outside a managed root. The root
@@ -120,17 +91,6 @@ func OverlayPath(_ func(string) (string, bool)) (string, error) {
 		return "", fmt.Errorf("resolve working directory: %w", err)
 	}
 	return overlayPathFrom(wd)
-}
-
-func GlobalPath() (string, error) {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "gt", "config.yaml"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "gt", "config.yaml"), nil
 }
 
 func Merge(base, override Config) Config {
@@ -201,7 +161,7 @@ func MergeProfiles(base, override []Profile) []Profile {
 	return out
 }
 
-// Validate implements go.vipengele.org/config's Validator, so Load reports
+// Validate implements go.vipengele.org/config's Validator, so a load reports
 // each problem with the value and the file line it came from.
 func (c Config) Validate() error {
 	return Validate(c)
@@ -243,8 +203,9 @@ func Validate(cfg Config) error {
 	return ValidateSetup(cfg.Setup)
 }
 
-// fieldError is a problem with the value at key, in the form Load resolves to
-// the key's value and origin. Called outside Load its message is "key: problem".
+// fieldError is a problem with the value at key, in the form a
+// go.vipengele.org/config load resolves to the key's value and origin. Outside
+// a load its message is "key: problem".
 func fieldError(key, format string, args ...any) error {
 	return &vconfig.FieldError{Key: key, Err: fmt.Errorf(format, args...)}
 }

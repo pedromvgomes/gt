@@ -180,6 +180,27 @@ jobs:
           tar -xzf "$archive" --strip-components=2 -C minisign-bin minisign-linux/x86_64/minisign
           echo "${RUNNER_TEMP}/minisign-bin" >> "$GITHUB_PATH"
 
+      # The release asset of goreleaser/goreleaser, checked against a pinned
+      # digest. GoReleaser runs while the signing key is on disk, so it is an
+      # exact version whose bytes are fixed here. goreleaser-action takes no
+      # digest: it resolves the version at run time and checks the archive only
+      # against checksums.txt from the same release, and skips even that when
+      # the file cannot be downloaded. The digest is the one that release's
+      # checksums.txt lists for the asset.
+      - name: Install GoReleaser
+        working-directory: ${{ runner.temp }}
+        env:
+          GORELEASER_VERSION: v2.20.2
+          GORELEASER_SHA256: f3d24969a7389a46613875711d15a96d8f6ef1553d84c6ace09d69ac1e7d44c0
+        run: |
+          set -euo pipefail
+          archive="goreleaser_Linux_x86_64.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "https://github.com/goreleaser/goreleaser/releases/download/${GORELEASER_VERSION}/${archive}"
+          echo "${GORELEASER_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p goreleaser-bin
+          tar -xzf "$archive" -C goreleaser-bin goreleaser
+          echo "${RUNNER_TEMP}/goreleaser-bin" >> "$GITHUB_PATH"
+
       # The key lives outside the work tree, so GoReleaser's dirty-tree check
       # never sees it, and it never reaches a command line or the log. The
       # secret is accepted with or without a trailing newline; the file always
@@ -242,11 +263,9 @@ jobs:
 
       - name: GoReleaser
         if: steps.exists.outputs.present != 'true'
-        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
-        with:
-          args: release --clean --release-notes=docs/releases/${{ needs.plan.outputs.version }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: goreleaser release --clean --release-notes="docs/releases/${VERSION}.md"
 
       - name: Delete the signing key
         if: always()

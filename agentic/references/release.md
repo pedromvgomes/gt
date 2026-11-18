@@ -98,6 +98,13 @@ against the committed `internal/selfupdate/minisign.pub`, so a secret that does
 not match the embedded public key fails the run before anything is tagged or
 published. The key file is removed in an `if: always()` step.
 
+GoReleaser runs while that key is on disk, so the `release` job installs an
+exact GoReleaser release tarball checked against a pinned SHA-256, the same way
+it installs minisign, and runs it directly. `goreleaser-action` is not used:
+it resolves the version at run time and verifies the archive only against
+`checksums.txt` from the same release. Bumping GoReleaser means changing
+`GORELEASER_VERSION` and `GORELEASER_SHA256` together.
+
 The public key is embedded in the binary and is the only thing `gt update`
 trusts. Rotating the key means a new `MINISIGN_KEY` secret and a new
 `minisign.pub` in the same release; binaries already installed cannot verify a
