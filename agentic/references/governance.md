@@ -85,6 +85,26 @@ else. A sync that changes it is therefore always referred and needs a `/lydite
 clear`; gt does not split sync pull requests to isolate it. See [ADR 0003](../../docs/adr/0003-lydite-exemptions-are-managed-not-scaffolded.md)
 for why the file is managed rather than scaffolded.
 
+## The agtk lockfile
+
+`agent_lock` (`ignored` by default, or `tracked`) says whether
+`.agentic-toolkit.lock.yaml` is committed. It only applies to a repository with
+an `.agentic-toolkit.yaml`.
+
+An ignored lockfile is absent from every fresh checkout, and `agtk sync` locks
+from scratch when the file is missing, so each new worktree starts on the current
+head of every source ref with no bump step. `tracked` pins them instead.
+
+The policy is a spec key rather than something inferred from `.gitignore`: a
+repository that tracks its lock on purpose looks exactly like one that was never
+migrated, and inferring would ask again on every sync.
+
+`sync` (`repogov/agentlock.go`) adds the anchored `/.agentic-toolkit.lock.yaml`
+entry under `ignored` and removes it under `tracked`. A tracked file leaves the
+index with `git rm --cached` after an interactive confirmation; declining skips
+the whole lockfile step. `check` reports the mismatch as drift. Only the
+exact root entry is ever removed from `.gitignore`.
+
 ## The version gate
 
 `Spec.GTVersion` (`gt_version`) records the gt release that last rendered the

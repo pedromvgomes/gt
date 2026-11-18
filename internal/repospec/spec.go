@@ -39,7 +39,19 @@ type Spec struct {
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
 	Files               []string            `yaml:"files" json:"files"`
+
+	// AgentLock is whether the agentic-toolkit lockfile is gitignored or
+	// committed. Ignored (the default) means every fresh checkout locks the
+	// toolkit's sources at their current heads; tracked pins them. It only
+	// applies to a repository that has an .agentic-toolkit.yaml.
+	AgentLock string `yaml:"agent_lock" json:"agent_lock"`
 }
+
+// The accepted values of Spec.AgentLock.
+const (
+	AgentLockIgnored = "ignored"
+	AgentLockTracked = "tracked"
+)
 
 // DependabotEntry is one ecosystem/directory pair. Note carries the per-repo
 // rationale that would otherwise live as a YAML comment; it is re-emitted as a
@@ -492,7 +504,8 @@ func Default() Spec {
 				Tags:    []string{"v*.*.*"},
 			},
 		},
-		Files: []string{"sync", "dependabot-auto-merge"},
+		Files:     []string{"sync", "dependabot-auto-merge"},
+		AgentLock: AgentLockIgnored,
 	}
 }
 
@@ -572,7 +585,17 @@ func Validate(s Spec) error {
 	if err := validatePipeline(s.Pipeline); err != nil {
 		return err
 	}
+	if err := validateAgentLock(s.AgentLock); err != nil {
+		return err
+	}
 	return validateFiles(s.Files)
+}
+
+func validateAgentLock(v string) error {
+	if v == AgentLockIgnored || v == AgentLockTracked {
+		return nil
+	}
+	return fmt.Errorf("agent_lock %q is not valid: use %q or %q", v, AgentLockIgnored, AgentLockTracked)
 }
 
 func validateDependabot(entries []DependabotEntry) error {

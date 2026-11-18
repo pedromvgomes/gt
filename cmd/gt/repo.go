@@ -287,6 +287,28 @@ func confirmSync(printer *ui.UI, drifted []repogov.Result) (bool, error) {
 	}
 }
 
+// confirmUntrackLock asks before removing the agtk lockfile from the index. The
+// file stays on disk, but the removal shows up in the next commit, so the
+// decision is the user's. Declining leaves the whole lockfile policy alone.
+func confirmUntrackLock(printer *ui.UI) (bool, error) {
+	for {
+		answer, err := printer.Prompt(
+			"Stop tracking "+repogov.AgentLockFile+" and gitignore it? [Y/n] (n = keep it; set agent_lock: tracked)",
+			"Y", false, "")
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			printer.Warn("Please answer y or n")
+		}
+	}
+}
+
 func printSpecSummary(printer *ui.UI, spec repospec.Spec, opts repogov.Options) {
 	_, _ = fmt.Fprintf(printer.Out, "Detected governance for %s/%s:\n", opts.RepoOwner, opts.RepoName)
 	if len(spec.Dependabot) == 0 {
@@ -316,6 +338,16 @@ func printReport(printer *ui.UI, report repogov.Report, opts repogov.Options) {
 	if report.SpecStale {
 		printer.Warn("%s restates values that are gt defaults — sync rewrites it to only the overrides",
 			repospec.FileName)
+	}
+
+	switch l := report.AgentLock; {
+	case l.AddIgnore:
+		printer.Warn("%s is not gitignored — sync adds /%s to .gitignore", repogov.AgentLockFile, repogov.AgentLockFile)
+	case l.RemoveIgnore:
+		printer.Warn("%s is gitignored but agent_lock is tracked — sync removes the entry", repogov.AgentLockFile)
+	}
+	if report.AgentLock.Untrack {
+		printer.Warn("%s is tracked — sync stops tracking it (git rm --cached)", repogov.AgentLockFile)
 	}
 
 	drifted := repogov.Drifted(report.Results)

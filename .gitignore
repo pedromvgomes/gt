@@ -9,3 +9,6 @@
 /.agents/
 /AGENTS.md
 /.codex/
+
+# agtk lockfile: ignored so every fresh checkout locks the toolkit sources at their current heads.
+/.agentic-toolkit.lock.yaml
