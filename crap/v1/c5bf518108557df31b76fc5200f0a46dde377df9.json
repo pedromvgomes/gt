@@ -1,0 +1,7 @@
+{
+  "gt": {
+    "above": 6,
+    "worst": 111.38971324533455,
+    "producer": "go 1.27.4, scope -coverpkg=./internal/... ./tests/..."
+  }
+}
