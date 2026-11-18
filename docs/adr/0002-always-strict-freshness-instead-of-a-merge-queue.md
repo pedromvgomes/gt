@@ -64,3 +64,16 @@ The pieces that serve a queue someone adds by hand stay in place, because
 they cost nothing without one: the orchestrator's `merge_group` trigger and
 `reusable-attest.yml`'s recovery of the pull requests a `gh-readonly-queue` ref
 names.
+
+## The break-glass
+
+Strict freshness has no opt-out, and `settings.branch_protection.bypass` is not
+one. It defaults to `admin`: the repository Admin role may merge a pull request
+past unmet requirements, for pull requests only, and cannot push to the branch
+directly. It is the escape for a stuck required check or a fix that is itself
+blocked by the check it repairs. It does not change what a pull request must
+satisfy, and it is a person's act, taken per pull request.
+
+Agent sessions use the owner's token, so they hold the same ability. The rule
+that an agent never merges unless told to is what constrains them, not the
+ruleset. `bypass: none` removes it.

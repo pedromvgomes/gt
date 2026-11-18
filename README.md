@@ -384,7 +384,7 @@ ruleset's required checks). Once one of those two pull requests lands, the
 other cannot merge until it is updated, and updating it runs `ci-gate` against
 the tree that will actually land. There is no opt-out and no spec key for it:
 `base_freshness` and `require_up_to_date` still parse, but nothing reads them,
-and `gt repo sync` drops them from `.gt-repo.yaml`.
+and `gt repo sync` drops them from `.gt-repo.yaml`. The one break-glass is `settings.branch_protection.bypass` (`admin` by default, `none` to remove): repository admins may merge a pull request past unmet requirements, and cannot push to the branch directly.
 
 gt applies no merge queue, and `settings apply` removes a `merge_queue` rule
 from the ruleset it owns — see

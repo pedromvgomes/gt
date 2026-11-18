@@ -26,6 +26,24 @@ update runs `ci-gate` against the tree that will actually land.
 `settings diff` reports `ruleset.strict_required_status_checks_policy` as drift
 whenever the live flag differs from `pipeline.ci.enabled`.
 
+## The admin bypass
+
+`settings.branch_protection.bypass` (`admin` by default, or `none`) sets whether
+the repository Admin role is a bypass actor on the ruleset. gt manages exactly
+that one entry: the `RepositoryRole` with id 5, in `pull_request` mode, which
+lets an admin merge a pull request past unmet requirements and never push to the
+branch directly. A personal repository has no bypass actor for an individual
+account, so the owner is reached through the role. Every other bypass actor on
+the ruleset is written back untouched.
+
+`apply` always writes `bypass_actors`, an empty list included, so `none` clears
+an Admin entry rather than leaving it in place. `settings diff` reports
+`ruleset.bypass.admin`, with `always` or `exempt` on the live side counted as
+drift from `pull_request`. The bypass is not an opt-out of strict freshness: the
+requirement is unchanged, and merging past it is a person's act. Agent sessions
+run on the owner's token and hold the same ability; the rule that an agent never
+merges unless told to is what constrains them.
+
 ## Retired spec keys
 
 `settings.branch_protection.base_freshness` and `require_up_to_date` are
