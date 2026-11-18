@@ -189,7 +189,7 @@ type liveRuleset struct {
 		} `json:"ref_name"`
 	} `json:"conditions"`
 	// BypassActors is kept as raw JSON. gt owns exactly one entry, the
-	// repository Admin role (see adminBypass); every other actor is a fact about
+	// repository Admin role (see withAdminBypass); every other actor is a fact about
 	// a person or an app, written back untouched, because dropping it on apply
 	// would quietly revoke an exemption somebody relies on.
 	BypassActors []json.RawMessage `json:"bypass_actors"`
@@ -775,7 +775,13 @@ func SettingsApply(ctx context.Context, gh GH, spec repospec.Spec, owner, name s
 				carried[r.Type] = r.raw
 			}
 		}
-		if len(bypass) == 0 && src.Enforcement == "active" {
+		// gt's own ruleset keeps its actors while paused, because apply
+		// re-activates it and always writes the list: taking them only from an
+		// active source would replace a paused ruleset's exemptions with the
+		// Admin entry alone. Another ruleset's actors count only while it is
+		// active, the same gate its absorbed rules pass through.
+		own := i == 0 && mine != nil
+		if len(bypass) == 0 && (own || src.Enforcement == "active") {
 			bypass = src.BypassActors
 		}
 	}

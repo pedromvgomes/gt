@@ -1417,3 +1417,22 @@ func TestBypassRejectsUnknownValue(t *testing.T) {
 		t.Fatalf("Parse() error = %v, want a bypass complaint", err)
 	}
 }
+
+func TestBypassKeepsOtherActorsOfAPausedGtRuleset(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"disabled",
+	  "bypass_actors":[{"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var kept, admin bool
+	for _, a := range bypassActors(t, lastApplyBody(t, gh)) {
+		kept = kept || a["actor_type"] == "Integration"
+		admin = admin || a["actor_type"] == "RepositoryRole"
+	}
+	if !kept || !admin {
+		t.Errorf("bypass_actors lost the Integration (%t) or the Admin role (%t)", kept, admin)
+	}
+}
