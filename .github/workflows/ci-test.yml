@@ -29,7 +29,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # From go.mod's `toolchain` line, so there is one place to bump.
+          # From go.mod (its `toolchain` line when present, else the `go`
+          # directive, an exact patch version either way), so there is one
+          # place to bump.
           go-version-file: go.mod
 
       # -coverpkg is load-bearing, for the reason in the header comment.

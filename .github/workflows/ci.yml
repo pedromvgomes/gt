@@ -13,10 +13,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # From go.mod's `toolchain` line, not restated here. The old
-          # `go-version: "1.26"` resolved to 1.26.0 and stayed there, so the
-          # build silently kept a toolchain with 18 stdlib advisories open
-          # against it.
+          # From go.mod, not restated here: the `toolchain` line when there is
+          # one, the `go` directive otherwise, and both are exact patch
+          # versions. A pinned `go-version: "1.26"` resolves to 1.26.0 and
+          # stays there, keeping a toolchain with open stdlib advisories.
           go-version-file: go.mod
       - name: Download modules
         run: go mod download

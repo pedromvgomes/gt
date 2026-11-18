@@ -166,12 +166,14 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 
 			total := 0
 			eligible := 0
+			failed := 0
 			for _, repo := range repos {
 				pending, err := repogov.PendingWorkflowPRs(ctx, gh, repo, maxBump.Get(inv))
 				if err != nil {
 					// One inaccessible repo must not end the sweep; the point
 					// is to see the whole fleet.
 					inv.Warning("%s: %v", repo, err)
+					failed++
 					continue
 				}
 				for _, pr := range pending {
@@ -184,6 +186,7 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 					if pr.Behind && merge.Get(inv) {
 						if err := repogov.RequestRebase(ctx, gh, pr); err != nil {
 							inv.Warning("  rebase request failed: %v", err)
+							failed++
 							continue
 						}
 						inv.Info("  asked Dependabot to rebase %s#%d", pr.Repo, pr.Number)
@@ -197,19 +200,25 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 					}
 					if err := repogov.MergePending(ctx, gh, pr); err != nil {
 						inv.Warning("  merge failed: %v", err)
+						failed++
 						continue
 					}
 					inv.Success("  merged %s#%d", pr.Repo, pr.Number)
 				}
 			}
 
-			if total == 0 {
+			if total == 0 && failed == 0 {
 				inv.Success("No pending workflow PRs.")
 				return nil
 			}
-			if !merge.Get(inv) {
+			if !merge.Get(inv) && total > 0 {
 				inv.Info("%d pending PR(s), %d eligible. Re-run with --merge to squash-merge the eligible ones.",
 					total, eligible)
+			}
+			// Warnings are silenced by --quiet, so a sweep that could not read or
+			// act on part of the fleet must not exit 0.
+			if failed > 0 {
+				return fmt.Errorf("%d operation(s) failed", failed)
 			}
 			return nil
 		},

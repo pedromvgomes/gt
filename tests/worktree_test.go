@@ -355,8 +355,8 @@ func TestWorktreeNukeSkipsDirtyWithoutForce(t *testing.T) {
 	err := worktree.Nuke(context.Background(), runner, inv, testConfig(), worktree.NukeOptions{
 		CWD: root,
 	})
-	if err != nil {
-		t.Fatalf("Nuke() error = %v", err)
+	if err == nil {
+		t.Fatal("Nuke() error = nil, want a failure for the dirty worktree")
 	}
 	for _, call := range runner.calls {
 		if len(call) > 0 && reflect.DeepEqual(call[1:], []string{"worktree", "remove", "--force", path}) {
@@ -401,6 +401,64 @@ func TestPruneBranchesDryRunSkipsProtectedAndActive(t *testing.T) {
 		if reflect.DeepEqual(call, []string{gitDir(root), "branch", "-D", "feature/orphan"}) {
 			t.Fatal("dry-run deleted orphan branch")
 		}
+	}
+}
+
+func TestWorktreeNukeReturnsErrorOnPartialFailure(t *testing.T) {
+	root := makeManagedRoot(t)
+	bad := filepath.Join(root, "feature", "bad")
+	good := filepath.Join(root, "feature", "good")
+	for _, p := range []string{bad, good} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &fakeGitRunner{errs: map[string]error{
+		gitDirKey(root, "worktree", "remove", bad): errors.New("worktree is dirty"),
+	}}
+
+	err := worktree.Nuke(context.Background(), runner, quietInvocation(), testConfig(), worktree.NukeOptions{CWD: root})
+	if err == nil || !strings.Contains(err.Error(), "1 of 2 worktrees could not be removed") {
+		t.Fatalf("Nuke() error = %v, want a 1 of 2 failure", err)
+	}
+	removedGood := false
+	for _, call := range runner.calls {
+		if reflect.DeepEqual(call, []string{gitDir(root), "worktree", "remove", good}) {
+			removedGood = true
+		}
+	}
+	if !removedGood {
+		t.Fatalf("the healthy worktree was not processed; calls = %#v", runner.calls)
+	}
+}
+
+func TestPruneBranchesReturnsErrorOnPartialFailure(t *testing.T) {
+	root := makeManagedRoot(t)
+	runner := &fakeGitRunner{
+		responses: map[string]git.Result{
+			gitDirKey(root, "remote", "show", "origin"): {Stdout: "  HEAD branch: main\n"},
+			gitDirKey(root, "for-each-ref", "--format=%(refname:short)", "refs/heads/"): {
+				Stdout: "main\nfeature/a\nfeature/b\n",
+			},
+			gitDirKey(root, "worktree", "list", "--porcelain"): {Stdout: "worktree /tmp/x\n"},
+		},
+		errs: map[string]error{
+			gitDirKey(root, "branch", "-D", "feature/a"): errors.New("cannot delete"),
+		},
+	}
+
+	err := worktree.PruneBranches(context.Background(), runner, quietInvocation(), worktree.PruneBranchesOptions{CWD: root})
+	if err == nil || !strings.Contains(err.Error(), "1 of 2 branches could not be deleted") {
+		t.Fatalf("PruneBranches() error = %v, want a 1 of 2 failure", err)
+	}
+	deletedB := false
+	for _, call := range runner.calls {
+		if reflect.DeepEqual(call, []string{gitDir(root), "branch", "-D", "feature/b"}) {
+			deletedB = true
+		}
+	}
+	if !deletedB {
+		t.Fatalf("feature/b was not processed; calls = %#v", runner.calls)
 	}
 }
 

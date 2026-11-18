@@ -115,9 +115,10 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # From go.mod's `toolchain` line, not a literal: a pinned "1.26"
-          # resolves to 1.26.0 and stays there, keeping a toolchain with open
-          # stdlib advisories.
+          # From go.mod, not a literal: the `toolchain` line when present, else
+          # the `go` directive, an exact patch version either way. A pinned
+          # "1.26" resolves to 1.26.0 and stays there, keeping a toolchain with
+          # open stdlib advisories.
           go-version-file: go.mod
 
       - name: The notes are present and the commit is on main

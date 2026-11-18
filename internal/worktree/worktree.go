@@ -320,6 +320,8 @@ func Nuke(ctx context.Context, runner git.Runner, inv *spec.Invocation, cfg conf
 	}
 	items := collectWorktrees(root, cfg.WorktreeTypes, false)
 	removed := 0
+	failed := 0
+	branchFailed := 0
 	branches := make([]string, 0, len(items))
 	for _, item := range items {
 		if err := nukeRemoveWorktree(ctx, runner, root, item.Path, opts.Force); err != nil {
@@ -328,6 +330,7 @@ func Nuke(ctx context.Context, runner git.Runner, inv *spec.Invocation, cfg conf
 			} else {
 				inv.Warning("Failed to remove worktree at %s (re-run with --force to discard uncommitted changes)", item.Path)
 			}
+			failed++
 			continue
 		}
 		removed++
@@ -343,11 +346,23 @@ func Nuke(ctx context.Context, runner git.Runner, inv *spec.Invocation, cfg conf
 			} else if exists {
 				if _, err := runner.Run(ctx, "", gitDir(root), "branch", "-D", branch); err != nil {
 					inv.Warning("Failed to delete branch %q", branch)
+					branchFailed++
 				}
 			}
 		}
 	}
 	inv.Success("Removed %d worktree(s)", removed)
+	// Warnings are silenced by --quiet, so a partial failure has to reach the
+	// exit status or a quiet run reports success over leftover worktrees.
+	switch {
+	case failed > 0 && branchFailed > 0:
+		return fmt.Errorf("%d of %d worktrees could not be removed and %d branch(es) could not be deleted",
+			failed, len(items), branchFailed)
+	case failed > 0:
+		return fmt.Errorf("%d of %d worktrees could not be removed", failed, len(items))
+	case branchFailed > 0:
+		return fmt.Errorf("%d branch(es) could not be deleted", branchFailed)
+	}
 	return nil
 }
 
@@ -388,6 +403,7 @@ func PruneBranches(ctx context.Context, runner git.Runner, inv *spec.Invocation,
 	}
 	protected := map[string]bool{defaultBranch: true, "main": true, "master": true, "scratch": true}
 	count := 0
+	failed := 0
 	for _, branch := range lines(result.Stdout) {
 		if protected[branch] || worktrees[branch] {
 			continue
@@ -399,6 +415,7 @@ func PruneBranches(ctx context.Context, runner git.Runner, inv *spec.Invocation,
 		}
 		if _, err := runner.Run(ctx, "", gitDir(root), "branch", "-D", branch); err != nil {
 			inv.Warning("Failed to delete branch %q", branch)
+			failed++
 		}
 	}
 	if count == 0 {
@@ -406,7 +423,12 @@ func PruneBranches(ctx context.Context, runner git.Runner, inv *spec.Invocation,
 	} else if opts.DryRun {
 		inv.Info("%d branch(es) would be deleted. Run without --dry-run to delete.", count)
 	} else {
-		inv.Success("Deleted %d branch(es)", count)
+		inv.Success("Deleted %d branch(es)", count-failed)
+	}
+	// Warnings are silenced by --quiet, so a partial failure has to reach the
+	// exit status.
+	if failed > 0 {
+		return fmt.Errorf("%d of %d branches could not be deleted", failed, count)
 	}
 	return nil
 }
