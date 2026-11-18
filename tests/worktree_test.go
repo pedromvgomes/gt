@@ -44,7 +44,8 @@ func TestWorktreeAddFromSource(t *testing.T) {
 			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/remotes/origin/feature/new-thing"): errors.New("missing"),
 		},
 	}
-	inv := quietInvocation()
+	var stdout, stderr bytes.Buffer
+	inv := testInvocation("", &stdout, &stderr, false)
 
 	err := worktree.Add(context.Background(), runner, inv, testConfig(), worktree.AddOptions{
 		Spec: "feature/new-thing",
@@ -55,9 +56,41 @@ func TestWorktreeAddFromSource(t *testing.T) {
 		t.Fatalf("Add() error = %v", err)
 	}
 
-	wantLast := []string{gitDir(root), "worktree", "add", "--no-track", "-b", "feature/new-thing", filepath.Join(root, "feature", "new-thing"), "origin/main"}
+	path := filepath.Join(root, "feature", "new-thing")
+	wantLast := []string{gitDir(root), "worktree", "add", "--no-track", "-b", "feature/new-thing", path, "origin/main"}
 	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, wantLast) {
 		t.Fatalf("last call = %#v, want %#v", got, wantLast)
+	}
+	for _, want := range []string{"Fetching latest from origin...", "Worktree created at " + path} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
+		}
+	}
+	// A branch cut with --no-track has no upstream until its first push.
+	for _, want := range []string{"  cd " + path + "\n", "  git push -u origin feature/new-thing"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestWorktreeAddReturnsWorktreeAddFailure(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "new-thing")
+	runner := &fakeGitRunner{
+		errs: map[string]error{
+			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/heads/feature/new-thing"):               errors.New("missing"),
+			gitDirKey(root, "worktree", "add", "--no-track", "-b", "feature/new-thing", path, "origin/main"): errors.New("worktree add failed"),
+		},
+	}
+
+	err := worktree.Add(context.Background(), runner, quietInvocation(), testConfig(), worktree.AddOptions{
+		Spec: "feature/new-thing",
+		From: "main",
+		CWD:  root,
+	})
+	if err == nil || !strings.Contains(err.Error(), "worktree add failed") {
+		t.Fatalf("Add() error = %v, want the worktree add failure", err)
 	}
 }
 
@@ -68,7 +101,9 @@ func TestWorktreeAddExistingRemoteBranch(t *testing.T) {
 			gitDirKey(root, "show-ref", "--verify", "--quiet", "refs/heads/fix/bug"): errors.New("missing"),
 		},
 	}
-	err := worktree.Add(context.Background(), runner, quietInvocation(), testConfig(), worktree.AddOptions{
+	var stdout, stderr bytes.Buffer
+	inv := testInvocation("", &stdout, &stderr, false)
+	err := worktree.Add(context.Background(), runner, inv, testConfig(), worktree.AddOptions{
 		Spec: "fix/bug",
 		CWD:  root,
 	})
@@ -76,9 +111,20 @@ func TestWorktreeAddExistingRemoteBranch(t *testing.T) {
 		t.Fatalf("Add() error = %v", err)
 	}
 
-	wantLast := []string{gitDir(root), "worktree", "add", "--track", "-b", "fix/bug", filepath.Join(root, "fix", "bug"), "origin/fix/bug"}
+	path := filepath.Join(root, "fix", "bug")
+	wantLast := []string{gitDir(root), "worktree", "add", "--track", "-b", "fix/bug", path, "origin/fix/bug"}
 	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, wantLast) {
 		t.Fatalf("last call = %#v, want %#v", got, wantLast)
+	}
+	if want := "Worktree created at " + path; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
+	}
+	// The branch already tracks origin/fix/bug, so there is no first push to suggest.
+	if want := "  cd " + path + "\n"; !strings.Contains(stdout.String(), want) {
+		t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+	}
+	if strings.Contains(stdout.String(), "git push -u") {
+		t.Fatalf("stdout = %q, want no first-push hint for a tracking branch", stdout.String())
 	}
 }
 
@@ -129,10 +175,10 @@ func TestWorktreeRemoveCleanRemovesWithoutPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeGitRunner{} // empty status response => clean
-	var out bytes.Buffer
+	var out, stderr bytes.Buffer
 	// Empty input at a terminal: a question asked here would end the run
 	// with ErrAborted, so success proves a clean worktree asks nothing.
-	inv := testInvocation("", &out, ioDiscard{}, true)
+	inv := testInvocation("", &out, &stderr, true)
 
 	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
 		Name: "clean",
@@ -144,6 +190,35 @@ func TestWorktreeRemoveCleanRemovesWithoutPrompt(t *testing.T) {
 	want := []string{gitDir(root), "worktree", "remove", path}
 	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("last call = %#v, want %#v", got, want)
+	}
+	if !strings.Contains(stderr.String(), `Worktree "clean" removed`) {
+		t.Fatalf("stderr = %q, want the removal confirmed", stderr.String())
+	}
+}
+
+func TestWorktreeRemoveReturnsBranchDeleteFailure(t *testing.T) {
+	root := makeManagedRoot(t)
+	path := filepath.Join(root, "feature", "stale")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeGitRunner{errs: map[string]error{
+		gitDirKey(root, "branch", "-D", "feature/stale"): errors.New("cannot delete branch"),
+	}}
+	var stderr bytes.Buffer
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
+
+	err := worktree.Remove(context.Background(), runner, inv, testConfig(), worktree.RemoveOptions{
+		Name:         "stale",
+		DeleteBranch: true,
+		Force:        true,
+		CWD:          root,
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot delete branch") {
+		t.Fatalf("Remove() error = %v, want the branch deletion failure", err)
+	}
+	if strings.Contains(stderr.String(), "removed") {
+		t.Fatalf("stderr = %q, want no success reported over a failed branch deletion", stderr.String())
 	}
 }
 
@@ -397,6 +472,9 @@ func TestPruneBranchesDryRunSkipsProtectedAndActive(t *testing.T) {
 	if !strings.Contains(out.String(), "Would delete branch: feature/orphan") {
 		t.Fatalf("output = %q", out.String())
 	}
+	if !strings.Contains(out.String(), "1 branch(es) would be deleted") {
+		t.Fatalf("output = %q, want the dry-run count", out.String())
+	}
 	for _, call := range runner.calls {
 		if reflect.DeepEqual(call, []string{gitDir(root), "branch", "-D", "feature/orphan"}) {
 			t.Fatal("dry-run deleted orphan branch")
@@ -447,9 +525,17 @@ func TestPruneBranchesReturnsErrorOnPartialFailure(t *testing.T) {
 		},
 	}
 
-	err := worktree.PruneBranches(context.Background(), runner, quietInvocation(), worktree.PruneBranchesOptions{CWD: root})
+	var stderr bytes.Buffer
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
+	err := worktree.PruneBranches(context.Background(), runner, inv, worktree.PruneBranchesOptions{CWD: root})
 	if err == nil || !strings.Contains(err.Error(), "1 of 2 branches could not be deleted") {
 		t.Fatalf("PruneBranches() error = %v, want a 1 of 2 failure", err)
+	}
+	// The count reported deleted excludes the branch that failed.
+	for _, want := range []string{`Failed to delete branch "feature/a"`, "Deleted 1 branch(es)"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
+		}
 	}
 	deletedB := false
 	for _, call := range runner.calls {

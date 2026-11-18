@@ -436,14 +436,14 @@ func PruneBranches(ctx context.Context, runner git.Runner, inv *spec.Invocation,
 func ParseSpec(spec string, types []string) (string, string, error) {
 	typ, name, ok := strings.Cut(spec, "/")
 	if !ok || typ == "" || name == "" || strings.Contains(name, "/") {
-		return "", "", errors.New("expected worktree name as <type>/<name>")
+		return "", "", errors.New("expected worktree name as <type>/<name>") // [lydite:exclude_from_mutation][type and name are discarded: every caller returns on the non-nil error without reading them]
 	}
 	for _, valid := range types {
 		if typ == valid {
 			return typ, name, nil
 		}
 	}
-	return "", "", fmt.Errorf("invalid worktree type %q", typ)
+	return "", "", fmt.Errorf("invalid worktree type %q", typ) // [lydite:exclude_from_mutation][type and name are discarded: every caller returns on the non-nil error without reading them]
 }
 
 func addFromSource(ctx context.Context, runner git.Runner, inv *spec.Invocation, root, path, branch, source string, newBranch bool) error {

@@ -61,7 +61,8 @@ func TestRunMinimalClonePath(t *testing.T) {
 			},
 		},
 	}
-	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 
 	err := clone.Run(context.Background(), runner, inv, config.Config{
 		WorktreeTypes: []string{"feature", "fix", "chore"},
@@ -95,6 +96,18 @@ func TestRunMinimalClonePath(t *testing.T) {
 			t.Fatalf("expected %s to exist: %v", path, err)
 		}
 	}
+
+	for _, want := range []string{
+		"Using folder name: gt",
+		"Cloning git@github.com:pedromvgomes/gt.git into " + filepath.Join("gt", ".bare") + "...",
+		"Default branch: trunk",
+		"Creating trunk worktree...",
+		"Repository cloned successfully",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
+		}
+	}
 }
 
 func TestRunRejectsExistingFolder(t *testing.T) {
@@ -122,7 +135,8 @@ func TestRunFallsBackToMainWhenRemoteShowFails(t *testing.T) {
 			"--git-dir=.bare remote show origin": errors.New("remote show failed"),
 		},
 	}
-	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 
 	err := clone.Run(context.Background(), runner, inv, config.Default(), clone.Options{
 		RepoURL:     "git@github.com:pedromvgomes/gt.git",
@@ -137,6 +151,9 @@ func TestRunFallsBackToMainWhenRemoteShowFails(t *testing.T) {
 	want := []string{"--git-dir=.bare", "worktree", "add", "main", "main"}
 	if !reflect.DeepEqual(last, want) {
 		t.Fatalf("last call = %#v, want %#v", last, want)
+	}
+	if !strings.Contains(stderr.String(), "Could not detect default branch, using 'main'") {
+		t.Fatalf("stderr = %q, want the fallback warning", stderr.String())
 	}
 }
 
@@ -154,7 +171,9 @@ func TestHTTPToSSHUsesHostAlias(t *testing.T) {
 }
 
 func TestResolveRepoURLHonorsPromptNo(t *testing.T) {
-	inv := testInvocation("n\n", ioDiscard{}, ioDiscard{}, true)
+	writeSSHConfig(t, "")
+	var stderr strings.Builder
+	inv := testInvocation("n\n", ioDiscard{}, &stderr, true)
 	got, err := clone.ResolveRepoURL(inv, config.Default(), clone.Options{
 		RepoURL: "https://github.com/pedromvgomes/gt.git",
 	})
@@ -163,6 +182,9 @@ func TestResolveRepoURLHonorsPromptNo(t *testing.T) {
 	}
 	if want := "https://github.com/pedromvgomes/gt.git"; got != want {
 		t.Fatalf("ResolveRepoURL() = %q, want %q", got, want)
+	}
+	if want := "HTTPS repository URL detected; equivalent SSH URL: git@github.com:pedromvgomes/gt.git"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 }
 
@@ -304,7 +326,8 @@ func TestResolveAliasSingleMatchPicksSilently(t *testing.T) {
 }
 
 func TestResolveAliasMultipleMatchesPrompts(t *testing.T) {
-	inv := testInvocation("2\n", ioDiscard{}, ioDiscard{}, true)
+	var stdout strings.Builder
+	inv := testInvocation("2\n", &stdout, ioDiscard{}, true)
 	ssh := config.SSH{
 		UserAliases: map[string]map[string]string{
 			"alice": {"github.com": "github-alice"},
@@ -317,6 +340,12 @@ func TestResolveAliasMultipleMatchesPrompts(t *testing.T) {
 	}
 	if got != "github-bob" {
 		t.Fatalf("ResolveAlias() = %q, want github-bob", got)
+	}
+	// The listed numbers are the ones the answer picks by.
+	for _, want := range []string{"  [1] alice -> github-alice\n", "  [2] bob -> github-bob\n"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
 	}
 }
 
@@ -482,13 +511,17 @@ Host github-personal
   Hostname github.com
   IdentityFile ~/.ssh/personal_key
 `)
-	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
 	if got != "github-personal" {
 		t.Fatalf("ResolveAlias() = %q, want github-personal", got)
+	}
+	if want := `using SSH alias "github-personal" from ~/.ssh/config (Hostname matches github.com)`; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 }
 
@@ -502,13 +535,27 @@ Host github-personal
   Hostname github.com
   IdentityFile ~/.ssh/personal_key
 `)
-	inv := testInvocation("2\n", ioDiscard{}, ioDiscard{}, true)
+	var stdout, stderr strings.Builder
+	inv := testInvocation("2\n", &stdout, &stderr, true)
 	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
 	if got != "github-personal" {
 		t.Fatalf("ResolveAlias() = %q, want github-personal", got)
+	}
+	// The listed numbers are the ones the answer picks by.
+	for _, want := range []string{
+		"  [1] github.com  (IdentityFile: ",
+		"  [2] github-personal  (IdentityFile: ",
+		"  [3] keep github.com (no rewrite)\n",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+	if want := "host_aliases:\n    github.com: github-personal"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, want the hint to persist the choice (%q)", stderr.String(), want)
 	}
 }
 
@@ -538,13 +585,17 @@ Host github.com
 Host github-personal
   Hostname github.com
 `)
-	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 	got, err := clone.ResolveAlias(inv, config.SSH{}, "github.com", "")
 	if err != nil {
 		t.Fatalf("ResolveAlias() error = %v", err)
 	}
 	if got != "github.com" {
 		t.Fatalf("ResolveAlias() = %q, want github.com (kept on non-interactive multi-match)", got)
+	}
+	if want := "multiple SSH aliases for github.com in ~/.ssh/config"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 }
 

@@ -21,7 +21,8 @@ func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
 			Stdout: "  HEAD branch: main\n",
 		},
 	}}
-	inv := testInvocation("scratch-exp\nmain\n", ioDiscard{}, ioDiscard{}, true)
+	var stderr bytes.Buffer
+	inv := testInvocation("scratch-exp\nmain\n", ioDiscard{}, &stderr, true)
 
 	err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root})
 	if err != nil {
@@ -31,6 +32,11 @@ func TestScratchCreatePromptsForBranchAndSource(t *testing.T) {
 	want := []string{gitDir(root), "worktree", "add", "--no-track", "-b", "scratch-exp", filepath.Join(root, "scratch"), "origin/main"}
 	if got := runner.calls[len(runner.calls)-1]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("last call = %#v, want %#v", got, want)
+	}
+	for _, msg := range []string{"Fetching latest from origin...", "Scratch worktree created at " + filepath.Join(root, "scratch")} {
+		if !strings.Contains(stderr.String(), msg) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), msg)
+		}
 	}
 }
 
@@ -43,8 +49,8 @@ func TestScratchExistingPrintsCommitAndHint(t *testing.T) {
 	runner := &fakeGitRunner{responses: map[string]git.Result{
 		"-C " + path + " log -1 --format=%h %s": {Stdout: "abc123 scratch commit\n"},
 	}}
-	var out bytes.Buffer
-	inv := testInvocation("", &out, ioDiscard{}, false)
+	var out, stderr bytes.Buffer
+	inv := testInvocation("", &out, &stderr, false)
 
 	if err := scratch.Run(context.Background(), runner, inv, scratch.Options{CWD: root}); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -54,6 +60,9 @@ func TestScratchExistingPrintsCommitAndHint(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, missing %q", got, want)
 		}
+	}
+	if want := "Scratch worktree already exists at " + path; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 }
 
@@ -68,11 +77,17 @@ func TestScratchResetChecksOutScratchFromSelectedBranch(t *testing.T) {
 			Stdout: "  HEAD branch: main\n",
 		},
 	}}
-	inv := testInvocation("develop\n", ioDiscard{}, ioDiscard{}, true)
+	var stderr bytes.Buffer
+	inv := testInvocation("develop\n", ioDiscard{}, &stderr, true)
 
 	err := scratch.Run(context.Background(), runner, inv, scratch.Options{Reset: true, CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	for _, msg := range []string{"Fetching latest from origin...", "Scratch reset to origin/develop"} {
+		if !strings.Contains(stderr.String(), msg) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), msg)
+		}
 	}
 
 	wantSuffix := [][]string{
@@ -92,10 +107,15 @@ func TestScratchDeleteRemovesWorktreeAndBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeGitRunner{}
+	var stderr bytes.Buffer
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 
-	err := scratch.Run(context.Background(), runner, quietInvocation(), scratch.Options{Delete: true, CWD: root})
+	err := scratch.Run(context.Background(), runner, inv, scratch.Options{Delete: true, CWD: root})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Scratch worktree removed") {
+		t.Fatalf("stderr = %q, want the removal confirmed", stderr.String())
 	}
 
 	wantSuffix := [][]string{

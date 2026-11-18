@@ -247,6 +247,9 @@ func TestExecuteRunsTemplatesInOrder(t *testing.T) {
 	if !strings.Contains(output, "==> [1/2] first") || !strings.Contains(output, "==> [2/2] second") {
 		t.Fatalf("output missing step headers: %q", output)
 	}
+	if !strings.Contains(output, "Setup complete") {
+		t.Fatalf("output = %q, want the run reported complete", output)
+	}
 }
 
 func TestExecuteStopsOnFailure(t *testing.T) {
@@ -310,6 +313,54 @@ func TestExecuteDryRunDoesNotRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "x.txt")); err == nil {
 		t.Fatal("dry-run executed the template")
+	}
+}
+
+// The plan is listed before anything runs, numbered from 1 in run order, so
+// the user can see what a confirmation or a --dry-run covers.
+func TestExecuteListsTersePlanNumberedFromOne(t *testing.T) {
+	dir := t.TempDir()
+	out := &bytes.Buffer{}
+	inv := testInvocation("", out, out, false)
+	plan := setup.Plan{
+		Templates: []config.Template{
+			{Name: "first", Match: []string{"*"}, Run: "true"},
+			{Name: "second", Script: "setup.sh"},
+		},
+		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
+	}
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{DryRun: true}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{
+		"Will run 2 setup template(s) at " + dir + ":\n",
+		"  1. first   (match: *)  run\n",
+		"  2. second  (match: (explicit))  script: setup.sh\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output = %q, missing %q", out.String(), want)
+		}
+	}
+}
+
+func TestExecuteListsDetailedPlanNumberedFromOne(t *testing.T) {
+	dir := t.TempDir()
+	out := &bytes.Buffer{}
+	inv := testInvocation("", out, out, false)
+	plan := setup.Plan{
+		Templates: []config.Template{
+			{Name: "first", Run: "true"},
+			{Name: "second", Run: "true"},
+		},
+		Ctx: setup.Context{Root: dir, WorkDir: dir, Layout: setup.LayoutPlain},
+	}
+	if err := setup.Execute(context.Background(), inv, plan, setup.RunOptions{DryRun: true, Show: true}); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{"\n1. first\n", "\n2. second\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output = %q, missing %q", out.String(), want)
+		}
 	}
 }
 

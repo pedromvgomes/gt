@@ -104,6 +104,28 @@ func TestVersionCommandPrintsTheNormalisedRelease(t *testing.T) {
 	}
 }
 
+// The commit and date a release build stamps are what "gt version --json"
+// reports, in place of whatever the Go toolchain recorded.
+func TestVersionCommandReportsTheStampedCommitAndDate(t *testing.T) {
+	env, _ := appEnv(t)
+	a := app.New(app.BuildInfo{Version: "1.2.3", Commit: "0123456789abcdef", Date: "2026-11-17T00:00:00Z"}, app.Options{})
+
+	got := runApp(t, a, env, "version", "--json")
+	if got.code != vcli.ExitOK {
+		t.Fatalf("version --json exit = %d, stderr = %q", got.code, got.stderr)
+	}
+	var info struct {
+		Commit string `json:"commit"`
+		Date   string `json:"date"`
+	}
+	if err := json.Unmarshal([]byte(got.stdout), &info); err != nil {
+		t.Fatalf("version --json: %v\n%s", err, got.stdout)
+	}
+	if info.Commit != "0123456789abcdef" || info.Date != "2026-11-17T00:00:00Z" {
+		t.Fatalf("version --json = %+v, want the stamped commit and date", info)
+	}
+}
+
 func TestVersionCommandKeepsDev(t *testing.T) {
 	env, _ := appEnv(t)
 	got := runApp(t, devApp(), env, "version", "--json")

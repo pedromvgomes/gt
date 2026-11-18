@@ -25,7 +25,8 @@ func TestSetSSHRemoteRewritesOriginForUser(t *testing.T) {
 			},
 		},
 	}
-	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 	cfg := config.Default()
 	cfg.SSH.UserAliases = map[string]map[string]string{
 		"pedromvgomes": {"github.com": "github-personal"},
@@ -38,6 +39,9 @@ func TestSetSSHRemoteRewritesOriginForUser(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if want := "origin: git@github-personal:pedromvgomes/gt.git -> git@github-work:pedromvgomes/gt.git"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 
 	wantLast := []string{
@@ -61,7 +65,8 @@ func TestSetSSHRemoteNoOpWhenAlreadyCorrect(t *testing.T) {
 			},
 		},
 	}
-	inv := testInvocation("", ioDiscard{}, ioDiscard{}, false)
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
 	cfg := config.Default()
 	cfg.SSH.UserAliases = map[string]map[string]string{
 		"pedro-work": {"github.com": "github-work"},
@@ -78,6 +83,9 @@ func TestSetSSHRemoteNoOpWhenAlreadyCorrect(t *testing.T) {
 		if len(call) >= 3 && call[1] == "remote" && call[2] == "set-url" {
 			t.Fatalf("set-url was called for a no-op rewrite: %#v", call)
 		}
+	}
+	if want := "origin already points to git@github-work:pedromvgomes/gt.git"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
 	}
 }
 

@@ -180,6 +180,33 @@ func TestRunErrorsWhenDirenvMissingOnLinux(t *testing.T) {
 	}
 }
 
+// direnv only loads .envrc in a shell that has its hook installed, so a shell
+// that does not pick up DIRENV_DIR after 'direnv allow' gets the hook line to
+// add, rather than a silently unscoped GH_TOKEN.
+func TestRunWarnsWhenShellHookIsMissing(t *testing.T) {
+	root := makeManagedRoot(t)
+	probe := "/bin/zsh -lc cd '" + root + `' && test -n "${DIRENV_DIR:-}"`
+	runner := &fakeCommandRunner{
+		paths:     map[string]bool{"direnv": true},
+		env:       map[string]string{"SHELL": "/bin/zsh"},
+		responses: map[string]setauthResult{probe: {exit: 1, err: errors.New("exit 1")}},
+	}
+	var stderr strings.Builder
+	inv := testInvocation("", ioDiscard{}, &stderr, false)
+
+	if err := setauth.Run(context.Background(), runner, inv, setauth.Options{CWD: root, User: "pedromvgomes"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !runner.hasCall(probe) {
+		t.Fatalf("calls = %#v, missing the shell hook probe %q", runner.calls, probe)
+	}
+	for _, want := range []string{"your shell hook may be missing", `eval "$(direnv hook zsh)"`} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, missing %q", stderr.String(), want)
+		}
+	}
+}
+
 type setauthResult struct {
 	stdout string
 	stderr string
@@ -357,8 +384,14 @@ func TestRunRetrofitsExistingEnvrcWithoutAskingForUser(t *testing.T) {
 
 	runner := newRunner()
 	// Non-interactive: a prompt here would be an error, which is the point.
-	if err := setauth.Run(context.Background(), runner, quietInvocation(), opts); err != nil {
+	var firstOut strings.Builder
+	if err := setauth.Run(context.Background(), runner, testInvocation("", ioDiscard{}, &firstOut, false), opts); err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	for _, want := range []string{`Applied profile "personal" (CODEX_HOME)`, "Updated " + envrcPath} {
+		if !strings.Contains(firstOut.String(), want) {
+			t.Fatalf("first run output = %q, missing %q", firstOut.String(), want)
+		}
 	}
 	if runner.hasCall("gh api user --jq .login") {
 		t.Fatalf("calls = %#v, want no gh lookup", runner.calls)
