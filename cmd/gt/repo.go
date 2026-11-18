@@ -238,6 +238,21 @@ func newRepoSyncCommand(opts *options) *cobra.Command {
 					return nil
 				}
 			}
+			// Untracking changes the index, so it is confirmed on its own: the
+			// generic prompt above lists rendered files and never mentions it.
+			// A run with no terminal and no --yes has nobody to ask, so it
+			// refuses, the same way removing an orphan does.
+			if report.AgentLock.Untrack && !yes {
+				if !opts.ui.Interactive {
+					return ui.Errorf(ui.ExitUser,
+						"%s is tracked and would be untracked; re-run with --yes to confirm", repogov.AgentLockFile)
+				}
+				ok, err := confirmUntrackLock(opts.ui)
+				if err != nil {
+					return err
+				}
+				govOpts.LeaveAgentLock = !ok
+			}
 			_, written, err := repogov.Sync(govOpts)
 			if err != nil {
 				return err

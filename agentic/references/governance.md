@@ -95,14 +95,23 @@ An ignored lockfile is absent from every fresh checkout, and `agtk sync` locks
 from scratch when the file is missing, so each new worktree starts on the current
 head of every source ref with no bump step. `tracked` pins them instead.
 
+**The trade-off is deliberate.** An ignored lockfile means a fresh checkout
+renders instructions, skills and MCP server definitions from the current head of
+every source ref, and no reviewable diff records what changed. That is safe only
+for sources whose owner you trust: your own repositories, or a publisher you
+trust as much. A source you are not sure of is copied into the repository, where
+changes are reviewed, instead of being referenced. A repository that wants the
+sources pinned sets `agent_lock: tracked`.
+
 The policy is a spec key rather than something inferred from `.gitignore`: a
 repository that tracks its lock on purpose looks exactly like one that was never
 migrated, and inferring would ask again on every sync.
 
 `sync` (`repogov/agentlock.go`) adds the anchored `/.agentic-toolkit.lock.yaml`
 entry under `ignored` and removes it under `tracked`. A tracked file leaves the
-index with `git rm --cached` after an interactive confirmation; declining skips
-the whole lockfile step. `check` reports the mismatch as drift. Only the
+index with `git rm --cached` after its own confirmation (a run with no terminal
+needs `--yes`, as removing an orphan does); declining skips the whole lockfile
+step. `check` reports the mismatch as drift. Only the
 exact root entry is ever removed from `.gitignore`.
 
 ## The version gate

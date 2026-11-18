@@ -128,3 +128,39 @@ func TestAgentLockIgnoresARepositoryWithoutAgtk(t *testing.T) {
 		t.Errorf("change = %+v, want none without an agtk manifest", c)
 	}
 }
+
+func syncWithLock(t *testing.T, leave bool) string {
+	t.Helper()
+	root := agentLockRepo(t, true, "")
+	if err := repogov.SaveSpec(root, repospec.Default()); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+	opts := testOptions(root)
+	opts.SkipWorkflows = true
+	opts.LeaveAgentLock = leave
+	if _, _, err := repogov.Sync(opts); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	return root
+}
+
+func TestSyncUntracksTheLockfile(t *testing.T) {
+	root := syncWithLock(t, false)
+	if lockTracked(t, root) {
+		t.Error("lockfile is still tracked after sync")
+	}
+	got, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if !strings.Contains(string(got), "/"+repogov.AgentLockFile) {
+		t.Errorf(".gitignore = %q, want the lock entry", got)
+	}
+}
+
+func TestSyncLeavesTheLockfileWhenToldTo(t *testing.T) {
+	root := syncWithLock(t, true)
+	if !lockTracked(t, root) {
+		t.Error("lockfile was untracked although the lockfile step was skipped")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gitignore")); err == nil {
+		t.Error(".gitignore was written although the lockfile step was skipped")
+	}
+}
