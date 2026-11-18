@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/pedromvgomes/gt/internal/config"
+	"github.com/pedromvgomes/gt/internal/git"
+	"github.com/pedromvgomes/gt/internal/repogov"
 	vcli "go.vipengele.org/cli/core"
 	"go.vipengele.org/cli/spec"
 )
@@ -23,6 +25,27 @@ type Deps struct {
 	// it in .gt-repo.yaml and derives the major tag of the reusable workflows
 	// from it, so it is passed on unnormalised.
 	Version string
+
+	// GH is the gh client the fleet commands run with. Nil means the real
+	// `gh`, reusing the user's own credentials.
+	GH repogov.GH
+	// Git is the git runner the fleet sweep clones and pushes with. Nil means
+	// the real `git`.
+	Git git.Runner
+}
+
+func (d Deps) gh() repogov.GH {
+	if d.GH != nil {
+		return d.GH
+	}
+	return repogov.ExecGH{}
+}
+
+func (d Deps) git() git.Runner {
+	if d.Git != nil {
+		return d.Git
+	}
+	return git.ExecRunner{}
 }
 
 // Commands returns gt's top-level commands, each with its subcommands. Every

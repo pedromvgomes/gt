@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pedromvgomes/gt/internal/git"
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
 	"go.vipengele.org/cli/spec"
@@ -23,7 +22,7 @@ func newRepoFleetCommand(d Deps) *spec.Command {
 		Commands: []*spec.Command{
 			newFleetSweepCommand(d, false),
 			newFleetSweepCommand(d, true),
-			newRepoFleetMergePendingCommand(),
+			newRepoFleetMergePendingCommand(d),
 		},
 	}
 }
@@ -77,7 +76,7 @@ func newFleetSweepCommand(d Deps, apply bool) *spec.Command {
 			if apply {
 				pushTo = branch.Get(inv)
 			}
-			gh := repogov.ExecGH{}
+			gh := d.gh()
 
 			repos, err := repogov.ListRepos(ctx, gh, owner.Get(inv), limit.Get(inv))
 			if err != nil {
@@ -85,7 +84,7 @@ func newFleetSweepCommand(d Deps, apply bool) *spec.Command {
 			}
 			inv.Info("Sweeping %d repositories in %s (cache: %s)...", len(repos), owner.Get(inv), cache)
 
-			results := repogov.FleetSweep(ctx, gh, git.ExecRunner{}, repos, repogov.FleetOptions{
+			results := repogov.FleetSweep(ctx, gh, d.git(), repos, repogov.FleetOptions{
 				CacheDir:  cache,
 				GTVersion: d.Version,
 				Branch:    pushTo,
@@ -135,7 +134,7 @@ func printFleetResults(inv *spec.Invocation, results []repogov.FleetResult, appl
 	return nil
 }
 
-func newRepoFleetMergePendingCommand() *spec.Command {
+func newRepoFleetMergePendingCommand(d Deps) *spec.Command {
 	var (
 		owner   = spec.StringFlag("owner", "GitHub user or organization to scan")
 		merge   = spec.BoolFlag("merge", "merge the eligible PRs instead of only reporting them")
@@ -156,7 +155,7 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 			if owner.Get(inv) == "" {
 				return fmt.Errorf("--owner is required")
 			}
-			gh := repogov.ExecGH{}
+			gh := d.gh()
 
 			repos, err := repogov.ListRepos(ctx, gh, owner.Get(inv), limit.Get(inv))
 			if err != nil {
