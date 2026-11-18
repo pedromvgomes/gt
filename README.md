@@ -499,11 +499,6 @@ go vet ./...
 golangci-lint run
 ```
 
-Releases are cut by pushing a semver tag:
+A release is the merge of its notes: a pull request that adds `docs/releases/vX.Y.Z.md` and merges to `main` is tagged and released by `.github/workflows/release.yml`. Nobody pushes a tag.
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow runs GoReleaser and publishes four `tar.gz` archives plus `checksums.txt`.
+The workflow runs GoReleaser and publishes four `tar.gz` archives plus `checksums.txt`.

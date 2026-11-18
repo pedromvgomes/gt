@@ -1,79 +1,225 @@
-name: Release
+# release — a release is the merge of its notes.
+#
+# A pull request that adds docs/releases/vX.Y.Z.md and merges to main releases
+# that version: this workflow tags the merge commit, runs GoReleaser and moves
+# the major tag. Nobody pushes a tag. There is no tag trigger, because a tag
+# pushed with GITHUB_TOKEN starts no workflow, so everything downstream of the
+# tag happens in this run, and a tag pushed by hand releases nothing.
+#
+# Every push to main sweeps. `plan` reads the pushed commit and the remote's
+# tags and releases (.github/scripts/release/plan.sh) and picks one of three
+# modes: `release` for notes whose tag does not exist, `finish` for a latest tag
+# that has no GitHub Release (a run that failed after tagging), `none`. A
+# failure rolls nothing back; the next push or a `workflow_dispatch` sweeps
+# again and finishes what is left.
+#
+# Three jobs, and the seams between them are safety properties. `plan` and
+# `verify` hold a read-only token and check out without persisting it; `verify`
+# is the only job that runs repository code besides the build. `release` holds
+# `contents: write`, and it is the only one that can push the tag.
+name: release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run verify alone, writing nothing.
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# One sweep at a time, and never cancel one in flight: a cancelled run can leave
+# a version tagged but unreleased. A run replaced while queued is never missed,
+# because the newer run sweeps everything it would have.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: The ref is main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" != "refs/heads/main" ]]; then
+            echo "::error::${REF} is not refs/heads/main; only main is released"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The tags are listed before they are fetched: a tag pushed in between is
+      # fetched but not listed, which is harmless, and the next run sees it.
+      - name: List the tags and the GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git ls-remote --tags origin > "${RUNNER_TEMP}/tags"
+          git fetch --tags --force origin
+          gh api "repos/${REPO}/releases" --paginate --jq '.[].tag_name' > "${RUNNER_TEMP}/releases"
+
+      - name: Plan the release
+        id: plan
+        run: |
+          set -euo pipefail
+          plan="$(.github/scripts/release/plan.sh . "${RUNNER_TEMP}/tags" "${RUNNER_TEMP}/releases")"
+          echo "$plan"
+          echo "mode=$(jq -r .mode <<< "$plan")" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version <<< "$plan")" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release plan"
+            echo
+            echo "mode: \`$(jq -r .mode <<< "$plan")\` — \`$(jq -r .version <<< "$plan")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: verify
+    needs: plan
+    if: needs.plan.outputs.mode != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MODE: ${{ needs.plan.outputs.mode }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      # `finish` builds the existing tag; `release` builds the pushed commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.mode == 'finish' && needs.plan.outputs.version || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # From go.mod's `toolchain` line, not a literal: a pinned "1.26"
+          # resolves to 1.26.0 and stays there, keeping a toolchain with open
+          # stdlib advisories.
+          go-version-file: go.mod
+
+      - name: The notes are present and the commit is on main
+        run: |
+          set -euo pipefail
+          notes="docs/releases/${VERSION}.md"
+          if [[ ! -s "$notes" ]]; then
+            echo "::error::$notes is missing or empty"
+            exit 1
+          fi
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$(git rev-parse --short HEAD) is not on main"
+            exit 1
+          fi
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./tests/...
+
   release:
+    name: release
+    needs: [plan, verify]
+    if: needs.plan.outputs.mode != 'none' && !inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      MODE: ${{ needs.plan.outputs.mode }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.mode == 'finish' && needs.plan.outputs.version || github.sha }}
           fetch-depth: 0
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # From go.mod's `toolchain` line, not restated here. The old
-          # `go-version: "1.26"` resolved to 1.26.0 and stayed there, so the
-          # build silently kept a toolchain with 18 stdlib advisories open
-          # against it.
           go-version-file: go.mod
-      - name: Detect release notes file
-        id: notes
+
+      # An unsigned annotated tag made as github-actions[bot]; its message
+      # names this run. Rejected when the tag already exists, which means a
+      # concurrent run made it, and the next sweep no longer sees it pending.
+      - name: Push the tag
+        if: env.MODE == 'release'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          tag="${GITHUB_REF_NAME:-}"
-          file="docs/releases/${tag}.md"
-          if [ -n "$tag" ] && [ -f "$file" ]; then
-            echo "file=$file" >>"$GITHUB_OUTPUT"
-            echo "Using release notes from $file"
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "Release ${VERSION}" -m "$RUN_URL"
+          git push origin "refs/tags/${VERSION}"
+
+      # A release that exists is not rebuilt, so re-running after a partial run
+      # finishes the work instead of failing on what is already there.
+      - name: GitHub Release exists
+        id: exists
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No release notes file found at $file; goreleaser will generate the changelog"
+            echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Release
+
+      - name: GoReleaser
+        if: steps.exists.outputs.present != 'true'
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          args: release --clean ${{ steps.notes.outputs.file && format('--release-notes={0}', steps.notes.outputs.file) || '' }}
+          args: release --clean --release-notes=docs/releases/${{ needs.plan.outputs.version }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Governed repositories pin gt's reusable workflows to a moving major tag
-      # (v0, v1, ...) rather than a SHA, so gate and sync logic reaches them
-      # without editing any file — which matters because GITHUB_TOKEN cannot
+      # (v1, v2, ...) rather than a SHA, so gate and sync logic reaches them
+      # without editing any file, which matters because GITHUB_TOKEN cannot
       # write .github/workflows/**.
       #
-      # This step is load-bearing. If it is ever skipped, every governed repo
-      # silently freezes on the old logic with NO drift signal: their caller
-      # files are still byte-identical, so `gt repo check` reports compliant.
-      # That is why it verifies the move rather than assuming it worked.
+      # This step is load-bearing. If it is skipped, every governed repository
+      # freezes on the old logic with no drift signal: their caller files are
+      # still byte-identical, so `gt repo check` reports compliant. It verifies
+      # the move rather than assuming it worked, and it runs on a finished
+      # release too, so a run that failed here is repaired by the next sweep.
       - name: Move the major version tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          major="${TAG%%.*}"   # v1.2.3 -> v1
+          major="${VERSION%%.*}"   # v1.2.3 -> v1
           if [[ ! "$major" =~ ^v[0-9]+$ ]]; then
-            echo "::error::could not derive a major tag from ${TAG}"
+            echo "::error::could not derive a major tag from ${VERSION}"
             exit 1
           fi
 
-          echo "Moving ${major} -> ${TAG} ($(git rev-parse --short "$TAG"))"
-          git tag -f "$major" "$TAG"
+          target="$(git rev-parse "${VERSION}^{commit}")"
+          echo "Moving ${major} -> ${VERSION} (${target:0:7})"
+          git tag -f "$major" "$target"
           git push --force origin "refs/tags/${major}"
 
           # Confirm the remote actually advanced; a silent no-op here is the
           # failure mode this whole step exists to prevent.
-          remote_sha=$(git ls-remote origin "refs/tags/${major}" | cut -f1)
-          expected_sha=$(git rev-parse "${major}")
-          if [[ "$remote_sha" != "$expected_sha" ]]; then
-            echo "::error::${major} did not advance on the remote (got ${remote_sha}, want ${expected_sha})"
+          remote_sha="$(git ls-remote origin "refs/tags/${major}" | cut -f1)"
+          if [[ "$remote_sha" != "$target" ]]; then
+            echo "::error::${major} did not advance on the remote (got ${remote_sha}, want ${target})"
             exit 1
           fi
-          echo "${major} now points at ${TAG}." >> "$GITHUB_STEP_SUMMARY"
+          echo "Released [${VERSION}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${VERSION}); ${major} now points at it." >> "$GITHUB_STEP_SUMMARY"
