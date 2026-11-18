@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/pedromvgomes/gt/internal/repogov"
 	"github.com/pedromvgomes/gt/internal/repospec"
@@ -88,20 +87,6 @@ func newRepoSettingsApplyCommand(d Deps) *spec.Command {
 				return err
 			}
 			inv.Success("Applied settings to %s/%s", govOpts.RepoOwner, govOpts.RepoName)
-
-			// Said again, after the success line. Everything else in the list
-			// was just applied; this one thing was not, and a run that ends on
-			// "Applied settings" is exactly where a half-finished rollout stops
-			// being noticed.
-			for _, c := range changes {
-				if c.Field != repogov.MergeQueueChangeField {
-					continue
-				}
-				inv.Warning("%s is not held to its base yet: %s",
-					declared.Settings.BranchProtection.Branch, c.Got)
-				inv.Info("Everything else was applied. To finish: %s",
-					strings.TrimPrefix(c.Want, "deferred — "))
-			}
 			return nil
 		},
 	}

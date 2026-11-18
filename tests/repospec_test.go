@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -50,25 +51,6 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 		mutate  func(*repospec.Spec)
 		wantSub string
 	}{
-		{
-			name: "an unknown freshness mode",
-			mutate: func(s *repospec.Spec) {
-				s.Settings.BranchProtection.BaseFreshness = "sometimes"
-			},
-			wantSub: "is not one of",
-		},
-		{
-			// required_linear_history is unconditional, so a queue that can
-			// only produce merge commits would build groups the same ruleset
-			// then refuses.
-			name: "a queue that can only merge-commit",
-			mutate: func(s *repospec.Spec) {
-				s.Settings.Merge.Squash = false
-				s.Settings.Merge.Rebase = false
-				s.Settings.Merge.MergeCommit = true
-			},
-			wantSub: "linear history",
-		},
 		{
 			name: "unknown ecosystem",
 			mutate: func(s *repospec.Spec) {
@@ -190,6 +172,15 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			wantSub: "at least one merge method",
 		},
 		{
+			name: "merge_commit as the only merge method",
+			mutate: func(s *repospec.Spec) {
+				s.Settings.Merge.Squash = false
+				s.Settings.Merge.Rebase = false
+				s.Settings.Merge.MergeCommit = true
+			},
+			wantSub: "linear history",
+		},
+		{
 			name:    "unknown file key",
 			mutate:  func(s *repospec.Spec) { s.Files = []string{"makefile"} },
 			wantSub: "unknown file",
@@ -206,6 +197,25 @@ func TestValidateRejectsBadSpecs(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+func TestValidateAcceptsLinearHistoryCompatibleMergeMethods(t *testing.T) {
+	tests := map[string]repospec.MergeSettings{
+		"squash and merge_commit": {Squash: true, MergeCommit: true},
+		"rebase only":             {Rebase: true},
+		"rebase and merge_commit": {Rebase: true, MergeCommit: true},
+	}
+	for name, m := range tests {
+		t.Run(name, func(t *testing.T) {
+			spec := repospec.Default()
+			m.SquashTitle = spec.Settings.Merge.SquashTitle
+			m.SquashMessage = spec.Settings.Merge.SquashMessage
+			spec.Settings.Merge = m
+			if err := repospec.Validate(spec); err != nil {
+				t.Errorf("Validate() = %v, want nil", err)
 			}
 		})
 	}
@@ -237,47 +247,6 @@ func TestConventionalCommitScopeHelpers(t *testing.T) {
 	}
 }
 
-// The queue merges on the repository's behalf, so it must use a method the
-// repository actually allows — otherwise the queue lands what a human could
-// not, which is the same policy hole reintroduced one level down.
-func TestQueueMergeMethodFollowsTheAllowedMethods(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		mutate func(*repospec.Spec)
-		want   string
-	}{
-		{"squash-only, the fleet default", func(*repospec.Spec) {}, repospec.MergeMethodSquash},
-		{"rebase where squash is off", func(s *repospec.Spec) {
-			s.Settings.Merge.Squash = false
-			s.Settings.Merge.Rebase = true
-		}, repospec.MergeMethodRebase},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			spec := repospec.Default()
-			tc.mutate(&spec)
-			if err := repospec.Validate(spec); err != nil {
-				t.Fatalf("Validate() error = %v", err)
-			}
-			if got := spec.Settings.QueueMergeMethod(); got != tc.want {
-				t.Errorf("QueueMergeMethod() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// Every governed repository gets a queue without asking for one. That is the
-// whole change: the guarantee is policy, not a per-repository opt-in.
-func TestBaseFreshnessDefaultsToAuto(t *testing.T) {
-	spec, err := repospec.Parse([]byte("dependabot: []\n"), "t.yaml")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
-		t.Errorf("base_freshness = %q, want %q — the guarantee is not opt-in",
-			got, repospec.FreshnessAuto)
-	}
-}
-
 // `bulwark:` is not a field any struct claims, and strict decoding refuses it
 // by name rather than dropping the line — an opt-out written under the retired
 // name is not an opt-out, and its author is entitled to hear that.
@@ -291,45 +260,47 @@ func TestABulwarkKeyIsRejectedByName(t *testing.T) {
 	}
 }
 
-// The released spelling. A repository still carrying it must keep parsing, and
-// must land on auto — which on any repository where it could have been set
-// computes to strict, the behaviour it already had.
-func TestTheRetiredRequireUpToDateKeyStillParses(t *testing.T) {
-	spec, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    require_up_to_date: true\n"), "t.yaml")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
-		t.Errorf("base_freshness = %q, want %q", got, repospec.FreshnessAuto)
-	}
-}
-
-// The retired key wins over an explicit base_freshness, per resolveFreshness's
-// own doc comment: it names nothing base_freshness cannot already say, so a
-// manifest carrying both is read as still meaning the retired key's setting.
-func TestTheRetiredKeyOverridesAnExplicitBaseFreshness(t *testing.T) {
-	spec, err := repospec.Parse([]byte(
-		"settings:\n  branch_protection:\n    require_up_to_date: true\n    base_freshness: strict\n",
-	), "t.yaml")
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessAuto {
-		t.Errorf("base_freshness = %q, want %q — the retired key resolves unconditionally",
-			got, repospec.FreshnessAuto)
+// base_freshness and require_up_to_date are retired, and a manifest still
+// carrying either — any value, either spelling, or both — keeps parsing.
+// Strict decoding would otherwise turn every such manifest into a hard
+// check/sync failure across the fleet. The resolved spec carries neither, so
+// nothing downstream can read one as an opt-out.
+func TestRetiredFreshnessKeysStillParse(t *testing.T) {
+	for _, manifest := range []string{
+		"settings:\n  branch_protection:\n    base_freshness: auto\n",
+		"settings:\n  branch_protection:\n    base_freshness: queue\n",
+		"settings:\n  branch_protection:\n    base_freshness: strict\n",
+		"settings:\n  branch_protection:\n    base_freshness: none\n",
+		"settings:\n  branch_protection:\n    require_up_to_date: true\n",
+		"settings:\n  branch_protection:\n    require_up_to_date: false\n",
+		"settings:\n  branch_protection:\n    require_up_to_date: true\n    base_freshness: none\n",
+	} {
+		spec, err := repospec.Parse([]byte(manifest), "t.yaml")
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", manifest, err)
+		}
+		bp := spec.Settings.BranchProtection
+		if bp.BaseFreshness != "" || bp.RequireUpToDate != nil {
+			t.Errorf("Parse(%q) kept a retired key: base_freshness = %q, require_up_to_date = %v",
+				manifest, bp.BaseFreshness, bp.RequireUpToDate)
+		}
 	}
 }
 
-// resolveFreshness only has something to translate when require_up_to_date is
-// present. A manifest that never carried the retired key must keep whatever
-// base_freshness it set explicitly, unrelated to what auto would compute to.
-func TestBaseFreshnessIsUntouchedWithoutTheRetiredKey(t *testing.T) {
-	spec, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    base_freshness: strict\n"), "t.yaml")
+// The resolved spec `gt repo config --json` prints has no freshness setting
+// to report: there is nothing a repository can choose.
+func TestResolvedSpecCarriesNoFreshnessSetting(t *testing.T) {
+	spec, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    base_freshness: none\n"), "t.yaml")
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got := spec.Settings.BranchProtection.BaseFreshness; got != repospec.FreshnessStrict {
-		t.Errorf("base_freshness = %q, want %q — absent require_up_to_date, resolveFreshness must not touch it",
-			got, repospec.FreshnessStrict)
+	out, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	for _, key := range []string{"base_freshness", "require_up_to_date"} {
+		if strings.Contains(string(out), key) {
+			t.Errorf("resolved spec carries %q:\n%s", key, out)
+		}
 	}
 }

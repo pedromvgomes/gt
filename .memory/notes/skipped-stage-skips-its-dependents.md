@@ -1,18 +1,18 @@
 ---
 name: skipped-stage-skips-its-dependents
 kind: gotcha
-description: Rendered stage jobs carry no status-check function in their `if:`, so a preflight-skipped stage silently skips every stage that needs it — only bulwark is guarded.
+description: "Rendered stage jobs carry no status-check function in their `if:`, so a preflight-skipped stage silently skips every stage that needs it — only the lydite job is guarded."
 anchors:
   - path: internal/repogov/pipeline.go
-    blob: 746d072adfa4
+    blob: 1b2b43a878b5
   - path: internal/repogov/templates/workflows/*-orchestration.yml.tmpl
     matches:
       - path: internal/repogov/templates/workflows/cd-orchestration.yml.tmpl
         blob: fc436200cae7
       - path: internal/repogov/templates/workflows/ci-orchestration.yml.tmpl
-        blob: b0890b65871e
+        blob: 9c25a570b1a5
   - path: tests/repogov_pipeline_test.go
-    blob: d952808affb2
+    blob: 6becb6a81d89
 confidence: verified
 ---
 
@@ -31,10 +31,12 @@ status-check function. The wiring chains stages:
 anyway — not by its own gate, but by the implicit `success()` on a skipped `build`. The
 preflight contract in `docs/pipeline-design.md` does not warn about this.
 
-Only `bulwark` is guarded: `ci-orchestration.yml.tmpl:132` renders
-`if: "!cancelled() && {{ .SkipGuard }}"` with the reason in the comment above it (`:128-131`),
-so a skipped `test` does not take it down. `TestBulwarkSurvivesASkippedTestStage`
-(`tests/repogov_pipeline_test.go:469`) is the only test covering this. Nothing equivalent
+Only `lydite` is guarded: `ci-orchestration.yml.tmpl:132` renders `if: "!cancelled()"` alone —
+no `{{ .SkipGuard }}` clause, unlike `conventional-commits`/`governance` (`:108`, `:116`) —
+with the reason in the comment above it (`:122-131`): it is the only publisher of the required
+`lydite/referral` status, so neither a skipped `attest` nor an already-validated tree may take
+it down. `TestLyditeSurvivesASkippedDependency` (`tests/repogov_pipeline_test.go:724`) is the
+only test covering this. Nothing equivalent
 exists for `test`/`end2end` behind `build`, or `deploy`/`verify` in CD, and nothing states
 whether that asymmetry is intended.
 

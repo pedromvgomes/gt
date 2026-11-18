@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pedromvgomes/gt/internal/repospec"
 )
 
 // Status is the state of one managed file relative to disk.
@@ -32,11 +34,19 @@ const (
 // Scaffolds are deliberately absent: an orphaned scaffold holds work the
 // repository wrote, so it is left alone rather than deleted. It becomes an
 // unreferenced `workflow_call` file, which never runs.
-func managedPaths() []string {
+//
+// A file whose location depends on the spec is checked at its default path and
+// at the path the given spec puts it, so one the spec has stopped asking for is
+// still found where that spec would have rendered it.
+func managedPaths(spec repospec.Spec) []string {
 	var out []string
 	for _, f := range registry() {
-		if f.mode == ModeManaged {
-			out = append(out, f.path)
+		if f.mode != ModeManaged {
+			continue
+		}
+		out = append(out, f.path)
+		if p := f.pathIn(spec); p != f.path {
+			out = append(out, p)
 		}
 	}
 	return out
@@ -63,7 +73,21 @@ func (r Result) Drifted() bool { return r.Status != StatusOK }
 // skipWorkflows excludes files under .github/workflows/ from the comparison.
 // The weekly in-repo sync passes it because GITHUB_TOKEN cannot write them;
 // reporting drift it is structurally unable to fix would be noise.
+//
+// Orphans are looked for at each managed file's default location. A spec that
+// moves a file — lydite.dir moving the exemptions file — needs DiffSpec, or a
+// file it no longer asks for at the moved location goes unreported.
 func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
+	return diff(workdir, files, skipWorkflows, managedPaths(repospec.Default()))
+}
+
+// DiffSpec is Diff with orphan detection over the locations spec puts each
+// managed file at, as well as their defaults.
+func DiffSpec(workdir string, spec repospec.Spec, files []File, skipWorkflows bool) ([]Result, error) {
+	return diff(workdir, files, skipWorkflows, managedPaths(spec))
+}
+
+func diff(workdir string, files []File, skipWorkflows bool, managed []string) ([]Result, error) {
 	results := make([]Result, 0, len(files))
 	for _, f := range files {
 		if skipWorkflows && f.Workflow {
@@ -116,7 +140,7 @@ func Diff(workdir string, files []File, skipWorkflows bool) ([]Result, error) {
 	for _, f := range files {
 		wanted[f.Path] = true
 	}
-	for _, p := range managedPaths() {
+	for _, p := range managed {
 		if wanted[p] {
 			continue
 		}

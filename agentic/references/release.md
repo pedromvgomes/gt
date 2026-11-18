@@ -2,13 +2,40 @@
 
 ## Cutting one
 
-```sh
-git tag v1.8.0
-git push origin v1.8.0
-```
+A release is the merge of its notes. A pull request that adds
+`docs/releases/vX.Y.Z.md` and merges to `main` releases that version; the
+`cut-a-release` skill walks the steps. Nobody pushes a tag, and a tag pushed by
+hand releases nothing, because `release.yml` has no tag trigger.
 
-`.github/workflows/release.yml` runs GoReleaser, which builds darwin/linux ×
-amd64/arm64, publishes four `tar.gz` archives plus `checksums.txt`, and stamps
+`.github/workflows/release.yml` runs on every push to `main` and sweeps. Its
+`plan` job runs `.github/scripts/release/plan.sh` over the pushed commit, the
+remote's tags and its GitHub Releases, and picks a mode:
+
+- **`release`** — notes exist and the tag does not. The `release` job pushes an
+  unsigned annotated tag as `github-actions[bot]`, runs GoReleaser and moves the
+  major tag.
+- **`finish`** — the latest tag has no GitHub Release, which is a run that
+  failed after tagging. It builds that tag and completes the release.
+- **`none`** — nothing to do.
+
+`plan.sh` fails on more than one pending version, and on a pending version that
+is not newer than the latest tag, so notes added for an old version cannot
+publish an older release. Only the latest tag is ever finished, so an old tag
+that never had a release is not rebuilt with today's config.
+
+GitHub does not start a workflow for a tag pushed with `GITHUB_TOKEN`, which is
+why tagging, building and the major-tag move are one run rather than a tag
+trigger. A failure rolls nothing back: the next push, or `gh workflow run
+release.yml --ref main`, sweeps again. `-f dry_run=true` runs plan and verify
+alone.
+
+The jobs hold different tokens on purpose. `plan` and `verify` are read-only and
+check out without persisting credentials; `verify` builds, vets and tests the
+commit. Only `release` holds `contents: write`, and only `release` declares
+`environment: release`, so plan and verify never hold a secret.
+
+GoReleaser builds darwin/linux × amd64/arm64, publishes four `tar.gz` archives
+plus `checksums.txt` and its signature `checksums.txt.minisig`, and stamps
 `main.version`, `main.commit` and `main.date` via `-ldflags`. **Keep those
 variable names and their package stable** — `repogov`'s `MajorTag` and
 `.gt-repo.yaml`'s recorded version read the stamp as `3.0.0`, without the `v`.
@@ -17,10 +44,8 @@ vipengele libraries, because `IsRelease` requires it. The reusable workflows
 and `ensure-gt.sh` only run `gt version` to show what was installed; none of
 them parses its output.
 
-Release notes come from `docs/releases/<tag>.md` when that file exists;
-otherwise GoReleaser generates a changelog from conventional-commit prefixes.
-Write the notes file before tagging — a release cut without one loses the
-narrative and cannot get it back.
+The release body is `docs/releases/<tag>.md`, so the file is required: a release
+cannot get its narrative back afterwards.
 
 Go's toolchain comes from `go.mod` via `go-version-file`, never a literal
 `go-version`. A pinned `"1.26"` resolved to 1.26.0 and stayed there, silently
@@ -63,11 +88,14 @@ major 0, because that is what it would actually render.
 
 GoReleaser signs `checksums.txt` with minisign, producing
 `checksums.txt.minisig`; the `signs:` block reads the key from
-`MINISIGN_KEY_FILE`, which `release.yml` writes to `$RUNNER_TEMP` from the
-`MINISIGN_KEY` repository secret (an unencrypted key, from `minisign -G -W`).
-Before GoReleaser runs, `release.yml` signs a probe file and verifies it
+`MINISIGN_KEY_FILE`, which the `release` job writes to `$RUNNER_TEMP` from the
+`MINISIGN_KEY` secret (an unencrypted key, from `minisign -G -W`). The secret
+belongs to the `release` GitHub environment, whose deployment rule allows only
+the `main` branch, so a workflow run on any other ref cannot read it.
+
+Before the tag is pushed, the `release` job signs a probe file and verifies it
 against the committed `internal/selfupdate/minisign.pub`, so a secret that does
-not match the embedded public key fails the release before anything is
+not match the embedded public key fails the run before anything is tagged or
 published. The key file is removed in an `if: always()` step.
 
 The public key is embedded in the binary and is the only thing `gt update`

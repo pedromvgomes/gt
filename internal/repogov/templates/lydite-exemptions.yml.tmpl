@@ -1,0 +1,17 @@
+# Managed by gt — edit .gt-repo.yaml, then run `gt repo sync`.
+#
+# What lydite lets merge without a human reading it. A change merges unread
+# only when a single entry covers every path it touched and that entry's
+# condition holds; everything else is referred.
+#
+# dependency-version-bump is derived from the dependabot: block. It lists only
+# files lydite reads a version comparison from — never Cargo.toml or
+# package.json, so an edit to one of those alone stays referred — and
+# ecosystems lydite cannot read contribute nothing. Turn it off with
+# lydite.exempt_dependency_bumps: false, and add repository-specific entries
+# under lydite.exemptions.
+#
+# lydite reads this file from the base commit and refers any pull request that
+# changes it, which then needs a `/lydite clear`. Keep such a pull request to
+# this file alone.
+{{ .Body }}

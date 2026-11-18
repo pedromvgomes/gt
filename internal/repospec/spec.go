@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -38,7 +39,25 @@ type Spec struct {
 	ConventionalCommits ConventionalCommits `yaml:"conventional_commits" json:"conventional_commits"`
 	Settings            Settings            `yaml:"settings" json:"settings"`
 	Files               []string            `yaml:"files" json:"files"`
+
+	// AgentLock is whether the agentic-toolkit lockfile is gitignored or
+	// committed. Ignored (the default) means every fresh checkout locks the
+	// toolkit's sources at their current heads; tracked pins them. It only
+	// applies to a repository that has an .agentic-toolkit.yaml.
+	AgentLock string `yaml:"agent_lock" json:"agent_lock"`
 }
+
+// The accepted values of BranchProtection.Bypass.
+const (
+	BypassAdmin = "admin"
+	BypassNone  = "none"
+)
+
+// The accepted values of Spec.AgentLock.
+const (
+	AgentLockIgnored = "ignored"
+	AgentLockTracked = "tracked"
+)
 
 // DependabotEntry is one ecosystem/directory pair. Note carries the per-repo
 // rationale that would otherwise live as a YAML comment; it is re-emitted as a
@@ -143,7 +162,54 @@ type Lydite struct {
 	// and reusable-lydite-clearance.yml's `relay` input. Empty posts PR comments
 	// and clearance replies as `github-actions[bot]`.
 	Relay string `yaml:"relay,omitempty" json:"relay,omitempty"`
+	// ExemptDependencyBumps renders a `dependency-version-bump` entry into
+	// .lydite/exemptions.yml, derived from the dependabot: block. Default true.
+	//
+	// Without an exemption lydite refers every change, so every Dependabot pull
+	// request waits on `lydite/referral` until a human clears it, and the
+	// nightly auto-merge lands none of them. The entry is conditional — lydite
+	// passes a bump only when it stays within patch or minor and its licence
+	// and SCA rows are green — so false is for a repository that wants every
+	// bump read regardless.
+	ExemptDependencyBumps bool `yaml:"exempt_dependency_bumps" json:"exempt_dependency_bumps"`
+	// Exemptions are repository-specific entries rendered into
+	// .lydite/exemptions.yml after the derived one. gt owns that file, so this
+	// list is where a repository records anything else it has decided lydite
+	// need not refer.
+	Exemptions []LyditeExemption `yaml:"exemptions,omitempty" json:"exemptions,omitempty"`
 }
+
+// LyditeExemption is one entry of lydite's exemptions file, in lydite's own
+// shape: a change merges unread only when a single entry covers every path it
+// touched and that entry's condition holds.
+type LyditeExemption struct {
+	Name string `yaml:"name" json:"name"`
+	// Reason is required by lydite: each entry is a claim about what is safe
+	// to stop reading, and a list of bare globs is not reviewable.
+	Reason string `yaml:"reason" json:"reason"`
+	// Paths are lydite's anchored patterns, relative to the repository root
+	// even when lydite.dir scopes the scan to a subdirectory. "*" stays within
+	// one segment and "**" spans any number of them.
+	Paths []string `yaml:"paths" json:"paths"`
+	// Versions conditions the match; LyditeVersionsPatchAndMinor is the only
+	// value lydite accepts, and empty is a match on paths alone.
+	Versions string `yaml:"versions,omitempty" json:"versions,omitempty"`
+}
+
+// LyditeVersionsPatchAndMinor is the one condition lydite understands: every
+// version the change moves stays within patch or minor, and the licence and
+// SCA rows for every component ran and passed.
+const LyditeVersionsPatchAndMinor = "patch-and-minor"
+
+// DependencyBumpExemption names the entry gt derives from the dependabot:
+// block. While lydite.exempt_dependency_bumps is on, no entry in
+// lydite.exemptions may take the name: lydite rejects a file carrying it twice.
+const DependencyBumpExemption = "dependency-version-bump"
+
+// lyditeReasonPlaceholder is the literal lydite reserves for the reason of an
+// entry it proposes and refuses in any exemption it loads. Catching it here
+// keeps the failure at `gt repo check` rather than in every lydite run.
+const lyditeReasonPlaceholder = "TODO(lydite):"
 
 // Pipeline declares the CI and CD orchestration gt renders. Each listed stage
 // becomes a job in the orchestrator calling a scaffolded workflow the
@@ -252,38 +318,27 @@ type MergeSettings struct {
 // where it disagrees — and an explicit `false` still overrides, because Parse
 // unmarshals over Default() rather than over a zero value.
 type BranchProtection struct {
-	Branch            string `yaml:"branch" json:"branch"`
+	Branch string `yaml:"branch" json:"branch"`
+
+	// Bypass is who may merge a pull request past the ruleset's unmet
+	// requirements. `admin` lets repository admins do so, for pull requests
+	// only: a direct push to the branch stays blocked. `none` lets nobody.
+	// Other bypass actors somebody set on the ruleset are left as they are.
+	Bypass            string `yaml:"bypass" json:"bypass"`
 	RequiredApprovals int    `yaml:"required_approvals" json:"required_approvals"`
-	// BaseFreshness demands that a pull request be built against the branch it
-	// will actually land on, rather than the one it was opened from. Default
-	// auto.
+	// BaseFreshness and RequireUpToDate are retired keys. Neither is
+	// configurable: wherever a required check exists, gt requires a pull
+	// request to be up to date with its base before it merges — see
+	// settings.go's desiredRuleset.
 	//
-	// This is the one guarantee neither the required check nor the
-	// validated-tree attestation can give. Both answer "did this pass?" about a
-	// tree that was already fixed; neither answers "does it still pass against
-	// what landed while it sat open?". Two pull requests touching disjoint
-	// files — one adding a caller, the other bumping the API it calls — are
-	// each green, conflict-free to git, and break the default branch the moment
-	// the second lands.
-	//
-	// It names the guarantee, not the mechanism, because GitHub offers two and
-	// which one a repository may use is a fact about the repository rather than
-	// a preference: merge queues need an organization-owned public repository.
-	// Under `auto` gt establishes that and picks — a queue where one is
-	// possible, `strict` where it is not — so the guarantee holds everywhere
-	// and the two mechanisms can never both be applied at once, which would pay
-	// the rebase churn and the queue latency for a single guarantee.
-	//
-	// Replaces the released `require_up_to_date`, which named one mechanism and
-	// defaulted off. A spec still carrying that key parses to `auto`, which on
-	// the repositories where it could have been set computes to `strict`
-	// anyway.
-	BaseFreshness string `yaml:"base_freshness" json:"base_freshness"`
-	// RequireUpToDate is the released spelling, accepted so a manifest still
-	// carrying it parses. It is an input key rather than part of the resolved
-	// spec: Parse translates it onto BaseFreshness, and nothing downstream
-	// reads it.
-	RequireUpToDate *bool `yaml:"require_up_to_date,omitempty" json:"-"`
+	// They stay tagged fields because Parse decodes with KnownFields, so
+	// deleting them would turn every manifest still carrying either spelling
+	// into a parse error. Parse clears both before validation and nothing
+	// downstream reads them; a manifest that still holds one does not
+	// round-trip, so `gt repo check` reports it as spec drift and `gt repo
+	// sync` drops the key.
+	BaseFreshness   string `yaml:"base_freshness,omitempty" json:"-"`
+	RequireUpToDate *bool  `yaml:"require_up_to_date,omitempty" json:"-"`
 	// DismissStaleReviews drops approvals when new commits land. Default true:
 	// an approval is of a diff, and a review of code that has since changed is
 	// a rubber stamp wearing a reviewer's name.
@@ -301,21 +356,11 @@ type BranchProtection struct {
 	RequireLastPushApproval bool `yaml:"require_last_push_approval" json:"require_last_push_approval"`
 }
 
-// resolveFreshness translates the retired `require_up_to_date` key onto
-// BaseFreshness, and clears it so the resolved spec carries one spelling of the
-// guarantee.
-//
-// Every value of the key resolves to auto, as does its absence: it named
-// GitHub's strict required checks, which is what auto computes to on every
-// repository where the key could have been set. It is therefore not a way to
-// ask for something `base_freshness` cannot say, and a manifest carrying both
-// spellings resolves to auto.
-func (b *BranchProtection) resolveFreshness() {
-	if b.RequireUpToDate == nil {
-		return
-	}
+// dropRetiredKeys clears every retired key a manifest may carry, so the
+// resolved spec holds none of them and re-serialising it omits them.
+func (b *BranchProtection) dropRetiredKeys() {
+	b.BaseFreshness = ""
 	b.RequireUpToDate = nil
-	b.BaseFreshness = FreshnessAuto
 }
 
 // Squash commit title sources. The GitHub values these map to are an
@@ -331,62 +376,6 @@ const (
 	SquashMessagePRBody  = "pr_body"
 	SquashMessageCommits = "commit_messages"
 )
-
-// How a pull request is held to the branch it will land on.
-//
-// FreshnessAuto is the answer for almost every repository: gt reads the
-// repository's ownership and visibility and picks the mechanism it can have.
-// The explicit values exist for the case where somebody knows better than the
-// detection — an Enterprise Cloud private repository, which can hold a queue
-// that gt's conservative rule would not offer it.
-const (
-	// FreshnessAuto picks a queue where the repository can have one and strict
-	// required checks where it cannot.
-	FreshnessAuto = "auto"
-	// FreshnessQueue demands a merge queue. gt reports rather than silently
-	// substituting where the repository cannot have one: asking for a specific
-	// mechanism and getting another is worth being told about.
-	FreshnessQueue = "queue"
-	// FreshnessStrict demands GitHub's "require branches to be up to date",
-	// which blocks the merge button until the author rebases.
-	FreshnessStrict = "strict"
-	// FreshnessNone asks for neither, and gives up the guarantee.
-	FreshnessNone = "none"
-)
-
-// FreshnessModes is the accepted vocabulary, in the order the docs present it.
-var FreshnessModes = []string{FreshnessAuto, FreshnessQueue, FreshnessStrict, FreshnessNone}
-
-// Merge methods, in gt's own vocabulary. The GitHub spellings these map to are
-// an implementation detail of the settings layer.
-const (
-	MergeMethodSquash = "squash"
-	MergeMethodRebase = "rebase"
-	MergeMethodMerge  = "merge"
-)
-
-// QueueMergeMethod is how a merge queue must land what it builds.
-//
-// It is derived rather than configured: the queue merges on the repository's
-// behalf, so offering it a method the ruleset's allowed_merge_methods forbids
-// would let a queue land what a human could not. Squash is preferred because
-// it is what the fleet merges with, and because it collapses a group into one
-// commit per pull request — rebase would replay every WIP commit onto the
-// default branch.
-//
-// Returns "" only for a spec with no merge method at all, which validation
-// rejects before this is ever asked.
-func (s Settings) QueueMergeMethod() string {
-	switch {
-	case s.Merge.Squash:
-		return MergeMethodSquash
-	case s.Merge.Rebase:
-		return MergeMethodRebase
-	case s.Merge.MergeCommit:
-		return MergeMethodMerge
-	}
-	return ""
-}
 
 // Conventional-commit enforcement scopes.
 const (
@@ -508,9 +497,9 @@ func Default() Spec {
 			},
 			BranchProtection: BranchProtection{
 				Branch: "main",
-				// Every governed repository gets the guarantee; gt works
-				// out which mechanism it can actually have.
-				BaseFreshness: FreshnessAuto,
+				// A break-glass for the repository's admin when a required check
+				// is stuck or the fix for it is itself blocked.
+				Bypass: BypassAdmin,
 				// The two opinions worth holding: an approval is of a diff, and
 				// an unresolved thread is an unanswered question.
 				DismissStaleReviews:     true,
@@ -521,7 +510,7 @@ func Default() Spec {
 				RequireLastPushApproval: false,
 			},
 		},
-		Lydite: Lydite{Enabled: true, Coverage: true},
+		Lydite: Lydite{Enabled: true, Coverage: true, ExemptDependencyBumps: true},
 		Pipeline: Pipeline{
 			CI: PipelineCI{Enabled: true, Stages: append([]string(nil), CIStages...)},
 			CD: PipelineCD{
@@ -530,7 +519,8 @@ func Default() Spec {
 				Tags:    []string{"v*.*.*"},
 			},
 		},
-		Files: []string{"sync", "dependabot-auto-merge"},
+		Files:     []string{"sync", "dependabot-auto-merge"},
+		AgentLock: AgentLockIgnored,
 	}
 }
 
@@ -581,7 +571,7 @@ func Parse(data []byte, path string) (Spec, error) {
 	if err := dec.Decode(&spec); err != nil && !errors.Is(err, io.EOF) {
 		return Spec{}, fmt.Errorf("parse %s: %w", path, err)
 	}
-	spec.Settings.BranchProtection.resolveFreshness()
+	spec.Settings.BranchProtection.dropRetiredKeys()
 	if err := Validate(spec); err != nil {
 		return Spec{}, fmt.Errorf("%s: %w", path, err)
 	}
@@ -604,10 +594,23 @@ func Validate(s Spec) error {
 	if err := validateSettings(s.Settings); err != nil {
 		return err
 	}
+	if err := validateLydite(s.Lydite); err != nil {
+		return err
+	}
 	if err := validatePipeline(s.Pipeline); err != nil {
 		return err
 	}
+	if err := validateAgentLock(s.AgentLock); err != nil {
+		return err
+	}
 	return validateFiles(s.Files)
+}
+
+func validateAgentLock(v string) error {
+	if v == AgentLockIgnored || v == AgentLockTracked {
+		return nil
+	}
+	return fmt.Errorf("agent_lock %q is not valid: use %q or %q", v, AgentLockIgnored, AgentLockTracked)
 }
 
 func validateDependabot(entries []DependabotEntry) error {
@@ -850,16 +853,102 @@ func validateIndependentStages(field string, enabled bool, got, stages []string)
 	return nil
 }
 
+// validateLydite rejects an exemption lydite itself would refuse to load.
+// lydite parses the file on every run, so an entry that passed here and failed
+// there would break the lydite job on every pull request rather than once, at
+// sync time.
+func validateLydite(l Lydite) error {
+	if len(l.Exemptions) == 0 {
+		return nil
+	}
+	if !l.Enabled {
+		return fmt.Errorf("lydite.exemptions: cannot declare exemptions while lydite is disabled")
+	}
+	seen := map[string]bool{}
+	for i, e := range l.Exemptions {
+		where := fmt.Sprintf("lydite.exemptions[%d]", i)
+		name := strings.TrimSpace(e.Name)
+		if name == "" {
+			return fmt.Errorf("%s: name is required", where)
+		}
+		if name != e.Name {
+			return fmt.Errorf("%s: name %q has leading or trailing whitespace", where, e.Name)
+		}
+		if l.ExemptDependencyBumps && name == DependencyBumpExemption {
+			return fmt.Errorf("%s: name %q is the entry gt derives from dependabot:; "+
+				"set lydite.exempt_dependency_bumps: false to write your own", where, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("%s: duplicate name %q", where, name)
+		}
+		seen[name] = true
+		if strings.TrimSpace(e.Reason) == "" {
+			return fmt.Errorf("%s (%s): reason is required — it is what makes the entry reviewable", where, name)
+		}
+		if strings.Contains(e.Reason, lyditeReasonPlaceholder) {
+			return fmt.Errorf("%s (%s): reason still carries lydite's placeholder %q", where, name, lyditeReasonPlaceholder)
+		}
+		// An entry with no paths covers only a change that touches nothing,
+		// so it can never fire; lydite refuses it.
+		if len(e.Paths) == 0 {
+			return fmt.Errorf("%s (%s): at least one path pattern is required", where, name)
+		}
+		for j, p := range e.Paths {
+			if err := validateExemptionPattern(p); err != nil {
+				return fmt.Errorf("%s (%s).paths[%d]: %w", where, name, j, err)
+			}
+		}
+		if e.Versions != "" && e.Versions != LyditeVersionsPatchAndMinor {
+			return fmt.Errorf("%s (%s): versions %q is not a condition lydite knows (accepted: %s)",
+				where, name, e.Versions, LyditeVersionsPatchAndMinor)
+		}
+	}
+	return nil
+}
+
+// validateExemptionPattern accepts what lydite's pattern syntax can match.
+// Patterns are anchored and compared against repository-root-relative paths
+// that never start with "/", so a leading slash or an empty segment yields a
+// pattern that silently matches nothing.
+func validateExemptionPattern(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return fmt.Errorf("pattern is empty")
+	}
+	if strings.HasPrefix(p, "/") {
+		return fmt.Errorf("pattern %q must be relative to the repository root, without a leading \"/\"", p)
+	}
+	for _, segment := range strings.Split(p, "/") {
+		if segment == "" {
+			return fmt.Errorf("pattern %q has an empty path segment", p)
+		}
+		if segment == "**" {
+			continue
+		}
+		if _, err := path.Match(segment, ""); err != nil {
+			return fmt.Errorf("bad path pattern %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
 func validateSettings(s Settings) error {
 	m := s.Merge
 	if !m.Squash && !m.MergeCommit && !m.Rebase {
 		return fmt.Errorf("settings.merge: at least one merge method must be enabled")
+	}
+	if m.MergeCommit && !m.Squash && !m.Rebase {
+		return fmt.Errorf("settings.merge: merge_commit cannot be the only enabled merge method; " +
+			"the branch ruleset requires linear history, which rejects merge commits, so no pull request could merge " +
+			"(enable squash or rebase)")
 	}
 	if strings.TrimSpace(s.BranchProtection.Branch) == "" {
 		return fmt.Errorf("settings.branch_protection.branch is required")
 	}
 	if s.BranchProtection.RequiredApprovals < 0 {
 		return fmt.Errorf("settings.branch_protection.required_approvals cannot be negative")
+	}
+	if b := s.BranchProtection.Bypass; b != BypassAdmin && b != BypassNone {
+		return fmt.Errorf("settings.branch_protection.bypass %q is not one of %s, %s", b, BypassAdmin, BypassNone)
 	}
 	switch m.SquashTitle {
 	case SquashTitlePR, SquashTitleCommitPR:
@@ -872,38 +961,6 @@ func validateSettings(s Settings) error {
 	default:
 		return fmt.Errorf("settings.merge.squash_message %q is not one of %s, %s, %s",
 			m.SquashMessage, SquashMessageBlank, SquashMessagePRBody, SquashMessageCommits)
-	}
-	return validateBaseFreshness(s)
-}
-
-// validateBaseFreshness rejects a freshness setting that could not work.
-//
-// Refused at parse time rather than reported at apply time, because each of
-// these renders a repository that looks configured and is not.
-func validateBaseFreshness(s Settings) error {
-	bp := s.BranchProtection
-	if !contains(FreshnessModes, bp.BaseFreshness) {
-		return fmt.Errorf("settings.branch_protection.base_freshness %q is not one of %s",
-			bp.BaseFreshness, strings.Join(FreshnessModes, ", "))
-	}
-
-	// The ruleset always requires linear history. A queue configured to produce
-	// merge commits would build a group, then have the ruleset refuse the very
-	// commit it produced — a queue that can never merge anything.
-	//
-	// Checked for auto as well as queue: auto reaches the queue on any
-	// organization-owned public repository, so letting it through here would
-	// move a parse-time error to whichever repository happened to qualify.
-	if bp.BaseFreshness == FreshnessNone || bp.BaseFreshness == FreshnessStrict {
-		return nil
-	}
-	if method := s.QueueMergeMethod(); method == MergeMethodMerge {
-		return fmt.Errorf(
-			"settings.merge: a merge queue needs a merge method that produces linear "+
-				"history, but only %s is enabled — the queue would build merge commits "+
-				"the ruleset's required_linear_history then rejects. Enable squash or "+
-				"rebase, or set branch_protection.base_freshness: %s",
-			MergeMethodMerge, FreshnessStrict)
 	}
 	return nil
 }

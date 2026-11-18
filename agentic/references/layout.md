@@ -29,16 +29,19 @@ internal/               # all the logic; cmd/ is a thin shell over it
     pipeline.go         #   stage wiring, ci-gate's needs:, the attestation guard
     diff.go             #   ok / drifted / missing / orphaned, and Write
     service.go          #   Check and Sync, the version gate, ResolveWorkDir
-    settings.go         #   the GitHub API side: ruleset, merge methods, merge queue
+    settings.go         #   the GitHub API side: ruleset, merge methods, strict checks
     fleet.go            #   fleet listing, Dependabot title parsing, merge-pending
     fleetsync.go        #   the cross-repo sweep that opens a PR per repo
+    agentlock.go        #   the agtk lockfile policy: gitignore entry and git rm --cached
+    exemptions.go       #   the managed .lydite/exemptions.yml
     templates/          #   embedded text/template sources for every rendered file
 
 tests/                  # every test lives here, one file per area, package `tests`
 docs/pipeline-design.md # why the pipeline is shaped the way it is
 docs/releases/          # one file per release
 agentic/                # this directory — see the -repo instruction
-.github/workflows/      # gt's own CI, plus the reusable-*.yml other repos call
+.github/workflows/      # gt's own CI, release.yml, plus the reusable-*.yml other repos call
+.github/scripts/release/plan.sh # decides whether a push to main releases, and which version
 ```
 
 ## Which reference governs what
@@ -47,10 +50,10 @@ agentic/                # this directory — see the -repo instruction
 |---|---|
 | `internal/repospec`, `.gt-repo.yaml`, `repogov/{render,diff,service,detect}.go` | [`governance.md`](governance.md) |
 | `repogov/pipeline.go`, the orchestrator templates, `ci-gate`, attestation | [`pipeline.md`](pipeline.md) |
-| `repogov/settings.go`, branch protection, `base_freshness` | [`merge-queue.md`](merge-queue.md) |
+| `repogov/settings.go`, branch protection, strict required checks | [`base-freshness.md`](base-freshness.md) |
 | `repogov/fleet.go`, `fleetsync.go`, `reusable-dependabot-auto-merge.yml` | [`dependabot.md`](dependabot.md) |
 | `internal/{clone,worktree,scratch,setauth,setssh,setup,config,app,cli}` | [`worktrees-and-setup.md`](worktrees-and-setup.md) |
-| `.goreleaser.yaml`, `install.sh`, `internal/selfupdate`, `docs/releases/` | [`release.md`](release.md) |
+| `.goreleaser.yaml`, `install.sh`, `internal/selfupdate`, `docs/releases/`, `release.yml`, `.github/scripts/release/` | [`release.md`](release.md) |
 
 ## Two structural rules
 

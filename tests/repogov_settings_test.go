@@ -95,6 +95,9 @@ func compliantRulesetJSON(t *testing.T, checks ...string) string {
 	}
 	body, err := json.Marshal(map[string]any{
 		"id": 100, "name": repogov.RulesetName, "target": "branch", "enforcement": "active",
+		"bypass_actors": []map[string]any{
+			{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"},
+		},
 		"conditions": map[string]any{"ref_name": map[string]any{"include": []string{"refs/heads/main"}}},
 		"rules": []map[string]any{
 			{"type": "deletion"},
@@ -109,55 +112,13 @@ func compliantRulesetJSON(t *testing.T, checks ...string) string {
 				"allowed_merge_methods":             []string{"squash"},
 			}},
 			{"type": "required_status_checks", "parameters": map[string]any{
-				"strict_required_status_checks_policy": false,
+				// Every governed repository with a gate holds pull requests to
+				// their base.
+				"strict_required_status_checks_policy": true,
 				"required_status_checks":               required,
-			}},
-			// The queue every governed repository gets. Its parameters are
-			// spelled out rather than read back from gt so that changing one of
-			// gt's numbers has to be a deliberate edit here too.
-			{"type": "merge_queue", "parameters": map[string]any{
-				"merge_method":                      "SQUASH",
-				"grouping_strategy":                 "ALLGREEN",
-				"min_entries_to_merge":              1,
-				"min_entries_to_merge_wait_minutes": 5,
-				"max_entries_to_build":              5,
-				"max_entries_to_merge":              5,
-				"check_response_timeout_minutes":    15,
 			}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return string(body)
-}
-
-// queueReadyWorkflow is an orchestrator whose triggers include merge_group,
-// which is what gt requires on the default branch before it will apply the
-// merge_queue rule.
-const queueReadyWorkflow = `name: gt CI
-on:
-  pull_request:
-  push:
-    branches: [main]
-  merge_group:
-  workflow_dispatch:
-`
-
-// queueCapableRepoJSON is compliantRepoJSON plus the two facts that decide
-// whether a merge queue is possible at all: organization-owned and public.
-func queueCapableRepoJSON(t *testing.T) string {
-	t.Helper()
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(compliantRepoJSON), &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	parsed["private"] = false
-	parsed["owner"] = map[string]any{"type": "Organization"}
-	// Entering a queue goes through auto-merge, so a repository that is aligned
-	// with a queue has it on.
-	parsed["allow_auto_merge"] = true
-	body, err := json.Marshal(parsed)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -176,11 +137,10 @@ func alignedGH(t *testing.T) *fakeGH {
 	t.Helper()
 	return &fakeGH{
 		responses: map[string]string{
-			"repos/pedromvgomes/demo":                         queueCapableRepoJSON(t),
-			"repos/pedromvgomes/demo/rulesets":                rulesetListJSON(repogov.RulesetName),
-			"repos/pedromvgomes/demo/rulesets/100":            compliantRulesetJSON(t),
-			"contents/.github/workflows/ci-orchestration.yml": queueReadyWorkflow,
-			"repos/pedromvgomes/demo/actions/variables":       lyditeRelayVarJSON(repogov.LyditeRelayValue),
+			"repos/pedromvgomes/demo":                   compliantRepoJSON,
+			"repos/pedromvgomes/demo/rulesets":          rulesetListJSON(repogov.RulesetName),
+			"repos/pedromvgomes/demo/rulesets/100":      compliantRulesetJSON(t),
+			"repos/pedromvgomes/demo/actions/variables": lyditeRelayVarJSON(repogov.LyditeRelayValue),
 		},
 		errors: map[string]error{
 			"branches/main/protection": errors.New("gh: Branch not protected (HTTP 404)"),
@@ -208,10 +168,7 @@ func TestSettingsDiffDetectsNonSquashMerge(t *testing.T) {
 	  "allow_rebase_merge": false,
 	  "delete_branch_on_merge": true,
 	  "squash_merge_commit_title": "PR_TITLE",
-	  "squash_merge_commit_message": "BLANK",
-	  "private": false,
-	  "allow_auto_merge": true,
-	  "owner": {"type": "Organization"}
+	  "squash_merge_commit_message": "BLANK"
 	}`
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
@@ -926,115 +883,133 @@ func lastRulesetBody(gh *fakeGH) string {
 	return string(body)
 }
 
-// The ordering gate. A merge queue only works if the required check reports on
-// merge_group events, and ci-gate only does that once the synced orchestrator
-// has landed on the default branch. Applying the rule first puts every pull
-// request into a queue that can never build it — and the governance stage that
-// would have said "you are out of date" is itself inside the check that no
-// longer reports, so the failure hides itself.
-func TestSettingsWithholdsTheQueueUntilTheWorkflowCanReport(t *testing.T) {
+// withRuleParam returns a ruleset detail with one rule's parameter overridden.
+func withRuleParam(t *testing.T, ruleset, ruleType, param string, value any) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(ruleset), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, r := range parsed["rules"].([]any) {
+		rule := r.(map[string]any)
+		if rule["type"] == ruleType {
+			rule["parameters"].(map[string]any)[param] = value
+		}
+	}
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
+// withMergeQueue returns a ruleset detail carrying a merge_queue rule on top
+// of the given one, shaped the way GitHub returns it.
+func withMergeQueue(t *testing.T, ruleset string) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(ruleset), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	parsed["rules"] = append(parsed["rules"].([]any), map[string]any{
+		"type": "merge_queue", "parameters": map[string]any{
+			"merge_method":                      "SQUASH",
+			"grouping_strategy":                 "ALLGREEN",
+			"min_entries_to_merge":              1,
+			"min_entries_to_merge_wait_minutes": 5,
+			"max_entries_to_build":              5,
+			"max_entries_to_merge":              5,
+			"check_response_timeout_minutes":    15,
+		},
+	})
+	body, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
+// Every repository with a required check holds pull requests to their base:
+// two green, conflict-free pull requests can still break the branch together,
+// and only requiring the branch to be up to date makes the gate run against
+// the tree that actually lands. There is no opt-out to honour.
+func TestSettingsRequiresBranchesToBeUpToDate(t *testing.T) {
 	gh := alignedGH(t)
-	gh.responses["contents/.github/workflows/ci-orchestration.yml"] = `name: gt CI
-on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
-`
-	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = withRuleParam(t,
+		compliantRulesetJSON(t), "required_status_checks", "strict_required_status_checks_policy", false)
 
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
-
-	var reported repogov.SettingChange
-	for _, c := range changes {
-		if c.Field == repogov.MergeQueueChangeField {
-			reported = c
-		}
-		if strings.Contains(c.Field, "rules.merge_queue") {
-			t.Errorf("diff asked for the queue rule anyway: %s", c)
-		}
-	}
-	if reported.Got == "" {
-		t.Fatalf("the withheld queue was not reported at all: %v", changes)
-	}
-	// Saying why is half the requirement: a silent skip is the same
-	// self-concealing failure in a different place.
-	if !strings.Contains(reported.Got, "merge_group") {
-		t.Errorf("reason = %q, want it to name the missing trigger", reported.Got)
-	}
-	if !strings.Contains(reported.Want, "gt repo sync") {
-		t.Errorf("remedy = %q, want it to say how to fix it", reported.Want)
+	if len(changes) != 1 || changes[0].Field != "ruleset.strict_required_status_checks_policy" ||
+		changes[0].Want != "true" {
+		t.Fatalf("SettingsDiff() = %v, want a single strict_required_status_checks_policy -> true", changes)
 	}
 
 	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
 		t.Fatalf("SettingsApply() error = %v", err)
 	}
-	if strings.Contains(lastRulesetBody(gh), "merge_queue") {
-		t.Errorf("apply wrote the queue rule despite the workflow being unable to report:\n%s",
-			lastRulesetBody(gh))
+	if body := lastRulesetBody(gh); !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
+		t.Errorf("apply did not require branches to be up to date:\n%s", body)
 	}
 }
 
-// Withholding must never become dismantling. A repository whose queue already
-// works, hitting a transient probe failure or a momentarily unreadable
-// workflow, must come out of apply with the queue it had — otherwise a blip
-// removes the protection instead of postponing it.
-func TestSettingsCarriesAnExistingQueueThroughADeferral(t *testing.T) {
+// A spec still carrying a retired freshness key gets the same ruleset as one
+// that never did: the key parses, and nothing reads it.
+func TestRetiredFreshnessKeysDoNotOptOutOfStrict(t *testing.T) {
+	for _, manifest := range []string{
+		"settings:\n  branch_protection:\n    base_freshness: none\n",
+		"settings:\n  branch_protection:\n    base_freshness: queue\n",
+		"settings:\n  branch_protection:\n    require_up_to_date: false\n",
+	} {
+		spec, err := repospec.Parse([]byte(manifest), "t.yaml")
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", manifest, err)
+		}
+		gh := alignedGH(t)
+		if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+			t.Fatalf("SettingsApply() error = %v", err)
+		}
+		body := lastRulesetBody(gh)
+		if !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
+			t.Errorf("%q opted out of strict:\n%s", manifest, body)
+		}
+		if strings.Contains(body, "merge_queue") {
+			t.Errorf("%q produced a merge queue:\n%s", manifest, body)
+		}
+	}
+}
+
+// With pipeline.ci disabled there is no gate to hold a pull request to, so no
+// required_status_checks rule is rendered and strict has nothing to attach to.
+func TestSettingsRequiresNoFreshnessWithoutAGate(t *testing.T) {
+	spec := repospec.Default()
+	spec.Pipeline.CI.Enabled = false
 	gh := alignedGH(t)
-	// The orchestrator momentarily unreadable — a rate limit, a blip — on a
-	// repository whose queue is already live and working.
-	gh.errors["contents/.github/workflows/ci-orchestration.yml"] = errors.New(
-		"gh: API rate limit exceeded (HTTP 403)")
+
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	if body := lastRulesetBody(gh); strings.Contains(body, "strict_required_status_checks_policy") {
+		t.Errorf("strict was rendered with no required check:\n%s", body)
+	}
+}
+
+// gt owns the merge_queue rule and never renders it, so a ruleset still
+// holding one converges by losing it — and diff names the removal rather than
+// leaving apply to do something it never reported.
+func TestSettingsRemovesALiveMergeQueue(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = withMergeQueue(t, compliantRulesetJSON(t))
 
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
-	for _, c := range changes {
-		if strings.Contains(c.Field, "rules.merge_queue") {
-			t.Errorf("diff proposed touching the live queue during a deferral: %s", c)
-		}
-	}
-
-	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
-	}
-	body := lastRulesetBody(gh)
-	if !strings.Contains(body, "merge_queue") || !strings.Contains(body, "ALLGREEN") {
-		t.Errorf("the live queue was dropped rather than carried through:\n%s", body)
-	}
-}
-
-// A repository that cannot have a queue still gets the guarantee, via the other
-// mechanism. This is the whole point of naming the guarantee rather than the
-// mechanism: user-owned repositories — gt's own among them — can never hold a
-// queue, and leaving them with nothing is what let main break in the first
-// place.
-func TestSettingsFallsBackToStrictWhereAQueueIsImpossible(t *testing.T) {
-	gh := alignedGH(t)
-	// The measured boundary: user-owned repositories are refused the rule
-	// outright, whatever their visibility.
-	gh.responses["repos/pedromvgomes/demo"] = compliantRepoJSON
-	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
-
-	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
-	if err != nil {
-		t.Fatalf("SettingsDiff() error = %v, want a fallback rather than a failed run", err)
-	}
-	var strict bool
-	for _, c := range changes {
-		if c.Field == "ruleset.strict_required_status_checks_policy" && c.Want == "true" {
-			strict = true
-		}
-		if c.Field == repogov.MergeQueueChangeField {
-			t.Errorf("a settled fallback was reported as an outstanding change: %s", c)
-		}
-	}
-	if !strict {
-		t.Fatalf("no mechanism at all was applied; changes = %v", changes)
+	if len(changes) != 1 || changes[0].Field != "ruleset.rules.merge_queue" ||
+		changes[0].Want != "absent" || changes[0].Got != "present" {
+		t.Fatalf("SettingsDiff() = %v, want a single ruleset.rules.merge_queue: present -> absent", changes)
 	}
 
 	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
@@ -1042,129 +1017,72 @@ func TestSettingsFallsBackToStrictWhereAQueueIsImpossible(t *testing.T) {
 	}
 	body := lastRulesetBody(gh)
 	if strings.Contains(body, "merge_queue") {
-		t.Errorf("the queue rule was written to a repository that cannot hold it:\n%s", body)
+		t.Errorf("the live merge queue was carried through instead of removed:\n%s", body)
 	}
 	if !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
-		t.Errorf("the fallback was not applied:\n%s", body)
+		t.Errorf("removing the queue left the branch without strict:\n%s", body)
 	}
 }
 
-// Never both. GitHub advises against it and the cost is real: strict blocks the
-// merge button until the author rebases, and the queue then rebases and
-// rebuilds the same pull request itself.
-func TestSettingsNeverAppliesBothMechanisms(t *testing.T) {
+// A merge queue in a ruleset gt absorbs is not folded into gt's own: the rule
+// type is gt-owned, so it is dropped along with the ruleset that held it.
+func TestSettingsDoesNotFoldAnotherRulesetsMergeQueue(t *testing.T) {
 	gh := alignedGH(t)
-	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "legacy")
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = withMergeQueue(t, `{
+	  "id": 101, "name": "legacy", "target": "branch", "enforcement": "active",
+	  "conditions": {"ref_name": {"include": ["refs/heads/main"]}},
+	  "rules": []
+	}`)
 
 	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
 		t.Fatalf("SettingsApply() error = %v", err)
 	}
-	body := lastRulesetBody(gh)
-	if !strings.Contains(body, "merge_queue") {
-		t.Fatalf("expected the queue on a capable repository:\n%s", body)
-	}
-	if !strings.Contains(body, `"strict_required_status_checks_policy":false`) {
-		t.Errorf("strict was applied alongside the queue:\n%s", body)
+	if body := lastRulesetBody(gh); strings.Contains(body, "merge_queue") {
+		t.Errorf("another ruleset's merge queue was folded into gt's:\n%s", body)
 	}
 }
 
-// Declining the guarantee is a decision gt owns, so it removes a queue that is
-// there. This is what separates "off" from "wanted but not yet possible".
-func TestSettingsRemovesTheQueueWhenTheSpecDeclinesIt(t *testing.T) {
+// gt does not manage allow_auto_merge. Nothing gt runs merges through it, and a
+// repository may be using it for something gt knows nothing about.
+func TestSettingsLeavesAutoMergeAlone(t *testing.T) {
 	gh := alignedGH(t)
-	spec := repospec.Default()
-	spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessNone
-
-	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
-	}
-	if strings.Contains(lastRulesetBody(gh), "merge_queue") {
-		t.Errorf("a declined queue was carried through instead of removed:\n%s", lastRulesetBody(gh))
-	}
-}
-
-// The queue's merge method has to satisfy required_linear_history, which the
-// ruleset asks for unconditionally. Squash is what the fleet merges with.
-func TestSettingsApplyQueuesWithALinearMergeMethod(t *testing.T) {
-	gh := alignedGH(t)
-	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
 
 	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
 		t.Fatalf("SettingsApply() error = %v", err)
 	}
-	body := lastRulesetBody(gh)
-	if !strings.Contains(body, `"merge_method":"SQUASH"`) {
-		t.Errorf("queue merge method is not linear-safe:\n%s", body)
-	}
-	if !strings.Contains(body, "required_linear_history") {
-		t.Errorf("linear history is no longer required, so the pairing means nothing:\n%s", body)
-	}
-}
-
-// compliantRulesetWithoutQueue is the aligned ruleset as it looked before this
-// change: everything else in place, no merge_queue rule.
-func compliantRulesetWithoutQueue(t *testing.T) string {
-	t.Helper()
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(compliantRulesetJSON(t)), &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	var kept []any
-	for _, r := range parsed["rules"].([]any) {
-		if r.(map[string]any)["type"] != "merge_queue" {
-			kept = append(kept, r)
+	for _, c := range gh.calls {
+		if strings.Contains(c, "allow_auto_merge") {
+			t.Errorf("apply touched auto-merge: %s", c)
 		}
 	}
-	parsed["rules"] = kept
-	body, err := json.Marshal(parsed)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return string(body)
 }
 
-// The two halves have to agree about the same file. The render layer writes the
-// merge_group trigger; the settings layer reads it back off the default branch
-// and decides whether the queue may be applied. A disagreement between them —
-// a template reshuffle the parser stops recognising, say — would silently
-// withhold the queue from every repository in the fleet, which is why this test
-// feeds the *rendered* orchestrator to the real check rather than a fixture
-// written to match it.
-func TestTheRenderedOrchestratorSatisfiesTheOrderingGate(t *testing.T) {
-	rendered := pipelineFiles(t, repospec.Default())[".github/workflows/ci-orchestration.yml"]
-	if len(rendered) == 0 {
-		t.Fatal("no orchestrator was rendered")
+// merge-pending squash-merges and deletes the branch it merged, asking GitHub
+// nothing beyond the merge itself.
+func TestMergePendingSquashesAndDeletesTheBranch(t *testing.T) {
+	gh := &fakeGH{}
+	pr := repogov.PendingPR{
+		Repo: "pedromvgomes/demo", Number: 7, Title: "bump x from 1.0.0 to 1.0.1", Eligible: true,
 	}
-
-	gh := alignedGH(t)
-	gh.responses["contents/.github/workflows/ci-orchestration.yml"] = string(rendered)
-	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = compliantRulesetWithoutQueue(t)
-
-	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
+	if err := repogov.MergePending(context.Background(), gh, pr); err != nil {
+		t.Fatalf("MergePending() error = %v", err)
 	}
-	if !strings.Contains(lastRulesetBody(gh), "merge_queue") {
-		t.Errorf("the settings layer did not recognise gt's own rendered trigger:\n%s",
-			lastRulesetBody(gh))
+	if len(gh.calls) != 1 {
+		t.Fatalf("calls = %v, want the merge alone", gh.calls)
+	}
+	merge := gh.calls[0]
+	for _, want := range []string{"pr merge 7", "--repo pedromvgomes/demo", "--squash", "--delete-branch"} {
+		if !strings.Contains(merge, want) {
+			t.Errorf("merge call = %q, want it to carry %q", merge, want)
+		}
 	}
 }
 
-// A queue nobody can enter is not a queue. Entering one goes through the same
-// machinery as auto-merge — including gt's own Dependabot auto-merge job, which
-// merges with `gh pr merge` — so the toggle is part of the mechanism rather
-// than an unrelated repository preference.
-func TestSettingsEnablesAutoMergeForTheQueue(t *testing.T) {
+// GT_LYDITE_RELAY tracks lydite.enabled alone.
+func TestLyditeRelayVarTracksLyditeEnabled(t *testing.T) {
 	gh := alignedGH(t)
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(queueCapableRepoJSON(t)), &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	parsed["allow_auto_merge"] = false
-	body, err := json.Marshal(parsed)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	gh.responses["repos/pedromvgomes/demo"] = string(body)
+	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
 
 	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
 	if err != nil {
@@ -1172,211 +1090,20 @@ func TestSettingsEnablesAutoMergeForTheQueue(t *testing.T) {
 	}
 	var found bool
 	for _, c := range changes {
-		if c.Field == "allow_auto_merge" {
+		if c.Field == repogov.LyditeRelayVar {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("a queue was applied to a repository nothing could enter it through; changes = %v", changes)
-	}
-
-	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
-	}
-	var patched bool
-	for _, c := range gh.calls {
-		if strings.Contains(c, "PATCH") && strings.Contains(c, "allow_auto_merge=true") {
-			patched = true
-		}
-	}
-	if !patched {
-		t.Errorf("apply did not enable auto-merge; calls = %v", gh.calls)
-	}
-}
-
-// ...and never turned off elsewhere. gt has not managed this toggle before, so
-// a repository on the strict fallback may be using it for something gt knows
-// nothing about.
-func TestSettingsLeavesAutoMergeAloneWithoutAQueue(t *testing.T) {
-	gh := alignedGH(t)
-	gh.responses["repos/pedromvgomes/demo"] = compliantRepoJSON // user-owned: strict fallback
-
-	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
-	}
-	for _, c := range gh.calls {
-		if strings.Contains(c, "allow_auto_merge") {
-			t.Errorf("apply touched auto-merge on a repository with no queue: %s", c)
-		}
-	}
-}
-
-// strictRulesetWithoutQueue is the shape a repository on the strict fallback
-// actually has live: gt's gate required, up-to-date enforced, no queue rule.
-func strictRulesetWithoutQueue(t *testing.T) string {
-	t.Helper()
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(compliantRulesetWithoutQueue(t)), &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	for _, r := range parsed["rules"].([]any) {
-		rule := r.(map[string]any)
-		if rule["type"] == "required_status_checks" {
-			rule["parameters"].(map[string]any)["strict_required_status_checks_policy"] = true
-		}
-	}
-	body, err := json.Marshal(parsed)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	return string(body)
-}
-
-// A deferral must not tear down the strict policy, for the same reason it must
-// not tear down a live queue: gt has not settled which mechanism applies, so it
-// changes neither. This is the mechanism the affected repositories actually
-// have — a user-owned repo on the fallback, or one migrating toward a queue —
-// and diff deliberately stays silent about the field during a deferral, so
-// applying the unsettled value would remove the guarantee without saying so.
-func TestSettingsCarriesStrictPolicyThroughADeferral(t *testing.T) {
-	gh := alignedGH(t)
-	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = strictRulesetWithoutQueue(t)
-	// The orchestrator momentarily unreadable — a rate limit, a blip.
-	gh.errors["contents/.github/workflows/ci-orchestration.yml"] = errors.New(
-		"gh: API rate limit exceeded (HTTP 403)")
-
-	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
-	if err != nil {
-		t.Fatalf("SettingsDiff() error = %v", err)
-	}
-	for _, c := range changes {
-		if strings.Contains(c.Field, "strict_required_status_checks_policy") {
-			t.Errorf("diff proposed changing strict during a deferral: %s", c)
-		}
-	}
-
-	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
-		t.Fatalf("SettingsApply() error = %v", err)
-	}
-	body := lastRulesetBody(gh)
-	if !strings.Contains(body, `"strict_required_status_checks_policy":true`) {
-		t.Errorf("the live strict policy was torn down by a deferral:\n%s", body)
-	}
-}
-
-// A merge queue makes `--delete-branch` illegal rather than merely redundant:
-// gh refuses the combination before merging, so every merge in a queued
-// repository failed. delete_branch_on_merge covers the deletion instead.
-func TestMergePendingDropsDeleteBranchBehindAMergeQueue(t *testing.T) {
-	const queued = `{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}`
-	const unqueued = `{"data":{"repository":{"mergeQueue":null}}}`
-
-	for name, tc := range map[string]struct {
-		probe          string
-		probeErr       error
-		wantDeleteFlag bool
-	}{
-		"queued":           {probe: queued, wantDeleteFlag: false},
-		"not queued":       {probe: unqueued, wantDeleteFlag: true},
-		"probe unanswered": {probeErr: errors.New("graphql: 502"), wantDeleteFlag: false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			gh := &fakeGH{responses: map[string]string{"api graphql": tc.probe}}
-			if tc.probeErr != nil {
-				gh.errors = map[string]error{"api graphql": tc.probeErr}
-			}
-			pr := repogov.PendingPR{
-				Repo: "pedromvgomes/demo", Number: 7, Title: "bump x from 1.0.0 to 1.0.1",
-				Eligible: true, BaseRefName: "main",
-			}
-			if err := repogov.MergePending(context.Background(), gh, pr); err != nil {
-				t.Fatalf("MergePending() error = %v", err)
-			}
-			var merge string
-			for _, c := range gh.calls {
-				if strings.HasPrefix(c, "pr merge") {
-					merge = c
-				}
-			}
-			if merge == "" {
-				t.Fatalf("no merge call; calls = %v", gh.calls)
-			}
-			if !strings.Contains(merge, "--squash") {
-				t.Errorf("merge call = %q, want --squash", merge)
-			}
-			if got := strings.Contains(merge, "--delete-branch"); got != tc.wantDeleteFlag {
-				t.Errorf("merge call = %q, --delete-branch = %v, want %v", merge, got, tc.wantDeleteFlag)
-			}
-		})
-	}
-}
-
-// The probe asks about one branch, not the repository: a queue is configured
-// per branch, and Dependabot can be pointed at a target-branch that is not the
-// default one.
-func TestMergeQueueEnabledQueriesTheBranch(t *testing.T) {
-	gh := &fakeGH{responses: map[string]string{
-		"api graphql": `{"data":{"repository":{"mergeQueue":{"id":"MQ_1"}}}}`,
-	}}
-	got, err := repogov.MergeQueueEnabled(context.Background(), gh, "lydite/lydite", "release")
-	if err != nil {
-		t.Fatalf("MergeQueueEnabled() error = %v", err)
-	}
-	if !got {
-		t.Errorf("MergeQueueEnabled() = false, want true")
-	}
-	call := strings.Join(gh.calls, " ")
-	for _, want := range []string{"owner=lydite", "name=lydite", "branch=release"} {
-		if !strings.Contains(call, want) {
-			t.Errorf("call = %q, want it to carry %q", call, want)
-		}
-	}
-}
-
-func TestMergeQueueEnabledRejectsAMalformedRepo(t *testing.T) {
-	gh := &fakeGH{}
-	if _, err := repogov.MergeQueueEnabled(context.Background(), gh, "nameless", "main"); err == nil {
-		t.Error("MergeQueueEnabled(\"nameless\") = nil error, want a refusal")
-	}
-}
-
-// GT_LYDITE_RELAY tracks lydite.enabled alone, independent of whatever
-// mechanism (queue or strict fallback) the branch protection guarantee uses.
-func TestLyditeRelayVarTracksLyditeEnabledIndependentlyOfTheMergeQueue(t *testing.T) {
-	for name, spec := range map[string]func() repospec.Spec{
-		"queue-capable repository": func() repospec.Spec { return repospec.Default() },
-		"queue-impossible repository": func() repospec.Spec {
-			spec := repospec.Default()
-			spec.Settings.BranchProtection.BaseFreshness = repospec.FreshnessNone
-			return spec
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			gh := alignedGH(t)
-			gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
-
-			changes, err := repogov.SettingsDiff(context.Background(), gh, spec(), "pedromvgomes", "demo")
-			if err != nil {
-				t.Fatalf("SettingsDiff() error = %v", err)
-			}
-			var found bool
-			for _, c := range changes {
-				if c.Field == repogov.LyditeRelayVar {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("SettingsDiff() = %v, want a %s change regardless of merge-queue state", changes, repogov.LyditeRelayVar)
-			}
-		})
+		t.Fatalf("SettingsDiff() = %v, want a %s change", changes, repogov.LyditeRelayVar)
 	}
 
 	spec := repospec.Default()
 	spec.Lydite.Enabled = false
-	gh := alignedGH(t)
+	gh = alignedGH(t)
 	gh.responses["repos/pedromvgomes/demo/actions/variables"] = `{"variables":[]}`
 
-	changes, err := repogov.SettingsDiff(context.Background(), gh, spec, "pedromvgomes", "demo")
+	changes, err = repogov.SettingsDiff(context.Background(), gh, spec, "pedromvgomes", "demo")
 	if err != nil {
 		t.Fatalf("SettingsDiff() error = %v", err)
 	}
@@ -1540,5 +1267,209 @@ func TestSettingsApplyLeavesAMatchingLyditeRelayVarAlone(t *testing.T) {
 		if strings.Contains(c, "actions/variables") && (strings.Contains(c, "POST") || strings.Contains(c, "PATCH")) {
 			t.Errorf("apply wrote to an already-matching %s: %s", repogov.LyditeRelayVar, c)
 		}
+	}
+}
+
+// A behind Dependabot PR is reported as behind, never as failing checks, and
+// is not merged; merge-pending asks Dependabot to rebase it.
+func TestPendingWorkflowPRsReportsBehindAndRequestsRebase(t *testing.T) {
+	gh := &fakeGH{responses: map[string]string{
+		"pr list": `[
+		  {"number":5,"title":"bump actions/setup-go from 5.0.0 to 5.0.1","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BEHIND"},
+		  {"number":6,"title":"bump actions/cache from 4.0.0 to 4.0.1","files":[{"path":".github/workflows/ci.yml"}],
+		   "isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED"}
+		]`,
+	}}
+	pending, err := repogov.PendingWorkflowPRs(context.Background(), gh, "pedromvgomes/demo", repospec.BumpMinor)
+	if err != nil {
+		t.Fatalf("PendingWorkflowPRs() error = %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("got %d PRs, want 2", len(pending))
+	}
+	behind, blocked := pending[0], pending[1]
+	if !behind.Behind || behind.Eligible || !strings.Contains(behind.Reason, "behind the base branch") {
+		t.Errorf("PR #5 = %+v, want behind, ineligible, reason naming the base branch", behind)
+	}
+	if behind.Bump != "" {
+		t.Errorf("PR #5 Bump = %q, want empty for an ineligible behind PR", behind.Bump)
+	}
+	if blocked.Behind {
+		t.Errorf("PR #6 is BLOCKED, not behind")
+	}
+
+	if err := repogov.MergePending(context.Background(), gh, behind); err == nil {
+		t.Error("MergePending(behind) = nil, want a refusal")
+	}
+	if err := repogov.RequestRebase(context.Background(), gh, blocked); err == nil {
+		t.Error("RequestRebase(not behind) = nil, want a refusal")
+	}
+	gh.calls = nil
+	if err := repogov.RequestRebase(context.Background(), gh, behind); err != nil {
+		t.Fatalf("RequestRebase() error = %v", err)
+	}
+	if len(gh.calls) != 1 || gh.calls[0] != "pr comment 5 --repo pedromvgomes/demo --body @dependabot rebase" {
+		t.Errorf("calls = %v, want exactly one rebase comment", gh.calls)
+	}
+}
+
+func lastApplyBody(t *testing.T, gh *fakeGH) map[string]any {
+	t.Helper()
+	var body []byte
+	for _, in := range gh.inputs {
+		if in != nil {
+			body = in
+		}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("ruleset payload is not JSON: %v\n%s", err, body)
+	}
+	return out
+}
+
+func bypassActors(t *testing.T, payload map[string]any) []map[string]any {
+	t.Helper()
+	raw, ok := payload["bypass_actors"].([]any)
+	if !ok {
+		t.Fatalf("bypass_actors missing or not a list: %v", payload["bypass_actors"])
+	}
+	var out []map[string]any
+	for _, a := range raw {
+		out = append(out, a.(map[string]any))
+	}
+	return out
+}
+
+func TestBypassDefaultsToAdminForPullRequestsOnly(t *testing.T) {
+	if got := repospec.Default().Settings.BranchProtection.Bypass; got != repospec.BypassAdmin {
+		t.Fatalf("default bypass = %q, want %q", got, repospec.BypassAdmin)
+	}
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = `[]`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	actors := bypassActors(t, lastApplyBody(t, gh))
+	if len(actors) != 1 || actors[0]["actor_type"] != "RepositoryRole" ||
+		actors[0]["actor_id"] != float64(5) || actors[0]["bypass_mode"] != "pull_request" {
+		t.Errorf("bypass_actors = %v, want the Admin role for pull requests only", actors)
+	}
+}
+
+func TestBypassNoneRemovesTheAdminRoleAndKeepsOtherActors(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "bypass_actors":[
+	    {"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"},
+	    {"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	spec := repospec.Default()
+	spec.Settings.BranchProtection.Bypass = repospec.BypassNone
+
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	actors := bypassActors(t, lastApplyBody(t, gh))
+	if len(actors) != 1 || actors[0]["actor_type"] != "Integration" {
+		t.Errorf("bypass_actors = %v, want only the Integration kept", actors)
+	}
+}
+
+func TestBypassNoneWritesAnEmptyListSoAnAdminBypassIsCleared(t *testing.T) {
+	gh := alignedGH(t)
+	spec := repospec.Default()
+	spec.Settings.BranchProtection.Bypass = repospec.BypassNone
+	if err := repogov.SettingsApply(context.Background(), gh, spec, "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	if actors := bypassActors(t, lastApplyBody(t, gh)); len(actors) != 0 {
+		t.Errorf("bypass_actors = %v, want an empty list", actors)
+	}
+}
+
+func TestBypassAdminRewritesAnAlwaysModeToPullRequest(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	changes, err := repogov.SettingsDiff(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo")
+	if err != nil {
+		t.Fatalf("SettingsDiff() error = %v", err)
+	}
+	var found bool
+	for _, c := range changes {
+		if c.Field == "ruleset.bypass.admin" && c.Want == "pull_request" && c.Got == "always" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("diff = %v, want ruleset.bypass.admin: pull_request vs always", changes)
+	}
+}
+
+func TestBypassRejectsUnknownValue(t *testing.T) {
+	_, err := repospec.Parse([]byte("settings:\n  branch_protection:\n    bypass: everyone\n"), "x")
+	if err == nil || !strings.Contains(err.Error(), "bypass") {
+		t.Fatalf("Parse() error = %v, want a bypass complaint", err)
+	}
+}
+
+func TestBypassKeepsOtherActorsOfAPausedGtRuleset(t *testing.T) {
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"disabled",
+	  "bypass_actors":[{"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	var kept, admin bool
+	for _, a := range bypassActors(t, lastApplyBody(t, gh)) {
+		kept = kept || a["actor_type"] == "Integration"
+		admin = admin || a["actor_type"] == "RepositoryRole"
+	}
+	if !kept || !admin {
+		t.Errorf("bypass_actors lost the Integration (%t) or the Admin role (%t)", kept, admin)
+	}
+}
+
+func applyWithAbsorbed(t *testing.T, enforcement string) []map[string]any {
+	t.Helper()
+	gh := alignedGH(t)
+	gh.responses["repos/pedromvgomes/demo/rulesets"] = rulesetListJSON(repogov.RulesetName, "main branch protection")
+	gh.responses["repos/pedromvgomes/demo/rulesets/100"] = `{"id":100,"name":"gt","target":"branch","enforcement":"active",
+	  "conditions":{"ref_name":{"include":["refs/heads/main"]}},
+	  "rules":[{"type":"deletion"}]}`
+	gh.responses["repos/pedromvgomes/demo/rulesets/101"] = `{"id":101,"name":"main branch protection","target":"branch","enforcement":"` + enforcement + `",
+	  "bypass_actors":[{"actor_id":9,"actor_type":"Integration","bypass_mode":"always"}],
+	  "rules":[{"type":"deletion"}]}`
+	if err := repogov.SettingsApply(context.Background(), gh, repospec.Default(), "pedromvgomes", "demo"); err != nil {
+		t.Fatalf("SettingsApply() error = %v", err)
+	}
+	return bypassActors(t, lastApplyBody(t, gh))
+}
+
+func hasActorType(actors []map[string]any, kind string) bool {
+	for _, a := range actors {
+		if a["actor_type"] == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBypassCarriesAnActiveAbsorbedRulesetsActors(t *testing.T) {
+	if actors := applyWithAbsorbed(t, "active"); !hasActorType(actors, "Integration") {
+		t.Errorf("bypass_actors = %v, want the absorbed ruleset's Integration carried", actors)
+	}
+}
+
+func TestBypassIgnoresADisabledAbsorbedRulesetsActors(t *testing.T) {
+	if actors := applyWithAbsorbed(t, "disabled"); hasActorType(actors, "Integration") {
+		t.Errorf("bypass_actors = %v, want a disabled ruleset's exemption not switched back on", actors)
 	}
 }

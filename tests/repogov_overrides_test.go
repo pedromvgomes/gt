@@ -164,6 +164,52 @@ func TestCheckReportsAndSyncFixesRestatedDefaults(t *testing.T) {
 	}
 }
 
+// A retired key parses, so the manifest keeps working, but it does not
+// round-trip: check reports the spec as drift and sync drops the key. That is
+// how a retired setting leaves the fleet without failing any repository on the
+// way out.
+func TestCheckReportsAndSyncDropsRetiredFreshnessKeys(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "go.mod", "module demo\n")
+
+	spec := repospec.Default()
+	spec.GTVersion = "v0.6.0"
+	spec.Dependabot = []repospec.DependabotEntry{{Ecosystem: "gomod", Directory: "/"}}
+	if err := repogov.SaveSpec(root, spec); err != nil {
+		t.Fatalf("SaveSpec() error = %v", err)
+	}
+	if _, _, err := repogov.Sync(testOptions(root)); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	writeFile(t, root, repospec.FileName, readSpecFile(t, root)+
+		"settings:\n  branch_protection:\n    base_freshness: none\n    require_up_to_date: false\n")
+
+	report, err := repogov.Check(testOptions(root))
+	if err != nil {
+		t.Fatalf("Check() error = %v, want the retired keys to parse", err)
+	}
+	if !report.SpecStale {
+		t.Error("Check() did not flag a spec carrying retired keys")
+	}
+
+	if _, _, err := repogov.Sync(testOptions(root)); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	raw := readSpecFile(t, root)
+	for _, key := range []string{"base_freshness", "require_up_to_date", "branch_protection:"} {
+		if strings.Contains(raw, key) {
+			t.Errorf("Sync() kept %q:\n%s", key, raw)
+		}
+	}
+	after, err := repogov.Check(testOptions(root))
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if after.SpecStale {
+		t.Error("Sync() left the retired keys in place")
+	}
+}
+
 // The weekly in-repo sync runs with --skip-workflows, so if that path skipped
 // the rewrite this would never reach the fleet on its own.
 func TestSkipWorkflowsStillSlimsTheSpecButDoesNotStamp(t *testing.T) {

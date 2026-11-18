@@ -48,6 +48,19 @@ type Options struct {
 	// SkipWorkflows excludes .github/workflows/** from the run. The weekly
 	// in-repo sync sets it because GITHUB_TOKEN cannot write those files.
 	SkipWorkflows bool
+	// Git runs the git commands the agtk lockfile policy needs. Nil means the
+	// real git binary.
+	Git git.Runner
+	// LeaveAgentLock excludes the agtk lockfile policy from the run, for a
+	// caller that was told not to touch it.
+	LeaveAgentLock bool
+}
+
+func (o Options) runner() git.Runner {
+	if o.Git != nil {
+		return o.Git
+	}
+	return git.ExecRunner{}
 }
 
 // Report is the outcome of a check or a dry-run sync.
@@ -62,11 +75,14 @@ type Report struct {
 	// drift in its own right: a file that pins a default has silently stopped
 	// tracking it, so check reports it and sync rewrites it.
 	SpecStale bool
+	// AgentLock is the change needed to bring the agtk lockfile in line with
+	// the spec's agent_lock policy.
+	AgentLock AgentLockChange
 }
 
 // Clean reports whether the repository is fully compliant.
 func (r Report) Clean() bool {
-	return len(Drifted(r.Results)) == 0 && !r.SpecStale
+	return len(Drifted(r.Results)) == 0 && !r.SpecStale && !r.AgentLock.Needed()
 }
 
 // NeedsWrite reports whether Sync would change anything, and is what `sync`
@@ -89,7 +105,7 @@ func (r Report) Clean() bool {
 // claiming the version would suppress the only remaining signal that they are
 // behind. Counting it there would confirm a no-op on every weekly in-repo run.
 func (r Report) NeedsWrite(skipWorkflows bool) bool {
-	if len(Drifted(r.Results)) > 0 || r.SpecStale {
+	if len(Drifted(r.Results)) > 0 || r.SpecStale || r.AgentLock.Needed() {
 		return true
 	}
 	return r.VersionStale && !skipWorkflows
@@ -134,7 +150,7 @@ func checkSpec(spec repospec.Spec, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	results, err := Diff(opts.WorkDir, files, opts.SkipWorkflows)
+	results, err := DiffSpec(opts.WorkDir, spec, files, opts.SkipWorkflows)
 	if err != nil {
 		return Report{}, err
 	}
@@ -146,11 +162,19 @@ func checkSpec(spec repospec.Spec, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	var lock AgentLockChange
+	if !opts.LeaveAgentLock {
+		lock, err = agentLockChange(context.Background(), opts.runner(), opts.WorkDir, spec)
+		if err != nil {
+			return Report{}, err
+		}
+	}
 	return Report{
 		Spec:         spec,
 		Results:      results,
 		VersionStale: versionStale(spec.GTVersion, opts.GTVersion),
 		SpecStale:    specStale,
+		AgentLock:    lock,
 	}, nil
 }
 
@@ -185,6 +209,13 @@ func apply(report Report, opts Options) ([]string, error) {
 	written, err := Write(opts.WorkDir, report.Results)
 	if err != nil {
 		return written, err
+	}
+	if !opts.LeaveAgentLock {
+		lockWritten, err := applyAgentLock(context.Background(), opts.runner(), opts.WorkDir, report.AgentLock)
+		written = append(written, lockWritten...)
+		if err != nil {
+			return written, err
+		}
 	}
 	// The spec is rewritten whenever its serialisation differs from what gt
 	// would write — which is how a file that restates defaults gets slimmed
@@ -482,3 +513,13 @@ const specHeader = `# Repository governance for gt. This file is the source of t
 # restate it. Run 'gt repo config' to see the resolved spec, defaults included.
 
 `
+
+// CheckSpec is Check against a spec the caller already holds.
+func CheckSpec(spec repospec.Spec, opts Options) (Report, error) {
+	return checkSpec(spec, opts)
+}
+
+// ApplyAgentLock performs only the agtk lockfile change from a report.
+func ApplyAgentLock(opts Options, change AgentLockChange) ([]string, error) {
+	return applyAgentLock(context.Background(), opts.runner(), opts.WorkDir, change)
+}

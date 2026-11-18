@@ -236,6 +236,21 @@ func newRepoSyncCommand(d Deps) *spec.Command {
 					return nil
 				}
 			}
+			// Untracking changes the index, so it is confirmed on its own: the
+			// generic prompt above lists rendered files and never mentions it.
+			// A run with no terminal and no --yes has nobody to ask, so it
+			// refuses, the same way removing an orphan does.
+			if report.AgentLock.Untrack && !yes.Get(inv) {
+				if !inv.Env.IsTerminal(spec.Stdin) {
+					return fmt.Errorf("%s is tracked and would be untracked; re-run with --yes to confirm",
+						repogov.AgentLockFile)
+				}
+				ok, err := confirmUntrackLock(inv)
+				if err != nil {
+					return err
+				}
+				govOpts.LeaveAgentLock = !ok
+			}
 			_, written, err := repogov.Sync(govOpts)
 			if err != nil {
 				return err
@@ -279,6 +294,15 @@ func confirmSync(inv *spec.Invocation, drifted []repogov.Result) (bool, error) {
 	}
 }
 
+// confirmUntrackLock asks before removing the agtk lockfile from the index. The
+// file stays on disk, but the removal shows up in the next commit, so the
+// decision is the user's. Declining leaves the whole lockfile policy alone.
+func confirmUntrackLock(inv *spec.Invocation) (bool, error) {
+	return inv.Confirm(
+		"Stop tracking "+repogov.AgentLockFile+" and gitignore it? (n keeps it; set agent_lock: tracked)",
+		spec.ConfirmOptions{Default: spec.DefaultYes, Flag: "--yes"})
+}
+
 func printSpecSummary(inv *spec.Invocation, declared repospec.Spec, opts repogov.Options) {
 	_, _ = fmt.Fprintf(inv.Env.Stdout, "Detected governance for %s/%s:\n", opts.RepoOwner, opts.RepoName)
 	if len(declared.Dependabot) == 0 {
@@ -308,6 +332,16 @@ func printReport(inv *spec.Invocation, report repogov.Report, opts repogov.Optio
 	if report.SpecStale {
 		inv.Warning("%s restates values that are gt defaults — sync rewrites it to only the overrides",
 			repospec.FileName)
+	}
+
+	switch l := report.AgentLock; {
+	case l.AddIgnore:
+		inv.Warning("%s is not gitignored — sync adds /%s to .gitignore", repogov.AgentLockFile, repogov.AgentLockFile)
+	case l.RemoveIgnore:
+		inv.Warning("%s is gitignored but agent_lock is tracked — sync removes the entry", repogov.AgentLockFile)
+	}
+	if report.AgentLock.Untrack {
+		inv.Warning("%s is tracked — sync stops tracking it (git rm --cached)", repogov.AgentLockFile)
 	}
 
 	drifted := repogov.Drifted(report.Results)

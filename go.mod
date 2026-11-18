@@ -7,7 +7,6 @@ require (
 	go.vipengele.org/cli/spec v0.2.0
 	go.vipengele.org/config v0.2.0
 	golang.org/x/mod v0.43.0
-	golang.org/x/term v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -19,4 +18,5 @@ require (
 	go.vipengele.org/commons v0.1.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
 )

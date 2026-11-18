@@ -181,6 +181,13 @@ func newRepoFleetMergePendingCommand() *spec.Command {
 						status = "skip: " + pr.Reason
 					}
 					_, _ = fmt.Fprintf(inv.Env.Stdout, "  %s#%-5d %-40s (%s)\n", pr.Repo, pr.Number, pr.Title, status)
+					if pr.Behind && merge.Get(inv) {
+						if err := repogov.RequestRebase(ctx, gh, pr); err != nil {
+							inv.Warning("  rebase request failed: %v", err)
+							continue
+						}
+						inv.Info("  asked Dependabot to rebase %s#%d", pr.Repo, pr.Number)
+					}
 					if !pr.Eligible {
 						continue
 					}
