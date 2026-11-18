@@ -110,7 +110,7 @@ only; the minisign signature is checked by `gt update`.
 
 `internal/selfupdate` builds the `go.vipengele.org/update` `Config`: `Base`
 sets gt's identity, the `v`-normalised version, the embedded minisign key,
-`app.PathsLayout` and the asset names GoReleaser produces
+the XDG paths layout and the asset names GoReleaser produces
 (`gt_<os>_<arch>.tar.gz`); `ForRun` applies the user's `auto_update` settings
 for one run. `internal/app` wires the `gt update` command and the background
 check around it. The check is unauthenticated (`Token` returns "") so a
@@ -123,5 +123,13 @@ checks again; a failed live check is recorded and throttles until
 binary (Homebrew) and a `dev` build, and runs the downloaded binary before
 installing it. `update --check` exits 10 when an update exists.
 
-`ForRun` rejects a `check_interval` under one hour only when the check is
-enabled; `gt update` itself does not depend on `auto_update`.
+The identity, the paths layout and the version normalisation are defined in
+`internal/selfupdate`, because `internal/app` imports it; `app.Identity`,
+`app.PathsLayout` and `app.Version` re-export them, so the App and the updater
+share one definition of each.
+
+The configuration rejects a `check_interval` under one hour only when the check
+is enabled. `ForRun` copies the interval only when the check is enabled and
+keeps the updater's default otherwise, because the updater rejects an interval
+under one hour even for a disabled check. `gt update` itself does not depend
+on `auto_update`.

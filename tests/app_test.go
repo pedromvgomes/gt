@@ -52,7 +52,7 @@ func runApp(t *testing.T, a *vcli.App, env *spec.Env, args ...string) appRun {
 }
 
 func devApp() *vcli.App {
-	return app.New(app.BuildInfo{Version: "dev"})
+	return app.New(app.BuildInfo{Version: "dev"}, app.Options{})
 }
 
 func TestVersionGainsTheLeadingVOnlyForSemver(t *testing.T) {
@@ -81,7 +81,7 @@ func TestVersionGainsTheLeadingVOnlyForSemver(t *testing.T) {
 // release, so the App must be handed the normalised form.
 func TestVersionCommandPrintsTheNormalisedRelease(t *testing.T) {
 	env, _ := appEnv(t)
-	a := app.New(app.BuildInfo{Version: "1.2.3", Commit: "0123456789abcdef", Date: "2026-11-17T00:00:00Z"})
+	a := app.New(app.BuildInfo{Version: "1.2.3", Commit: "0123456789abcdef", Date: "2026-11-17T00:00:00Z"}, app.Options{})
 
 	got := runApp(t, a, env, "version")
 	if got.code != vcli.ExitOK {

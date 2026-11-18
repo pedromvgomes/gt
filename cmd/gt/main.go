@@ -17,5 +17,5 @@ var (
 )
 
 func main() {
-	os.Exit(app.New(app.BuildInfo{Version: version, Commit: commit, Date: date}).Execute())
+	os.Exit(app.New(app.BuildInfo{Version: version, Commit: commit, Date: date}, app.Options{}).Execute())
 }
