@@ -20,7 +20,7 @@ internal/               # all the logic; cmd/ is a thin shell over it
   worktree/             # gt wt add|rm|list|nuke|prune-branches; ParseSpec validates <type>/<name>
   scratch/              # gt scratch: the single top-level scratch worktree
   setauth/              # gt set-auth: the managed .envrc, GH_TOKEN, environment profiles
-  setssh/               # gt set-ssh: rewrite a clone's remote to an SSH alias
+  setssh/               # gt set-ssh-remote: rewrite a clone's remote to an SSH alias
   setup/                # setup templates: Context, Select, MatchURL, Plan, Execute
   repospec/             # spec.go alone: .gt-repo.yaml's types, Default(), Parse, validation
   repogov/              # everything that acts on a spec — see governance.md

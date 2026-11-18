@@ -1,7 +1,7 @@
 # Worktrees, auth and setup
 
 The half of gt that runs on a developer's machine: `clone`, `wt`, `scratch`,
-`set-auth`, `set-ssh`, `setup`, `config`.
+`set-auth`, `set-ssh-remote`, `setup`, `config`.
 
 ## The layout
 
